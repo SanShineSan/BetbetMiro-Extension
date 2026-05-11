@@ -28,33 +28,6 @@ https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/builds/plugins.j
 
 ---
 
-## ⚙️ Build Manual (Opsional)
-
-Jalankan perintah berikut di root project:
-
-./gradlew make makePluginsJson
-./gradlew ensureJarCompatibility
-
-Hasil build akan muncul di:
-
-build/*.cs3  
-build/plugins.json  
-
----
-
-## 🔄 CI/CD Workflow
-
-GitHub Actions akan otomatis:
-
-- Build semua provider
-- Generate plugins.json
-- Menyimpan hasil ke branch builds
-
-Jika salah satu module error:
-➡️ build tetap lanjut (tidak menghentikan keseluruhan proses)
-
----
-
 ## 🧠 Konsep Project
 
 - Setiap provider independen
