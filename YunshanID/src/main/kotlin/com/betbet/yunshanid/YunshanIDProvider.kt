@@ -21,14 +21,9 @@ class YunshanIDProvider : MainAPI() {
         "$mainUrl/donghua-tamat/page/" to "Completed Donghua"
     )
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("${request.data}$page/").document
-        val home = document.select("div.bs").mapNotNull {
-            it.toSearchResult()
-        }
+        val home = document.select("div.bs").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(request.name, home)
     }
 
@@ -44,14 +39,11 @@ class YunshanIDProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query").document
-        return document.select("div.bs").mapNotNull {
-            it.toSearchResult()
-        }
+        return document.select("div.bs").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "YunshanID"
         val poster = document.selectFirst(".thumb img")?.attr("src")
         val description = document.selectFirst(".entry-content p")?.text()?.trim()
@@ -82,7 +74,6 @@ class YunshanIDProvider : MainAPI() {
             val rawLink = it.attr("value")
             if (rawLink.isNotEmpty()) {
                 val decoded = if (rawLink.startsWith("ey")) {
-                    // Gunakan Base64 standar Android
                     try {
                         String(Base64.decode(rawLink, Base64.DEFAULT))
                     } catch (e: Exception) {
@@ -93,7 +84,6 @@ class YunshanIDProvider : MainAPI() {
                 }
                 
                 if (decoded.startsWith("http")) {
-                    // Tambahkan subtitleCallback agar tidak error kompilasi
                     loadExtractor(decoded, data, subtitleCallback, callback)
                 }
             }
