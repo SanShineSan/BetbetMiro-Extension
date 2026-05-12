@@ -1,0 +1,20 @@
+dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.10")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+}
+
+version = 2
+
+cloudstream {
+    language = "id"
+    description = "Asian Drama, Movies and Shows English Sub"
+    authors = listOf("BetbetMiro")
+    status = 1
+    tvTypes = listOf(
+        "AsianDrama",
+        "TvSeries",
+        "Movie",
+    )
+    iconUrl = "https://asianctv.net/favicon.ico"
+}
