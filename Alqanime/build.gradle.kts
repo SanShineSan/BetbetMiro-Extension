@@ -1,0 +1,18 @@
+android {
+    namespace = "com.alqanime"
+}
+
+version = 7
+
+cloudstream {
+    language = "id"
+    description = "Nonton & Download Anime Subtitle Indonesia"
+    authors = listOf("BetbetMiro")
+    status = 1
+    tvTypes = listOf(
+        "AnimeMovie",
+        "OVA",
+        "Anime",
+    )
+    iconUrl = "https://cloudstream.zvlz.my.id/icon/alqanime.png"
+}
