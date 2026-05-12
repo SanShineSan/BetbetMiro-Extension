@@ -7,7 +7,7 @@ import org.jsoup.nodes.Element
 
 class YunshanIDProvider : MainAPI() {
 
-    override var mainUrl = "https://YOUR-DOMAIN-HERE.COM"
+    override var mainUrl = "https://yunshanid.site"
     override var name = "YunshanID"
     override val hasMainPage = true
     override var lang = "id"
@@ -50,15 +50,18 @@ class YunshanIDProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "YunshanID"
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
+            ?: "YunshanID"
+
         val poster = document.selectFirst(".thumb img")?.attr("src")
         val description = document.selectFirst(".entry-content p")?.text()?.trim()
 
         val episodes = document.select("div.eplister li").mapNotNull {
             val a = it.selectFirst("a") ?: return@mapNotNull null
-            val href = a.attr("href")
-            val name = it.selectFirst(".epl-num")?.text() ?: "Episode"
-            Episode(href, name)
+            Episode(
+                a.attr("href"),
+                it.selectFirst(".epl-num")?.text() ?: "Episode"
+            )
         }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
@@ -79,6 +82,7 @@ class YunshanIDProvider : MainAPI() {
 
         document.select("select.mirror option").forEach {
             val rawLink = it.attr("value")
+
             if (rawLink.isNotEmpty()) {
 
                 val decoded = try {
