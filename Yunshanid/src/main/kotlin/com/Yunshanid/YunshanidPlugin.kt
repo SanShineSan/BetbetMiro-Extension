@@ -7,6 +7,7 @@ import android.content.Context
 @CloudstreamPlugin
 class YunshanidPlugin: Plugin() {
     override fun load(context: Context) {
+        // Mendaftarkan API utama
         registerMainAPI(YunshanidProvider())
     }
 }
