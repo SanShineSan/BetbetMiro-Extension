@@ -18,12 +18,13 @@ class YunshanidProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // Layout halaman utama ala Winbu
+    // Kategori Halaman Utama (Bisa kamu tambah sesuai menu di webnya)
     override val mainPage = mainPageOf(
         "" to "Update Terbaru",
-        "category/movie/page/%d/" to "Movie",
+        "category/movie/page/%d/" to "Bioskop",
         "category/tv-series/page/%d/" to "TV Series",
         "category/anime/page/%d/" to "Anime",
+        "category/donghua/page/%d/" to "Donghua",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -49,10 +50,13 @@ class YunshanidProvider : MainAPI() {
         val href = fixUrl(this.selectFirst("a")?.attr("href") ?: return null)
         val poster = this.selectFirst("img")?.attr("src")
         
+        // Deteksi tipe otomatis dari label di poster
         val typeLabel = this.select(".type").text().lowercase()
-        val type = if (typeLabel.contains("tv") || typeLabel.contains("series")) TvType.TvSeries 
-                   else if (typeLabel.contains("anime")) TvType.Anime 
-                   else TvType.Movie
+        val type = when {
+            typeLabel.contains("tv") || typeLabel.contains("series") -> TvType.TvSeries
+            typeLabel.contains("anime") || typeLabel.contains("donghua") -> TvType.Anime
+            else -> TvType.Movie
+        }
 
         return if (type == TvType.Movie) {
             newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
@@ -68,6 +72,7 @@ class YunshanidProvider : MainAPI() {
             .distinctBy { it.url }
     }
 
+    // Fungsi pembersih judul ala Winbu
     private fun cleanupTitle(rawTitle: String): String {
         return rawTitle
             .replace(Regex("^(Nonton\\s+|Download\\s+)", RegexOption.IGNORE_CASE), "")
@@ -82,27 +87,37 @@ class YunshanidProvider : MainAPI() {
         val title = cleanupTitle(rawTitle)
         val poster = document.selectFirst(".poster img, .thumb img")?.attr("src")
         val plot = document.selectFirst(".entry-content p, .synopsis p")?.text()
+        
+        // Menarik metadata tambahan: Rating & Tags
+        val rating = document.selectFirst(".rating strong, .imdb-rating")?.text()?.toDoubleOrNull()
+        val tags = document.select(".genredesc a, .genre a").map { it.text().trim() }
 
         val recommendations = document.select("article, .bs")
             .mapNotNull { it.toSearchResult() }
             .filterNot { it.url == url }
 
+        // List Episode
         val episodes = document.select(".eplister li, .list-episode li").mapNotNull {
             val epName = it.select(".ep-num, .epl-num").text() ?: "Episode"
             val epHref = fixUrl(it.select("a").attr("href") ?: return@mapNotNull null)
-            Episode(epHref, epName)
+            val date = it.select(".epl-date, .date").text()
+            Episode(epHref, epName, date = date)
         }
 
         return if (episodes.isEmpty()) {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.plot = plot
+                this.tags = tags
+                this.score = rating?.let { Score.from10(it) }
                 this.recommendations = recommendations
             }
         } else {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.reversed()) {
                 this.posterUrl = poster
                 this.plot = plot
+                this.tags = tags
+                this.score = rating?.let { Score.from10(it) }
                 this.recommendations = recommendations
             }
         }
@@ -119,10 +134,10 @@ class YunshanidProvider : MainAPI() {
         val seen = Collections.synchronizedSet(hashSetOf<String>())
 
         coroutineScope {
-            // Mengambil semua link dari iframe dan tombol player secara paralel
-            val selectors = document.select("iframe, .mirror-option option, .nav-tabs li a")
+            // Ambil semua sumber (Iframe, Dropdown, Tab) secara paralel
+            val players = document.select("iframe, .mirror-option option, .nav-tabs li a")
             
-            selectors.map { element ->
+            players.map { element ->
                 async {
                     val src = when {
                         element.tagName() == "iframe" -> element.attr("src")
