@@ -5,12 +5,12 @@ apply(plugin = "kotlin-android")
 apply(plugin = "com.github.recloudstream")
 
 configure<CloudstreamExtension> {
-    // Kita gunakan "this." agar Gradle tahu ini properti milik Cloudstream, bukan milik Proyek
-    this.id = "Yunshanid"
-    this.name = "Yunshanid"
-    this.pluginClass = "com.Yunshanid.YunshanidPlugin"
-    this.description = "Dibuat oleh BetbetMiro untuk Yunshanid"
-    this.authors = listOf("BetbetMiro")
+    // Gunakan nama properti spesifik ini agar tidak bentrok dengan Gradle Project
+    pluginId = "Yunshanid"
+    pluginName = "Yunshanid"
+    pluginClass = "com.Yunshanid.YunshanidPlugin"
+    description = "Dibuat oleh BetbetMiro untuk Yunshanid"
+    authors = listOf("BetbetMiro")
 }
 
 dependencies {
