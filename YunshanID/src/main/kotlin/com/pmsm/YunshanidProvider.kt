@@ -12,45 +12,79 @@ class YunshanidProvider : MainAPI() {
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
+    // 1. Membuat Tampilan Home yang Proporsional (Multiple Rows)
     override suspend fun getMainPage(page: Int, request: HomePageRequest): HomePageResponse? {
-        val url = if (page <= 1) mainUrl else "$mainUrl/page/$page/"
-        val document = app.get(url).document
-        
-        val home = document.select("article, .list-upd .bs").mapNotNull {
-            it.toSearchResult()
+        val document = app.get(mainUrl).document
+        val homePageLists = mutableListOf<HomePageList>()
+
+        // Mengambil kategori berdasarkan section yang ada di gambar
+        // Kita cari heading-nya (misal: "Update Terbaru", "Movie Terbaru", dll)
+        document.select(".block").forEach { section ->
+            val title = section.selectFirst(".title-resizer h2, .title-block h3")?.text()?.trim() ?: "Terbaru"
+            val items = section.select("article, .bs").mapNotNull {
+                it.toSearchResult()
+            }
+            if (items.isNotEmpty()) {
+                homePageLists.add(HomePageList(title, items))
+            }
         }
-        return newHomePageResponse(name, home)
+
+        // Jika section di atas gagal, fallback ke list standar
+        if (homePageLists.isEmpty()) {
+            val items = document.select("article, .bs").mapNotNull { it.toSearchResult() }
+            homePageLists.add(HomePageList("Beranda", items))
+        }
+
+        return HomePageResponse(homePageLists)
     }
 
+    // 2. Fungsi Pencarian
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=$query"
         val document = app.get(url).document
-        return document.select("article, .list-upd .bs").mapNotNull {
+        return document.select("article, .bs").mapNotNull {
             it.toSearchResult()
         }
     }
 
+    // 3. Mapping elemen ke SearchResult (Menangkap Label Ongoing/Quality)
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h2, .tt")?.text()?.trim() ?: return null
+        val title = this.selectFirst(".tt, h2")?.text()?.trim() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val posterUrl = this.selectFirst("img")?.attr("src")
-        val type = if (this.select(".type").text().contains("TV", true)) TvType.TvSeries else TvType.Movie
+        
+        // Mengambil label kualitas (HD) atau status (Ongoing) dari UI
+        val quality = this.select(".quality").text().trim()
+        val typeLabel = this.select(".type").text().toLowerCase()
+        
+        val type = if (typeLabel.contains("tv") || typeLabel.contains("series")) {
+            TvType.TvSeries
+        } else if (typeLabel.contains("anime")) {
+            TvType.Anime
+        } else {
+            TvType.Movie
+        }
 
         return newMovieSearchResponse(title, href, type) {
             this.posterUrl = posterUrl
+            // Menambahkan metadata kualitas jika ada
+            addQuality(quality)
         }
     }
 
+    // 4. Detail Page (Sinopsis & Episode)
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: return null
         val poster = document.selectFirst(".poster img, .thumb img")?.attr("src")
         val plot = document.selectFirst(".entry-content p, .synopsis p")?.text()
         
-        val episodes = document.select(".list-episode li, .eplister li").mapNotNull {
-            val epName = it.select(".ep-num, .epl-num").text() ?: "Episode"
+        // Cek apakah ada daftar episode
+        val episodes = document.select(".eplister li, .list-episode li").mapNotNull {
+            val name = it.select(".epl-num, .ep-num").text() ?: "Episode"
             val epHref = it.select("a").attr("href") ?: return@mapNotNull null
-            Episode(epHref, epName)
+            val date = it.select(".epl-date").text()
+            Episode(epHref, name, date = date)
         }
 
         return if (episodes.isEmpty()) {
@@ -66,6 +100,7 @@ class YunshanidProvider : MainAPI() {
         }
     }
 
+    // 5. Ekstraksi Link (Mengincar Iframe & Player)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -74,15 +109,15 @@ class YunshanidProvider : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
         
-        // Ekstraksi dari iframe/embed langsung
-        document.select("iframe, source").forEach { element ->
-            val src = element.attr("src").ifEmpty { element.attr("data-src") }
-            if (src.isNotEmpty() && src.startsWith("http")) {
+        // Cari di player utama
+        document.select("iframe").forEach {
+            val src = it.attr("src")
+            if (src.isNotEmpty()) {
                 loadExtractor(src, data, subtitleCallback, callback)
             }
         }
-        
-        // Ekstraksi dari opsi server (jika ada)
+
+        // Cari di server alternatif (tab/dropdown)
         document.select(".mirror-option option, .nav-tabs li a").forEach {
             val embedUrl = it.attr("value").ifEmpty { it.attr("data-embed") }
             if (embedUrl.isNotEmpty() && embedUrl.startsWith("http")) {
