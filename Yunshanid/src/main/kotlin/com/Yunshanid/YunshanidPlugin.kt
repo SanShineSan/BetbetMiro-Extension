@@ -1,16 +1,17 @@
-package Yunshanid
+package com.betbet.yunshanid
 
+import android.content.Context
+import com.lagradost.cloudstream3.extractors.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import com.lagradost.cloudstream3.extractors.*
-import android.content.Context
 
 @CloudstreamPlugin
-class YunshanidPlugin : Plugin() {
+class YunshanIDPlugin : Plugin() {
+
     override fun load(context: Context) {
+
         registerMainAPI(YunshanidProvider())
-        
-        // Daftar Extractor "Wajib" buat situs lokal (Copy-paste dari spek Winbu)
+
         registerExtractorAPI(PixelDrain())
         registerExtractorAPI(Gofile())
         registerExtractorAPI(Krakenfiles())
