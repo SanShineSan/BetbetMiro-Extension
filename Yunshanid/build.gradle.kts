@@ -1,15 +1,24 @@
 version = 1
 
 cloudstream {
-    language = "id"
-    authors = listOf("Betbet")
 
-    description = "Yunshanid Donghua Extension"
+    language = "id"
+
+    authors = listOf(
+        "Betbet"
+    )
+
+    description =
+        "Yunshanid Donghua Extension"
+
     status = 1
 
     tvTypes = listOf(
-        "Anime"
+        "Anime",
+        "Movie",
+        "OVA"
     )
 
-    iconUrl = "https://yunshanid.site/favicon.ico"
+    iconUrl =
+        "https://yunshanid.site/favicon.ico"
 }
