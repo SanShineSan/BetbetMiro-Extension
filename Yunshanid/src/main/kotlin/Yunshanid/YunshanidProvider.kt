@@ -16,10 +16,13 @@ class YunshanidProvider : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // Headers agar tidak diblokir saat nonton
+    // HEADERS LENGKAP: Agar dikira browser asli oleh server
     private val commonHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer" to "$mainUrl/"
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer" to "$mainUrl/",
+        "Connection" to "keep-alive"
     )
 
     override val mainPage = mainPageOf(
@@ -35,7 +38,8 @@ class YunshanidProvider : MainAPI() {
         } else {
             request.data.format(page)
         }
-        val document = app.get("$mainUrl/$path", headers = commonHeaders).document
+        val response = app.get("$mainUrl/$path", headers = commonHeaders)
+        val document = response.document
         val homeList = document.select("article, .bs").mapNotNull { it.toSearchResult() }.distinctBy { it.url }
         return newHomePageResponse(listOf(HomePageList(request.name, homeList)), hasNext = homeList.isNotEmpty())
     }
@@ -43,7 +47,7 @@ class YunshanidProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = selectFirst(".tt, h2")?.text()?.trim() ?: return null
         val href = this@YunshanidProvider.fixUrl(selectFirst("a")?.attr("href") ?: return null)
-        val poster = selectFirst("img")?.attr("src")
+        val poster = selectFirst("img")?.attr("src") ?: selectFirst("img")?.attr("data-src")
         val typeLabel = select(".type").text().lowercase()
         val type = when {
             typeLabel.contains("tv") || typeLabel.contains("series") -> TvType.TvSeries
@@ -68,15 +72,18 @@ class YunshanidProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = commonHeaders).document
-        val title = cleanupTitle(document.selectFirst("h1.entry-title")?.text() ?: "No Title")
+        val title = cleanupTitle(document.selectFirst("h1.entry-title, .entry-title")?.text() ?: "No Title")
         val poster = document.selectFirst(".poster img, .thumb img")?.attr("src")
         val plot = document.selectFirst(".entry-content p, .synopsis p")?.text()
         val tags = document.select(".genredesc a, .genre a").map { it.text().trim() }
-        val episodes = document.select(".eplister li, .list-episode li").mapIndexedNotNull { index, it ->
-            val epHref = this@YunshanidProvider.fixUrl(it.selectFirst("a")?.attr("href") ?: return@mapIndexedNotNull null)
+
+        // PERBAIKAN SELECTOR EPISODE: Agar tidak dianggap Movie padahal Series
+        val episodes = document.select(".eplister li, .list-episode li, .num-ep a").mapIndexedNotNull { index, it ->
+            val epHref = this@YunshanidProvider.fixUrl(it.selectFirst("a")?.attr("href") ?: it.attr("href") ?: return@mapIndexedNotNull null)
             val epName = it.select(".ep-num, .epl-num").text().ifBlank { "Episode ${index + 1}" }
             newEpisode(epHref) { this.name = epName; this.episode = index + 1 }
         }
+
         return if (episodes.isEmpty()) {
             newMovieLoadResponse(title, url, TvType.Movie, url) { this.posterUrl = poster; this.plot = plot; this.tags = tags }
         } else {
@@ -85,19 +92,28 @@ class YunshanidProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        // Pancing dengan headers yang sama agar iframe keluar
         val document = app.get(data, headers = commonHeaders).document
         var found = false
         val seen = Collections.synchronizedSet(hashSetOf<String>())
+        
         coroutineScope {
-            document.select("iframe, .mirror-option option, .nav-tabs li a").map { element ->
+            // Cek iframe dan tombol player
+            document.select("iframe, .mirror-option option, .nav-tabs li a, #embed_holder iframe").map { element ->
                 async {
                     val src = when {
-                        element.tagName() == "iframe" -> element.attr("src") ?: element.attr("data-src")
+                        element.tagName() == "iframe" -> element.attr("src") ?: element.attr("data-src") ?: element.attr("data-litespeed-src")
                         element.tagName() == "option" -> element.attr("value")
-                        else -> element.attr("data-embed")
+                        else -> element.attr("data-embed") ?: element.attr("data-src")
                     }
+                    
                     if (!src.isNullOrBlank() && src.startsWith("http") && seen.add(src)) {
-                        runCatching { loadExtractor(src, data, subtitleCallback) { link -> found = true; callback.invoke(link) } }
+                        runCatching { 
+                            // Masukkan referer halaman episode agar tidak 403
+                            loadExtractor(src, data, subtitleCallback) { link -> 
+                                found = true; callback.invoke(link) 
+                            } 
+                        }
                     }
                 }
             }.awaitAll()
