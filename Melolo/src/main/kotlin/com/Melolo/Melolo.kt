@@ -29,8 +29,7 @@ class Melolo : MainAPI() {
             else -> "$mainUrl/latest"
         }
 
-        val res = app.get(url).text
-        val json = JSONObject(res)
+        val json = JSONObject(app.get(url).text)
         val books = json.optJSONArray("books") ?: return newHomePageResponse(request.name, emptyList())
 
         val items = (0 until books.length()).mapNotNull { i ->
@@ -40,7 +39,7 @@ class Melolo : MainAPI() {
             val title = b.optString("book_name")
             val poster = b.optString("thumb_url")
 
-            if (id.isNullOrBlank()) return@mapNotNull null
+            if (id.isBlank()) return@mapNotNull null
 
             newTvSeriesSearchResponse(
                 title,
@@ -58,11 +57,9 @@ class Melolo : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
 
         val url = "$mainUrl/search?query=${URLEncoder.encode(query, "UTF-8")}&limit=20&offset=0"
-        val res = app.get(url).text
+        val json = JSONObject(app.get(url).text)
 
-        val json = JSONObject(res)
         val data = json.optJSONObject("data") ?: return emptyList()
-
         val blocks = data.optJSONArray("search_data") ?: return emptyList()
 
         val results = mutableListOf<SearchResponse>()
@@ -77,6 +74,8 @@ class Melolo : MainAPI() {
                 val id = b.optString("book_id")
                 val title = b.optString("book_name")
                 val poster = b.optString("thumb_url")
+
+                if (id.isBlank()) continue
 
                 results.add(
                     newTvSeriesSearchResponse(
@@ -93,23 +92,23 @@ class Melolo : MainAPI() {
         return results
     }
 
-    // ---------------- LOAD ----------------
+    // ---------------- LOAD DETAIL ----------------
     override suspend fun load(url: String): LoadResponse {
 
-        val bookId = url.substringAfterLast("/")
+        val id = url.substringAfterLast("/")
 
-        val res = app.get("$mainUrl/detail/$bookId").text
-        val json = JSONObject(res)
+        val json = JSONObject(app.get("$mainUrl/detail/$id").text)
 
         val data = json.optJSONObject("data")
             ?.optJSONObject("video_data")
-            ?: return throw ErrorLoadingException("No data")
+            ?: throw ErrorLoadingException("No video data")
 
         val title = data.optString("series_title")
         val poster = data.optString("series_cover")
         val plot = data.optString("series_intro")
 
-        val videoList = data.optJSONArray("video_list") ?: return throw ErrorLoadingException("No episodes")
+        val videoList = data.optJSONArray("video_list")
+            ?: return throw ErrorLoadingException("No episodes")
 
         val episodes = (0 until videoList.length()).mapNotNull { i ->
             val ep = videoList.getJSONObject(i)
@@ -136,7 +135,7 @@ class Melolo : MainAPI() {
         }
     }
 
-    // ---------------- LOAD LINKS (FIX INTI) ----------------
+    // ---------------- LOAD LINKS ----------------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -144,35 +143,41 @@ class Melolo : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // API BARU: coba langsung resolve dari endpoint detail episode
-        val res = app.get("$mainUrl/detail/$data").text
-        val json = JSONObject(res)
+        // data = vid (dari Episode)
+        val vid = data
+
+        // ⚠️ IMPORTANT:
+        // API ini biasanya tidak langsung kasih mp4/m3u8
+        // jadi kita coba resolve dari endpoint detail episode
+
+        val json = JSONObject(
+            app.get("$mainUrl/detail/$vid").text
+        )
 
         val videoData = json.optJSONObject("data")
             ?.optJSONObject("video_data")
 
-        val videoList = videoData?.optJSONArray("video_list")
+        val list = videoData?.optJSONArray("video_list")
 
-        if (videoList == null) return false
+        if (list != null) {
+            for (i in 0 until list.length()) {
+                val ep = list.getJSONObject(i)
 
-        for (i in 0 until videoList.length()) {
-            val ep = videoList.getJSONObject(i)
+                val playUrl = ep.optString("play_url")
 
-            val vid = ep.optString("vid")
-            val url = ep.optString("play_url")
-
-            if (!url.isNullOrBlank()) {
-                callback(
-                    newExtractorLink(
-                        name,
-                        "Melolo",
-                        url,
-                        ExtractorLinkType.VIDEO
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                        this.referer = mainUrl
-                    }
-                )
+                if (playUrl.isNotBlank()) {
+                    callback(
+                        newExtractorLink(
+                            name,
+                            "Melolo",
+                            playUrl,
+                            ExtractorLinkType.VIDEO
+                        ) {
+                            this.quality = Qualities.Unknown.value
+                            this.referer = mainUrl
+                        }
+                    )
+                }
             }
         }
 
