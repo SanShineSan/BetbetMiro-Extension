@@ -2,7 +2,7 @@ version = 1
 
 cloudstream {
     language = "id"
-    description = "Yunshanid — Streaming Donghua Sub Indo"
+    description = "Yunshanid — Streaming Donghua & Anime Sub Indo"
     authors = listOf("BetbetMiro")
     status = 1
     tvTypes = listOf("Anime", "Movie", "TvSeries")
