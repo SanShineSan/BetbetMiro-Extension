@@ -28,5 +28,20 @@
     "description": "📺 Streaming Movie and TV Series",
     "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Pusatmovie.cs3",
     "name": "Pusatmovie"
+  },
+  {
+    "iconUrl": "https://savefilm21.info/favicon.png",
+    "apiVersion": 1,
+    "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
+    "fileSize": 21860,
+    "status": 1,
+    "language": "id",
+    "authors": ["BetbetMiro"],
+    "tvTypes": ["AsianDrama", "TvSeries", "Movie"],
+    "version": 1,
+    "internalName": "Savefilm",
+    "description": "📺 Streaming Movie and TV Series",
+    "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Savefilm.cs3",
+    "name": "Savefilm"
   }
 ]
