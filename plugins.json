@@ -128,5 +128,30 @@
         "iconUrl": "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/Ultima.jpg",
         "apiVersion": 1,
         "fileHash": "sha256-c149907743918eb1f0765fc6c24689cc963cd7a989dd984cbead4e18320ef531"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Yflix.cs3",
+        "status": 1,
+        "version": 13,
+        "name": "Yflix",
+        "internalName": "Yflix",
+        "authors": [
+            "BetbetMiro"
+        ],
+        "description": "Movies & TV Series Etc\nSettings allow selecting domains such as 1Movies,SolarMovie and Sflix",
+        "fileSize": 58882,
+        "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
+        "language": "en",
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Anime",
+            "Movie",
+            "Cartoon",
+            "AnimeMovie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=yflix.to/&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-5cb2e5ea659e39ec5ed7d586d702b88099784d72b4939d57cea45a65a8ea7011"
     }
 ]
