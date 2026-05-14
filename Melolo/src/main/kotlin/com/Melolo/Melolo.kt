@@ -21,6 +21,9 @@ class Melolo : MainAPI() {
     private val aid = "645713"
     private val catalogBase = "https://melolo-api-azure.vercel.app/api/melolo"
 
+    // Header Browser agar tidak terdeteksi bot
+    private val browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
     override val mainPage = mainPageOf(
         "latest" to "Terbaru",
         "trending" to "Trending",
@@ -40,10 +43,7 @@ class Melolo : MainAPI() {
         if (page > 1 && !isSearchCategory) return newHomePageResponse(HomePageList(request.name, emptyList()), false)
 
         val (books, hasNext) = if (isSearchCategory) {
-            fetchSearchPage(
-                request.data.removePrefix("q:").trim(), limit = 20,
-                offset = (page.coerceAtLeast(1) - 1) * 20
-            )
+            fetchSearchPage(request.data.removePrefix("q:").trim(), limit = 20, offset = (page.coerceAtLeast(1) - 1) * 20)
         } else {
             (if (request.data == "trending") fetchTrending() else fetchLatest()) to false
         }
@@ -74,7 +74,7 @@ class Melolo : MainAPI() {
                 newEpisode(
                     EpisodeData(
                         bookId, detail.series_id_str ?: bookId, ep.vid ?: return@mapNotNull null,
-                        ep.vid_index ?: return@mapNotNull null, detail.video_platform ?: 3
+                        ep.vid_index ?: return@mapNotNull null, detail.video_platform ?: 2 // Gunakan platform 2 untuk Web
                     ).toJson()
                 ) {
                     this.name = "Episode ${ep.vid_index}"
@@ -92,7 +92,7 @@ class Melolo : MainAPI() {
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val ep = tryParseJson<EpisodeData>(data) ?: return false
         
-        // Perbaikan Payload: Menyamakan dengan request asli dari Web/Mobile Melolo
+        // Payload yang disesuaikan untuk bypass deteksi
         val body = """
             {
                 "video_id": "${ep.vid}",
@@ -118,23 +118,25 @@ class Melolo : MainAPI() {
                 requestBody = body.toRequestBody("application/json".toMediaType()),
                 headers = mapOf(
                     "Content-Type" to "application/json",
-                    "X-Xs-From-Web" to "true", // Ubah ke true agar terdeteksi dari Web
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                    "X-Xs-From-Web" to "true",
+                    "User-Agent" to browserUserAgent,
                     "Origin" to "https://www.melolo.com",
                     "Referer" to "https://www.melolo.com/"
                 )
             ).text
         }
 
+        // Cetak log untuk debug di CloudStream (Settings -> Advanced -> View Logs)
+        logDebug("MeloloResponse", "Respon: $responseText")
+
         val resp = tryParseJson<PlayerVideoModelResponse>(responseText)
         
-        // Ambil link dari berbagai kemungkinan field (Fallback mechanism)
+        // Mencari link di semua kemungkinan struktur JSON
         val videoUrl = resp?.data?.main_url 
             ?: resp?.data?.video_info?.main_url 
             ?: resp?.data?.video_model?.video_list?.values?.firstOrNull()?.main_url
 
-        val backupUrl = resp?.data?.backup_url
-            ?: resp?.data?.video_info?.backup_url
+        val backupUrl = resp?.data?.backup_url ?: resp?.data?.video_info?.backup_url
 
         val links = listOfNotNull(videoUrl, backupUrl).distinct()
 
@@ -143,9 +145,7 @@ class Melolo : MainAPI() {
                 newExtractorLink(name, "Melolo", url, ExtractorLinkType.VIDEO) {
                     this.quality = Qualities.Unknown.value
                     this.referer = "https://www.melolo.com/"
-                    this.headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-                    )
+                    this.headers = mapOf("User-Agent" to browserUserAgent)
                 }
             )
         }
@@ -153,7 +153,7 @@ class Melolo : MainAPI() {
         return links.isNotEmpty()
     }
 
-    // --- Private Helper Functions (Tetap sama, hanya penyesuaian Data Class) ---
+    // --- Private Fetchers ---
 
     private suspend fun fetchLatest(): List<CatalogBook> = try {
         val res = app.get("$catalogBase/latest", timeout = 30L)
@@ -180,32 +180,21 @@ class Melolo : MainAPI() {
 
     private suspend fun fetchDetail(bookId: String): CatalogVideoData {
         val res = app.get("$catalogBase/detail/$bookId", timeout = 30L)
-        return tryParseJson<CatalogDetailResponse>(res.text)?.data?.video_data ?: throw ErrorLoadingException("Empty detail data")
+        return tryParseJson<CatalogDetailResponse>(res.text)?.data?.video_data ?: throw ErrorLoadingException("Data kosong")
     }
 
-    // --- Perbaikan Data Classes untuk Menangkap Link ---
+    // --- Data Classes Perbaikan ---
 
-    data class PlayerVideoModelResponse(
-        @JsonProperty("data") val data: PlayerVideoModelData? = null
-    )
-
+    data class PlayerVideoModelResponse(@JsonProperty("data") val data: PlayerVideoModelData? = null)
     data class PlayerVideoModelData(
         @JsonProperty("main_url") val main_url: String? = null,
         @JsonProperty("backup_url") val backup_url: String? = null,
         @JsonProperty("video_info") val video_info: PlayerVideoInfo? = null,
         @JsonProperty("video_model") val video_model: PlayerVideoModel? = null
     )
+    data class PlayerVideoInfo(@JsonProperty("main_url") val main_url: String? = null, @JsonProperty("backup_url") val backup_url: String? = null)
+    data class PlayerVideoModel(@JsonProperty("video_list") val video_list: Map<String, PlayerVideoInfo>? = null)
 
-    data class PlayerVideoInfo(
-        @JsonProperty("main_url") val main_url: String? = null,
-        @JsonProperty("backup_url") val backup_url: String? = null
-    )
-
-    data class PlayerVideoModel(
-        @JsonProperty("video_list") val video_list: Map<String, PlayerVideoInfo>? = null
-    )
-
-    // Data Class pendukung lainnya (Tetap)
     data class CatalogLatestResponse(@JsonProperty("books") val books: List<CatalogBook> = emptyList())
     data class CatalogTrendingResponse(@JsonProperty("books") val books: List<CatalogBook> = emptyList())
     data class CatalogSearchResponse(@JsonProperty("data") val data: CatalogSearchData? = null)
@@ -216,5 +205,5 @@ class Melolo : MainAPI() {
     data class CatalogDetailData(@JsonProperty("video_data") val video_data: CatalogVideoData? = null)
     data class CatalogVideoData(@JsonProperty("series_id_str") val series_id_str: String? = null, @JsonProperty("series_title") val series_title: String? = null, @JsonProperty("series_intro") val series_intro: String? = null, @JsonProperty("series_cover") val series_cover: String? = null, @JsonProperty("video_list") val video_list: List<CatalogEpisode> = emptyList(), @JsonProperty("video_platform") val video_platform: Int? = null)
     data class CatalogEpisode(@JsonProperty("vid") val vid: String? = null, @JsonProperty("vid_index") val vid_index: Int? = null, @JsonProperty("cover") val cover: String? = null, @JsonProperty("disable_play") val disable_play: Boolean? = null)
-    data class EpisodeData(@JsonProperty("bookId") val bookId: String, @JsonProperty("seriesId") val seriesId: String, @JsonProperty("vid") val vid: String, @JsonProperty("episode") val episode: Int, @JsonProperty("videoPlatform") val videoPlatform: Int = 3)
+    data class EpisodeData(@JsonProperty("bookId") val bookId: String, @JsonProperty("seriesId") val seriesId: String, @JsonProperty("vid") val vid: String, @JsonProperty("episode") val episode: Int, @JsonProperty("videoPlatform") val videoPlatform: Int = 2)
 }
