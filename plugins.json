@@ -210,5 +210,20 @@
     "description": "📺 Streaming Movie and TV Series",
     "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Sarangfilm.cs3",
     "name": "Sarangfilm"
+  },
+  {
+    "iconUrl": "https://areajav.com/wp-content/uploads/2025/07/cropped-site-icon-04-purple.png",
+    "apiVersion": 1,
+    "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
+    "fileSize": 23307,
+    "status": 1,
+    "language": "id",
+    "authors": ["Asm0d3usX"],
+    "tvTypes": ["NSFW"],
+    "version": 1,
+    "internalName": "Areajav",
+    "description": "🔞 Streaming 18+ Movie",
+    "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Areajav.cs3",
+    "name": "Areajav"
   }
 ]
