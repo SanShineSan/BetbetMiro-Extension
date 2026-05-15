@@ -2,7 +2,7 @@
 version = 11
 
 cloudstream {
-    authors     = listOf("kraptor", "ByAyzen")
+    authors     = listOf("BetbetMiro")
     language    = "en"
     description = "JavGuru"
     status  = 1
