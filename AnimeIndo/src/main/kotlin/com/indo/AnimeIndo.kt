@@ -29,20 +29,19 @@ class AnimeIndo : MainAPI() {
         } else {
             if (page == 1) "$mainUrl/" else "$mainUrl/page/$page/"
         }
-
         val document = app.get(url).document
 
         val home = if (isMovie) {
             document.select("table.otable tr").mapNotNull { table ->
                 val link = table.selectFirst("td.vithumb a[href]") ?: return@mapNotNull null
                 val href = link.attr("href")
-                val poster = link.selectFirst("img")?.let {
-                    it.attr("data-original").ifBlank { it.attr("src") }
+                val poster = link.selectFirst("img")?.let { 
+                    it.attr("data-original").ifBlank { it.attr("src") } 
                 }?.let { fixUrl(it) }
-
+                
                 val desc = table.selectFirst("td.videsc") ?: return@mapNotNull null
                 val title = desc.selectFirst("a[href]")?.text()?.trim() ?: return@mapNotNull null
-
+                
                 newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
                     this.posterUrl = poster
                 }
@@ -78,37 +77,22 @@ class AnimeIndo : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-
+        // Fix: Menggunakan query standar WordPress ?s= karena search.php sering bermasalah
         val document = app.get("$mainUrl/?s=$query").document
+        
+        return document.select("div.menu a[href], div.animemenu a[href], div.list-anime-parent a[href]").mapNotNull { a ->
+            val inner = a.selectFirst("div.list-anime") ?: return@mapNotNull null
+            val href = a.attr("href")
+            val title = inner.selectFirst("p")?.text()?.trim() ?: return@mapNotNull null
+            
+            val poster = inner.selectFirst("img")?.let { img ->
+                val dataOrg = img.attr("data-original")
+                if (dataOrg.isNotBlank()) dataOrg else img.attr("src")
+            }?.takeUnless { it.contains("loading") }
 
-        return document.select(
-            "div.menu a[href], div.animemenu a[href], article a[href]"
-        ).mapNotNull { a ->
-
-            val href = a.attr("href").trim()
-
-            if (href.isBlank()) return@mapNotNull null
-
-            val title =
-                a.selectFirst("p")?.text()?.trim()
-                    ?.ifBlank { a.attr("title") }
-                    ?.ifBlank { a.selectFirst("h1, h2")?.text()?.trim() }
-                    ?: return@mapNotNull null
-
-            val poster = a.selectFirst("img")?.let { img ->
-                img.attr("data-original")
-                    .ifBlank { img.attr("data-src") }
-                    .ifBlank { img.attr("src") }
+            newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) { 
+                this.posterUrl = fixUrl(poster ?: "") 
             }
-
-            newAnimeSearchResponse(
-                title,
-                fixUrl(href),
-                TvType.Anime
-            ) {
-                this.posterUrl = poster?.let { fixUrl(it) }
-            }
-
         }.distinctBy { it.url }
     }
 
@@ -142,19 +126,10 @@ class AnimeIndo : MainAPI() {
             val ep = epText.toIntOrNull()
                 ?: Regex("(\\d+)").find(href.trimEnd('/').substringAfterLast("/"))
                     ?.groupValues?.getOrNull(1)?.toIntOrNull()
-
-            newEpisode(fixUrl(href)) {
-                this.name = "Episode $epText"
-                this.episode = ep
-            }
+            newEpisode(fixUrl(href)) { this.name = "Episode $epText"; this.episode = ep }
         }.sortedBy { it.episode }
 
-        val tracker = APIHolder.getTracker(
-            listOf(title),
-            TrackerType.getTypes(TvType.Anime),
-            null,
-            true
-        )
+        val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(TvType.Anime), null, true)
 
         return newAnimeLoadResponse(title, animeUrl, TvType.Anime) {
             engName = title
@@ -174,7 +149,6 @@ class AnimeIndo : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         val document = app.get(data).document
         val serverUrls = mutableListOf<String>()
 
@@ -188,19 +162,13 @@ class AnimeIndo : MainAPI() {
         }
 
         serverUrls.forEach { url ->
-
             val fullUrl = if (url.startsWith("/")) "$mainUrl$url" else url
-
             if (fullUrl.contains("btube3.php")) {
-
                 try {
                     val playerDoc = app.get(fullUrl).document
-
                     val videoSrc = playerDoc.selectFirst("source[src]")?.attr("src")
                         ?: playerDoc.selectFirst("video")?.attr("src")
-
                     if (!videoSrc.isNullOrBlank()) {
-
                         callback(
                             newExtractorLink("AnimeIndo", "B-TUBE", videoSrc) {
                                 this.quality = Qualities.P1080.value
@@ -208,28 +176,14 @@ class AnimeIndo : MainAPI() {
                             }
                         )
                     }
-                } catch (_: Exception) {
-                }
-
+                } catch (_: Exception) {}
             } else if (fullUrl.contains("xtwap.top")) {
-
                 try {
-
                     val html = app.get(fullUrl).text
-
                     val fileMatch = Regex("\"file\"\\s*:\\s*\"([^\"]+)\"").find(html)
-
                     val filePath = fileMatch?.groupValues?.getOrNull(1)
-
                     if (!filePath.isNullOrBlank()) {
-
-                        val videoUrl =
-                            if (filePath.startsWith("/")) {
-                                "https://xtwap.top$filePath"
-                            } else {
-                                filePath
-                            }
-
+                        val videoUrl = if (filePath.startsWith("/")) "https://xtwap.top$filePath" else filePath
                         callback(
                             newExtractorLink("AnimeIndo", "CEPAT", videoUrl) {
                                 this.quality = Qualities.P1080.value
@@ -237,22 +191,15 @@ class AnimeIndo : MainAPI() {
                             }
                         )
                     }
-
-                } catch (_: Exception) {
-                }
-
+                } catch (_: Exception) {}
             } else {
-
                 loadExtractor(fullUrl, data, subtitleCallback, callback)
             }
         }
 
         document.select("div.navi a[href]").forEach { a ->
-
             val href = a.attr("href").ifBlank { null } ?: return@forEach
-
             if (href.startsWith("http") && !href.contains(mainUrl)) {
-
                 loadExtractor(href, data, subtitleCallback, callback)
             }
         }
