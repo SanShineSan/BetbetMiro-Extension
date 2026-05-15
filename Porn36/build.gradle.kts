@@ -2,7 +2,7 @@
 version = 5
 
 cloudstream {
-    authors     = listOf("kraptor")
+    authors     = listOf("BetbetMiro")
     language    = "en"
     description = "Dive into a wild world of Porn Videos! Feast on free movies in spicy 4K & HD. Ads won’t crash your party!"
     status  = 1 // will be 3 if unspecified
