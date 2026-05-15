@@ -1,14 +1,8 @@
 package com.alqanime
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import org.jsoup.nodes.Element
-import java.net.URLDecoder
 
 class Alqanime : MainAPI() {
     override var mainUrl = "https://alqanime.net"
@@ -37,8 +31,8 @@ class Alqanime : MainAPI() {
     }
 
     private val commonHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0",
-        "Referer" to mainUrl
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer" to "$mainUrl/"
     )
 
     override val mainPage = mainPageOf(
@@ -59,10 +53,11 @@ class Alqanime : MainAPI() {
 
     private fun Element.toSearchResult(): AnimeSearchResponse? {
         val href = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val title = this.selectFirst(".ntitle")?.text()?.trim() ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
-        val epNum = this.selectFirst("a")?.attr("title")
-            ?.let { Regex("(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        val title = (this.selectFirst(".tt") ?: this.selectFirst(".ntitle"))?.text()?.trim() ?: return null
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src") ?: this.selectFirst("img")?.attr("data-src"))
+        val epNum = this.selectFirst(".epx, .adds")?.text()?.let { 
+            Regex("(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull() 
+        }
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
@@ -78,44 +73,53 @@ class Alqanime : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = commonHeaders).document
 
-        val title = document.selectFirst("h1.entry-title")
+        val title = (document.selectFirst("h1.entry-title") ?: document.selectFirst(".infox h1"))
             ?.text()?.trim()
             ?.replace(Regex("\\s*\\(Episode.*?\\)", RegexOption.IGNORE_CASE), "")
             ?: return null
 
-        val poster = document.selectFirst("div.thumb img, meta[property=og:image]")
-            ?.attr("src")
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = document.selectFirst("div.thumb img, meta[property='og:image']")
+            ?.let { it.attr("src").ifBlank { it.attr("content") } }
 
-        val description = document.selectFirst("div.entry-content")
+        val description = (document.selectFirst("div.entry-content") ?: document.selectFirst(".sinopsis"))
             ?.text()
             ?.trim()
 
-        val typeText = document.selectFirst(".spe")?.text().orEmpty()
+        val typeText = document.selectFirst(".spe, .info-content")?.text().orEmpty()
         val type = getType(typeText)
         val status = getStatus(typeText)
 
         val episodes = mutableListOf<Episode>()
 
-        val epLinks = document.select(".eplister li a")
+        // Mencari daftar episode di list standar
+        val epLinks = document.select(".eplister ul li a")
         if (epLinks.isNotEmpty()) {
-            epLinks.forEachIndexed { i, a ->
+            epLinks.reversed().forEachIndexed { i, a ->
                 val href = fixUrlNull(a.attr("href")) ?: return@forEachIndexed
+                val name = a.selectFirst(".epl-num")?.text() ?: "Episode ${i + 1}"
                 episodes.add(
                     newEpisode(href) {
-                        this.name = a.text().ifBlank { "Episode ${i + 1}" }
+                        this.name = name
                         this.episode = i + 1
                     }
                 )
             }
+        } 
+        
+        // Fallback jika tidak ada daftar episode (misal: Halaman Film/Movie langsung)
+        if (episodes.isEmpty()) {
+            episodes.add(
+                newEpisode(url) {
+                    this.name = title
+                    this.episode = 1
+                }
+            )
         }
-
-        if (episodes.isEmpty()) return null
 
         return newAnimeLoadResponse(title, url, type) {
             this.posterUrl = poster
             this.plot = description
-            showStatus = status
+            this.showStatus = status
             addEpisodes(DubStatus.Subbed, episodes)
         }
     }
@@ -129,11 +133,21 @@ class Alqanime : MainAPI() {
 
         val document = app.get(data, headers = commonHeaders).document
 
-        document.select("iframe[src], a[href]").forEach { el ->
-            val url = el.attr("src").ifBlank { el.attr("href") }
+        // Mengambil semua link video dari iframe atau tombol download
+        document.select("iframe[src], .mirror option, a[href*='embed']").forEach { el ->
+            var url = el.attr("src").ifBlank { el.attr("value") }.ifBlank { el.attr("href") }
+            
+            if (url.contains("base64")) {
+                try {
+                    url = java.net.URLDecoder.decode(url.substringAfter("r="), "UTF-8")
+                    if (url.contains("http").not()) {
+                         url = String(android.util.Base64.decode(url, android.util.Base64.DEFAULT))
+                    }
+                } catch (e: Exception) { }
+            }
 
-            if (url.startsWith("http")) {
-                loadExtractor(url, data, subtitleCallback, callback)
+            if (url.startsWith("http") || url.startsWith("//")) {
+                loadExtractor(fixUrl(url), data, subtitleCallback, callback)
             }
         }
 
