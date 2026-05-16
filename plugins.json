@@ -176,27 +176,6 @@
         "name": "FreeReels"
     },
     {
-        "iconUrl": "https://www.themoviedb.org/favicon.ico",
-        "jarFileSize": 293310,
-        "apiVersion": 1,
-        "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
-        "fileSize": 62263,
-        "status": 1,
-        "language": "id",
-        "authors": [
-            "BetbetMiro"
-        ],
-        "tvTypes": [
-            "Movie",
-            "TvSeries"
-        ],
-        "version": 1,
-        "internalName": "AutoEmbedProvider",
-        "description": "AutoEmbed TMDB-backed movie and TV catalog provider",
-        "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/AutoEmbedProvider.cs3",
-        "name": "AutoEmbedProvider"
-    },
-    {
     "iconUrl": "https://sarangfilm.fit/wp-content/uploads/2023/09/cropped-popcorn-2.png",
     "apiVersion": 1,
     "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
