@@ -11,7 +11,7 @@ class YunshanID : MainAPI() {
     override val hasMainPage = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
+    override val supportedTypes = setOf(TvType.Anime, TvType.Movie) // FIX: Menggunakan TvType.Movie resmi
 
     companion object {
         const val API_BASE = "https://yunshanid.site/api"
@@ -36,19 +36,26 @@ class YunshanID : MainAPI() {
         }
 
         val homeResults = filteredItems.map { item ->
-            // FIX: Menggunakan URL resmi situs agar fitur "Open in Browser" aktif & tidak 404
             newAnimeSearchResponse(item.title, "$mainUrl/donghua/${item.id}", TvType.Anime) {
                 this.posterUrl = item.posterUrl ?: item.poster
                 
-                // FIX: Memunculkan badge jumlah episode terakhir di pojok poster seperti Anichin
-                val maxEp = item.episodesMap?.maxOrNull()
+                // FIX: Menggunakan sorted & lastOrNull agar 100% lolos compile versi Kotlin manapun
+                val maxEp = item.episodesMap?.sorted()?.lastOrNull()
                 if (maxEp != null) {
                     this.latestEpisode = maxEp
                 }
             }
         }
 
-        return newHomePageResponse(HomePageList(request.name, homeResults), false)
+        // FIX: Menggunakan deklarasi parameter eksplisit (list = ...) agar sesuai signature CloudStream
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = homeResults,
+                isHorizontalImages = false
+            ),
+            hasNext = false
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -59,8 +66,7 @@ class YunshanID : MainAPI() {
             newAnimeSearchResponse(item.title, "$mainUrl/donghua/${item.id}", TvType.Anime) {
                 this.posterUrl = item.posterUrl ?: item.poster
                 
-                // FIX: Badge episode juga muncul di hasil pencarian
-                val maxEp = item.episodesMap?.maxOrNull()
+                val maxEp = item.episodesMap?.sorted()?.lastOrNull()
                 if (maxEp != null) {
                     this.latestEpisode = maxEp
                 }
@@ -69,7 +75,6 @@ class YunshanID : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // FIX: Mengambil ID angka dari potongan akhir URL resmi (misal dari /donghua/91 diambil 91)
         val id = url.substringAfterLast("/")
         
         val response = app.get("$API_BASE/donghuas").text
@@ -86,7 +91,8 @@ class YunshanID : MainAPI() {
         val tvType = if (item.type?.contains("Movie", true) == true) TvType.Movie else TvType.TvSeries
 
         if (tvType == TvType.Movie) {
-            return newMovieLoadResponse(title, url, TvType.AnimeMovie, "$id-1") {
+            // FIX: Menggunakan TvType.Movie resmi bawaan core library
+            return newMovieLoadResponse(title, url, TvType.Movie, "$id-1") {
                 this.posterUrl = poster
                 this.plot = description
                 this.tags = tags

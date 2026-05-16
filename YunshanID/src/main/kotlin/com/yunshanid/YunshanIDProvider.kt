@@ -7,8 +7,10 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class YunshanIDProvider: Plugin() {
     override fun load(context: Context) {
-        // Baris context yang error sudah dihapus
+        // Mendaftarkan API Utama
         registerMainAPI(YunshanID())
+        
+        // Mendaftarkan semua Extractor Video pendukung yang ada di folder
         registerExtractorAPI(Dailymotion())
         registerExtractorAPI(Geodailymotion())
         registerExtractorAPI(Odnoklassniki())
@@ -20,6 +22,5 @@ class YunshanIDProvider: Plugin() {
         registerExtractorAPI(Vidguardto1())
         registerExtractorAPI(Vidguardto2())
         registerExtractorAPI(Vidguardto3())
-        // svilla & svanila yang hilang sudah dihapus
     }
 }
