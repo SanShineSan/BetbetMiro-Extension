@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import java.net.URLEncoder
 
 class ShortMax : MainAPI() {
     override var mainUrl = "https://www.shorttv.live"
@@ -27,13 +26,12 @@ class ShortMax : MainAPI() {
         const val ENDPOINT_DETAIL = "$BASE_API_URL/gapi/v1/movie/detail"
         const val ENDPOINT_VIDEO = "$BASE_API_URL/gapi/v1/movie/episodePlayInfo"
 
-        // 🛡️ HEADERS SAPU JAGAT: Menyamar menjadi Aplikasi Resmi Android ShortMax
-        // Ini ampuh untuk menembus proteksi Cloudflare dan mengembalikan data asli!
+        // Headers resmi untuk menyamar menjadi aplikasi Android ShortMax tulen
         val APP_HEADERS = mapOf(
             "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
             "Accept" to "application/json, text/plain, */*",
             "Content-Type" to "application/json",
-            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "X-Requested-With" to "com.shorttv.live",
             "Origin" to "https://www.shorttv.live",
             "Referer" to "https://www.shorttv.live/"
         )
@@ -44,17 +42,18 @@ class ShortMax : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val targetUrl = "${request.data}?page=$page&pageSize=20"
+        // FIX: Menggunakan POST dengan JSON Body Payload sesuai hasil sadapan jaringan
+        val responseText = app.post(
+            request.data, 
+            headers = APP_HEADERS,
+            json = mapOf(
+                "page" to page,
+                "pageSize" to 20
+            )
+        ).text
         
-        // Mengirim request dengan proteksi Android Headers utuh
-        val responseText = app.get(targetUrl, headers = APP_HEADERS).text
         val json = tryParseJson<ShortPlayListResponse>(responseText)
-
-        // FILTER STRUKTUR JALUR GANDA: Mengambil dari root .results, .data.results, ATAU .data.list
-        val rawItems = json?.results 
-            ?: json?.data?.results 
-            ?: json?.data?.list 
-            ?: emptyList()
+        val rawItems = json?.results ?: json?.data?.results ?: json?.data?.list ?: emptyList()
 
         val homeResults = rawItems.mapNotNull { item ->
             val id = item.shortPlayId ?: return@mapNotNull null
@@ -71,14 +70,19 @@ class ShortMax : MainAPI() {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return emptyList()
 
-        val targetUrl = "$ENDPOINT_SEARCH?keyword=${URLEncoder.encode(cleanQuery, "UTF-8")}&page=1&pageSize=20"
-        val responseText = app.get(targetUrl, headers = APP_HEADERS).text
+        // FIX: Pencarian menggunakan POST dengan muatan keyword terenkripsi
+        val responseText = app.post(
+            ENDPOINT_SEARCH,
+            headers = APP_HEADERS,
+            json = mapOf(
+                "keyword" to cleanQuery,
+                "page" to 1,
+                "pageSize" to 20
+            )
+        ).text
+        
         val json = tryParseJson<ShortPlayListResponse>(responseText)
-
-        val rawItems = json?.results 
-            ?: json?.data?.results 
-            ?: json?.data?.list 
-            ?: emptyList()
+        val rawItems = json?.results ?: json?.data?.results ?: json?.data?.list ?: emptyList()
 
         return rawItems.mapNotNull { item ->
             val id = item.shortPlayId ?: return@mapNotNull null
@@ -90,10 +94,15 @@ class ShortMax : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val playId = url.trim()
-        if (playId.isBlank()) throw ErrorLoadingException("ID Drama Tidak Valid")
+        val playIdInt = playId.toIntOrNull() ?: throw ErrorLoadingException("ID Drama Malformed")
 
-        val targetUrl = "$ENDPOINT_DETAIL?shortPlayId=$playId"
-        val responseText = app.get(targetUrl, headers = APP_HEADERS).text
+        // FIX: Detail drama dipanggil via POST dengan ID berformat Integer (Angka)
+        val responseText = app.post(
+            ENDPOINT_DETAIL,
+            headers = APP_HEADERS,
+            json = mapOf("shortPlayId" to playIdInt)
+        ).text
+        
         val detailData = tryParseJson<ShortPlayDetailResponse>(responseText)?.data 
             ?: throw ErrorLoadingException("Gagal Memuat Detail Konten")
 
@@ -103,7 +112,7 @@ class ShortMax : MainAPI() {
         val totalEp = detailData.totalEpisodes ?: 1
 
         val episodes = (1..totalEp).map { epNum ->
-            val loadDataPayload = EpisodePayload(playId = playId, episodeNum = epNum).toJsonString()
+            val loadDataPayload = EpisodePayload(playId = playIdInt, episodeNum = epNum).toJsonString()
             newEpisode(loadDataPayload) {
                 this.name = "Episode $epNum"
                 this.episode = epNum
@@ -127,8 +136,16 @@ class ShortMax : MainAPI() {
         val playId = payload.playId ?: return false
         val epNum = payload.episodeNum ?: return false
 
-        val targetUrl = "$ENDPOINT_VIDEO?shortPlayId=$playId&episodeNum=$epNum"
-        val responseText = app.get(targetUrl, headers = APP_HEADERS).text
+        // FIX: Pengambilan link video dikunci menggunakan POST Stream Engine
+        val responseText = app.post(
+            ENDPOINT_VIDEO,
+            headers = APP_HEADERS,
+            json = mapOf(
+                "shortPlayId" to playId,
+                "episodeNum" to epNum
+            )
+        ).text
+        
         val videoObj = tryParseJson<VideoPlayResponse>(responseText)?.episode ?: return false
         val videoMap = videoObj.videoUrl ?: return false
 
@@ -159,14 +176,14 @@ class ShortMax : MainAPI() {
         return true
     }
 
-    // --- STRUKTUR MODEL DATA KELAS (UPGRADED FOR MULTI-LEVEL PARSING) ---
+    // --- STRUKTUR DATA PARSER (JACKSON TARGET OBJECTS) ---
     data class ShortPlayListResponse(
         @JsonProperty("status") val status: String? = null,
         @JsonProperty("page") val page: Int? = null,
         @JsonProperty("isEnd") val isEnd: Boolean? = null,
         @JsonProperty("total") val total: Int? = null,
         @JsonProperty("results") val results: List<ShortPlayItem>? = null,
-        @JsonProperty("data") val data: NestedListDataHub? = null // Penanganan jika data dibungkus objek 'data'
+        @JsonProperty("data") val data: NestedListDataHub? = null
     )
 
     data class NestedListDataHub(
@@ -177,12 +194,10 @@ class ShortMax : MainAPI() {
 
     data class ShortPlayItem(
         @JsonProperty("shortPlayId") val shortPlayId: Int? = null,
-        @JsonProperty("shortPlayCode") val shortPlayCode: Long? = null,
         @JsonProperty("name") val name: String? = null,
         @JsonProperty("cover") val cover: String? = null,
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
         @JsonProperty("summary") val summary: String? = null,
-        @JsonProperty("collectNum") val collectNum: Long? = null,
         @JsonProperty("label") val label: String? = null,
         @JsonProperty("horizontalCover") val horizontalCover: String? = null,
         @JsonProperty("genre") val genre: List<String>? = null
@@ -199,8 +214,6 @@ class ShortMax : MainAPI() {
         @JsonProperty("summary") val summary: String? = null,
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
         @JsonProperty("picUrl") val picUrl: String? = null,
-        @JsonProperty("lockBegin") val lockBegin: Int? = null,
-        @JsonProperty("updateEpisode") val updateEpisode: Int? = null,
         @JsonProperty("labelResponseList") val labelResponseList: List<LabelItem>? = null
     )
 
@@ -218,12 +231,11 @@ class ShortMax : MainAPI() {
     data class EpisodeStreamContainer(
         @JsonProperty("episodeNum") val episodeNum: Int? = null,
         @JsonProperty("id") val id: Long? = null,
-        @JsonProperty("needDecrypt") val needDecrypt: Boolean? = null,
         @JsonProperty("videoUrl") val videoUrl: Map<String, String>? = null
     )
 
     data class EpisodePayload(
-        @JsonProperty("playId") val playId: String? = null,
+        @JsonProperty("playId") val playId: Int? = null,
         @JsonProperty("episodeNum") val episodeNum: Int? = null
     ) {
         fun toJsonString(): String = this.toJson()
