@@ -38,7 +38,6 @@ class YunshanID : MainAPI() {
         val homeResults = filteredItems.map { item ->
             newAnimeSearchResponse(item.title, "$mainUrl/donghua/${item.id}", TvType.Anime) {
                 this.posterUrl = item.posterUrl ?: item.poster
-                // Baris latestEpisode yang bikin error sudah dibuang
             }
         }
 
@@ -52,7 +51,6 @@ class YunshanID : MainAPI() {
         return items.filter { it.title.contains(query, true) }.map { item ->
             newAnimeSearchResponse(item.title, "$mainUrl/donghua/${item.id}", TvType.Anime) {
                 this.posterUrl = item.posterUrl ?: item.poster
-                // Baris latestEpisode yang bikin error sudah dibuang
             }
         }
     }
@@ -106,30 +104,30 @@ class YunshanID : MainAPI() {
         val animeId = parts[0]
         val epNum = parts[1]
 
+        // 1. Ambil respon JSON dari API
         val watchResponse = app.get("$API_BASE/watch/$animeId/$epNum").text
-        val cleanResponse = watchResponse.replace("\\/", "/")
 
-        val linkRegex = """https?://[^\s"']+""".toRegex()
-        val foundLinks = linkRegex.findAll(cleanResponse).map { it.value }.toList()
+        // 2. Tangkap nilai dari "video_url" menggunakan Regex presisi
+        val urlRegex = """"video_url"\s*:\s*"([^"]+)"""".toRegex()
+        val match = urlRegex.find(watchResponse)
+        
+        // Ambil link mentahnya (misal: //ok.ru/videoembed/...)
+        val rawUrl = match?.groupValues?.get(1) ?: return false
+        
+        // 3. Bersihkan pelindung garis miring (\/) jika ada
+        val cleanUrl = rawUrl.replace("\\/", "/")
 
-        var linkFound = false
-        for (link in foundLinks) {
-            val cleanLink = link.trim().removeSuffix("\\").removeSuffix("\"").removeSuffix("'")
-            if (cleanLink.contains("ok.ru") || cleanLink.contains("odnoklassniki") || cleanLink.contains("video")) {
-                loadExtractor(cleanLink, subtitleCallback, callback)
-                linkFound = true
-            }
+        // 4. Tambahkan "https:" jika link hanya diawali "//"
+        val finalUrl = if (cleanUrl.startsWith("//")) {
+            "https:$cleanUrl"
+        } else {
+            cleanUrl
         }
 
-        if (!linkFound && foundLinks.isNotEmpty()) {
-            val primaryLink = foundLinks.first().trim().removeSuffix("\\").removeSuffix("\"").removeSuffix("'")
-            if (primaryLink.startsWith("http")) {
-                loadExtractor(primaryLink, subtitleCallback, callback)
-                linkFound = true
-            }
-        }
+        // 5. Lempar link matang ke mesin pemutar video (Extractor)
+        loadExtractor(finalUrl, subtitleCallback, callback)
 
-        return linkFound
+        return true
     }
 }
 
