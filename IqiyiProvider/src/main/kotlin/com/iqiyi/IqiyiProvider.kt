@@ -2,11 +2,7 @@ package com.iqiyi
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newEpisode
-import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.*
 import java.net.URLEncoder
 
 class IqiyiProvider : MainAPI() {
@@ -26,7 +22,6 @@ class IqiyiProvider : MainAPI() {
             "Accept" to "application/json, text/plain, */*"
         )
 
-        // Solusi Mandiri: Membuat URL builder sendiri agar bebas dari error 'toQueryParams' core CloudStream
         private fun buildIqiyiUrl(endpoint: String, extra: Map<String, String> = emptyMap()): String {
             val defaultParams = mapOf(
                 "platformId" to "3",
@@ -66,7 +61,6 @@ class IqiyiProvider : MainAPI() {
         
         val pageResponse = parseJson<IqiyiEpisodePageResponse>(rawEpisodes)
         
-        // SOLUSI ERROR 4: Menggunakan 'newEpisode' builder pattern terbaru
         val episodes = pageResponse.data?.list?.map { ep ->
             newEpisode(ep.qipuIdStr ?: "") {
                 this.name = ep.name ?: "Episode ${ep.order}"
@@ -115,7 +109,6 @@ class IqiyiProvider : MainAPI() {
                 else -> Qualities.Unknown.value
             }
 
-            // SOLUSI ERROR 5: Menggunakan 'newExtractorLink' factory method terbaru
             callback.invoke(
                 newExtractorLink(
                     source = "iQIYI - ${cdnName.uppercase()}",
