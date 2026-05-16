@@ -14,7 +14,7 @@ class HentaiCityProvider : MainAPI() {
     // --- Thông tin cơ bản về Plugin ---
     override var name = "HentaiCity"
     override var mainUrl = "https://www.hentaicity.com"
-    override var lang = "en"
+    override var lang = "id"
     override val hasMainPage = true
     override var hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.NSFW)

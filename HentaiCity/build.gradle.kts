@@ -4,7 +4,7 @@ version = 1
 cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
-    language = "en"
+    language = "id"
     authors = listOf("BetbetMiro")
 
     /**

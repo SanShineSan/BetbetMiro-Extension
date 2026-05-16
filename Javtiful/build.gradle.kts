@@ -2,7 +2,7 @@ version = 6
 
 cloudstream {
     authors = listOf("BetbetMiro")
-    language = "en"
+    language = "id"
     description = "Watch more than 60,000 Full HD JAV Online For Free at Javtiful"
     status = 1
     tvTypes = listOf("NSFW")

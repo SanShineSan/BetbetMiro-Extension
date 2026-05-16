@@ -9,7 +9,7 @@ class Happy2hub : MainAPI() {
     override var mainUrl              = "https://happy2hub.eu"
     override var name                 = "Happy2hub"
     override val hasMainPage          = true
-    override var lang                 = "en"
+    override var lang                 = "id"
     override val supportedTypes       = setOf(TvType.NSFW)
     override val vpnStatus            = VPNStatus.MightBeNeeded
 

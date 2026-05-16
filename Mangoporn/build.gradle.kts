@@ -2,7 +2,7 @@ version = 3
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "MangoPorn"
 
     /**

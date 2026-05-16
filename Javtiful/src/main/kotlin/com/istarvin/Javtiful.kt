@@ -10,7 +10,7 @@ class Javtiful : MainAPI() {
     override var mainUrl = "https://javtiful.com"
     override var name = "Javtiful"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded

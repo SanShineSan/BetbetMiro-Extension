@@ -10,7 +10,7 @@ class Dramacool : MainAPI() {
     override var mainUrl = "https://asianctv.net"
     override var name = "Dramacool"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasDownloadSupport = false
     override val usesWebView = true
     override val supportedTypes = setOf(

@@ -16,7 +16,7 @@ class JavGuru : MainAPI() {
     override var mainUrl = "https://jav.guru"
     override var name = "JavGuru"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
 

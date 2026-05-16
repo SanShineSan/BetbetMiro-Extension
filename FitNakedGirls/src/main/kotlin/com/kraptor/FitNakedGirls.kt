@@ -13,7 +13,7 @@ class FitNakedGirls : MainAPI() {
     override var mainUrl = "https://fitnakedgirls.com"
     override var name = "FitNakedGirls"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded

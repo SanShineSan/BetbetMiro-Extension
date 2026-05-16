@@ -11,7 +11,7 @@ class Heavy : MainAPI() {
     override var mainUrl = "https://heavy-r.com"
     override var name = "Heavy-R"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded

@@ -11,7 +11,7 @@ import java.net.URLEncoder
 
 class Melolo : MainAPI() {
     override var mainUrl = "https://api.tmthreader.com"
-    override var name = "Melolo😶"
+    override var name = "Melolo😶 Belum Bisa Dipuar"
     override var lang = "id"
     override val hasMainPage = true
     override val hasQuickSearch = true

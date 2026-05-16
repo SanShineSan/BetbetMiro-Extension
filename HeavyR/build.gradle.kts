@@ -3,7 +3,7 @@ version = 1
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "Heavy-R.com is a free porn tube. Updated with the best free porn videos every day!"
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")

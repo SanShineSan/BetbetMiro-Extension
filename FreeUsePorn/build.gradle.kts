@@ -3,7 +3,7 @@ version = 2
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "Watch High Quality Freeuse Porn Videos for free! Thousands of videos available for all freeuse porn categories including: Free Service Porn, Hypno Porn, Mind Control Porn, and more! Join our community and unlock video downloads, custom favorite lists, and more!"
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")

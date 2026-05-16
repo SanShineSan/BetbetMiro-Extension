@@ -3,7 +3,7 @@ version = 11
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "JavGuru"
     status  = 1
     tvTypes = listOf("NSFW")

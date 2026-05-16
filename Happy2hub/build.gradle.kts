@@ -2,7 +2,7 @@ version = 2
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "Happy2Hub"
 
     /**

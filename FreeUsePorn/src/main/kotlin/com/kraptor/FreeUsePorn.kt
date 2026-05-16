@@ -13,7 +13,7 @@ class FreeUsePorn : MainAPI() {
     override var mainUrl = "https://www.freeuseporn.com"
     override var name = "FreeUsePorn"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
 

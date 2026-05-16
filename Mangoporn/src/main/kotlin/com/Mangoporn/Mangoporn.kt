@@ -9,7 +9,7 @@ class Mangoporn : MainAPI() {
     override var mainUrl              = "http://mangoporn.net"
     override var name                 = "Mangoporn"
     override val hasMainPage          = true
-    override var lang                 = "en"
+    override var lang                 = "id"
     override val hasDownloadSupport   = true
     override val supportedTypes       = setOf(TvType.NSFW)
     override val vpnStatus            = VPNStatus.MightBeNeeded

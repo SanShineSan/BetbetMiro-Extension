@@ -32,7 +32,7 @@ class JAVHDProvider : MainAPI() {
     override var mainUrl              = "https://javhd.today"
     override var name                 = "JAV HD"
     override val hasMainPage          = true
-    override var lang                 = "en"
+    override var lang                 = "id"
     override val hasDownloadSupport   = true
     override val hasChromecastSupport = true
     override val supportedTypes       = setOf(TvType.NSFW)
