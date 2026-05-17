@@ -22,64 +22,50 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 
 class DailymotionProvider : MainAPI() {
 
-    data class VideoSearchResponse(
-        @JsonProperty("list") val list: List<VideoItem>
-    )
-
-    data class VideoItem(
-        @JsonProperty("id") val id: String,
-        @JsonProperty("title") val title: String,
-        @JsonProperty("thumbnail_360_url") val thumbnail360Url: String
-    )
-
-    data class VideoDetailResponse(
-        @JsonProperty("id") val id: String,
-        @JsonProperty("title") val title: String,
-        @JsonProperty("description") val description: String,
-        @JsonProperty("thumbnail_720_url") val thumbnail720Url: String
-    )
-
-    override var mainUrl = "https://api.dailymotion.com"
-    override var name = "Dailymotion"
-    override val supportedTypes = setOf(TvType.Others)
-
-    override var lang = "en"
-
+    override var mainUrl = "https://www.dailymotion.com"
+    override var name = "Dailymotion 📺"
     override val hasMainPage = true
+    override var lang = "id"
+    override val supportedTypes = setOf(TvType.Movie)
+
+    // Pengelompokan halaman utama berdasarkan channel & tren video global Dailymotion
+    override val mainPage = mainPageOf(
+        "sort=trending" to "Trending Hari Ini",
+        "channel=shortfilms&sort=recent" to "Film Pendek & Sinema",
+        "channel=news&sort=recent" to "Berita & Politik",
+        "channel=sport&sort=recent" to "Olahraga",
+        "channel=music&sort=recent" to "Musik & Hiburan",
+        "channel=videogames&sort=recent" to "Gaming & Live"
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val response = app.get("$mainUrl/videos?fields=id,title,thumbnail_360_url&limit=26&page=$page").text
-        val popular = tryParseJson<VideoSearchResponse>(response)?.list ?: emptyList()
-
-        return newHomePageResponse(
-            listOf(
-                HomePageList(
-                    "Popular",
-                    popular.map { it.toSearchResponse(this) },
-                    true
-                ),
-            )
-        )
+        val url = "https://api.dailymotion.com/videos?fields=id,title,thumbnail_360_url&limit=20&page=$page&${request.data}"
+        val response = app.get(url).text
+        val json = tryParseJson<VideoSearchResponse>(response)
+        val home = json?.list?.map { it.toSearchResponse(this) } ?: emptyList()
+        return newHomePageResponse(request.name, home)
     }
 
-    override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val response = app.get("$mainUrl/videos?fields=id,title,thumbnail_360_url&limit=26&page=$page&search=${query.encodeUri()}").text
-        val searchResults = tryParseJson<VideoSearchResponse>(response)?.list
-        return searchResults?.map {
-            it.toSearchResponse(this)
-        }?.toNewSearchResponseList()
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "https://api.dailymotion.com/videos?fields=id,title,thumbnail_360_url&limit=20&search=${encodeUri(query)}"
+        val response = app.get(url).text
+        val json = tryParseJson<VideoSearchResponse>(response)
+        return json?.list?.map { it.toSearchResponse(this) } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val videoId = Regex("dailymotion.com/video/([a-zA-Z0-9]+)").find(url)?.groups?.get(1)?.value
-        val response = app.get("$mainUrl/video/$videoId?fields=id,title,description,thumbnail_720_url").text
+        // Ekstraksi Video ID secara aman dari URL Dailymotion publik
+        val videoId = Regex("dailymotion.com/video/([a-zA-Z0-9]+)").find(url)?.groups?.get(1)?.value 
+            ?: url.substringAfter("/video/").substringBefore("?")
+            
+        val response = app.get("https://api.dailymotion.com/video/$videoId?fields=id,title,description,thumbnail_720_url,duration").text
         val videoDetail = tryParseJson<VideoDetailResponse>(response) ?: return null
         return videoDetail.toLoadResponse(this)
     }
 
     private fun VideoItem.toSearchResponse(provider: DailymotionProvider): SearchResponse {
         return provider.newMovieSearchResponse(
-            this.title,
+            this.title ?: "Dailymotion Video",
             "https://www.dailymotion.com/video/${this.id}",
             TvType.Movie
         ) {
@@ -88,14 +74,16 @@ class DailymotionProvider : MainAPI() {
     }
 
     private suspend fun VideoDetailResponse.toLoadResponse(provider: DailymotionProvider): LoadResponse {
+        val watchUrl = "https://www.dailymotion.com/video/${this.id}"
         return provider.newMovieLoadResponse(
-            this.title,
-            "https://www.dailymotion.com/video/${this.id}",
+            this.title ?: "Dailymotion Video",
+            watchUrl,
             TvType.Movie,
-            this.id
+            watchUrl // Mengirimkan URL nonton penuh langsung ke loadLinks agar diekstrak oleh Dailymotion Extractor
         ) {
             plot = description
             posterUrl = thumbnail720Url
+            duration = (this.duration ?: 0) / 60
         }
     }
 
@@ -105,11 +93,26 @@ class DailymotionProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        loadExtractor(
-            "https://www.dailymotion.com/embed/video/$data",
-            subtitleCallback,
-            callback
-        )
+        loadExtractor(data, subtitleCallback, callback)
         return true
     }
+
+    // Pemetaan data model dengan parameter anotasi yang bersih dari warning compiler
+    data class VideoSearchResponse(
+        @param:JsonProperty("list") val list: List<VideoItem>? = emptyList()
+    )
+
+    data class VideoItem(
+        @param:JsonProperty("id") val id: String?,
+        @param:JsonProperty("title") val title: String?,
+        @param:JsonProperty("thumbnail_360_url") val thumbnail360Url: String?
+    )
+
+    data class VideoDetailResponse(
+        @param:JsonProperty("id") val id: String?,
+        @param:JsonProperty("title") val title: String?,
+        @param:JsonProperty("description") val description: String?,
+        @param:JsonProperty("thumbnail_720_url") val thumbnail720Url: String?,
+        @param:JsonProperty("duration") val duration: Int? = null
+    )
 }
