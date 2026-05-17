@@ -53,12 +53,15 @@ subprojects {
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-            // SAKLAR ANTI-MOGOK GLOBAL: Warning dicuekin total di seluruh folder provider!
+            // SAKLAR ANTI-MOGOK GLOBAL: Semua warning dicuekin total!
             allWarningsAsErrors.set(false)
         }
     }
 
     android {
+        // TRICK SULAP: Suntik namespace otomatis berbasis nama folder biar Allpornstream dkk gak memicu eror!
+        namespace = "com.lagradost.${project.name.lowercase().replace("[^a-zA-Z0-9]".toRegex(), "")}"
+
         compileSdkVersion(35)
 
         defaultConfig {
