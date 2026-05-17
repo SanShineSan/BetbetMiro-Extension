@@ -10,7 +10,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 
 class Melolo : MainAPI() {
-    override var mainUrl = "https://api.tmthreader.com"
+    override var mainUrl = "https://api31-normal-mya.tmtreader.com"
     override var name = "Melolo😶 Belum Bisa Dipuar"
     override var lang = "id"
     override val hasMainPage = true
