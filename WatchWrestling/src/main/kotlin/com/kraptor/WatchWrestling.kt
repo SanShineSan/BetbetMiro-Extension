@@ -1,5 +1,3 @@
-// ! Bu araç @Kraptor123 tarafından | @kekikanime için yazılmıştır.
-
 package com.kraptor
 
 import android.util.Log
@@ -17,7 +15,7 @@ class WatchWrestling : MainAPI() {
     override var mainUrl = "https://watchwrestling.ae"
     override var name = "WatchWrestling"
     override val hasMainPage = true
-    override var lang = "en"
+    override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.Live)
     //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,

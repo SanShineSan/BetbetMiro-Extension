@@ -1,5 +1,3 @@
-//Bu araç @kraptor tarafından | Cs-Karma için yazılmıştır!
-
 package com.kraptor
 
 import android.util.Log

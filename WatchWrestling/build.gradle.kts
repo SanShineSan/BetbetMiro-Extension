@@ -1,9 +1,8 @@
-// ! Bu araç @Kraptor123 tarafından | @CS-Karma için yazılmıştır.
-version = 12
+version = 25
 
 cloudstream {
     authors     = listOf("BetbetMiro")
-    language    = "en"
+    language    = "id"
     description = "Watch WWE | WWE Raw | Smackdown Live"
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("Live") //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,
