@@ -239,8 +239,30 @@
         ],
         "version": 3,
         "internalName": "ProviderDutamovie21",
-        "description": "[Build 2026-05-16 20:51 WIB] Dutamovie21 - Nonton film box office, series, dan serial TV subtitle Indonesia",
+        "description": "Dutamovie21 - Nonton film box office, series, dan serial TV subtitle Indonesia",
         "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/ProviderDutamovie21.cs3",
         "name": "Dutamovie21"
+    },
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=89.124.116.48&sz=%size%",
+        "fileHash": "sha256-9b14830cb76a536561445581db36ba8ede498196224f0cb99a1a4a70db700d23",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
+        "fileSize": 149694,
+        "status": 1,
+        "language": "id",
+        "authors": [
+            "BetbetMiro"
+        ],
+        "tvTypes": [
+            "AsianDrama",
+            "TvSeries",
+            "Movie"
+        ],
+        "version": 3,
+        "internalName": "ProviderIndoDrama21",
+        "description": "IndoDrama21 - Nonton film box office, series, dan Asian drama dengan subtitle Indonesia gratis!",
+        "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/ProviderIndoDrama21.cs3",
+        "name": "IndoDrama21"
     }
 ]
