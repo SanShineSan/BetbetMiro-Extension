@@ -38,7 +38,6 @@ fun Project.android(
     .configuration()
 
 subprojects {
-    // 1. Biarkan semua plugin menempel dulu agar folder tetangga tidak memicu "Unresolved reference"
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
@@ -50,27 +49,26 @@ subprojects {
         )
     }
 
-    // 2. TAKTIK ISOLASI AMAN: Hanya izinkan compiler memproses DrakorProvider. Modul lain dilewati tanpa kompilasi!
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
-        if (project.name != "DrakorProvider") {
-            enabled = false
-            return@configureEach
-        }
-        
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-            allWarningsAsErrors.set(false) // Abaikan warning
+            allWarningsAsErrors.set(false) // Saklar anti-warning global
         }
     }
 
     android {
-        // Otomatis suntik namespace berbasis nama folder agar AGP baru tidak mengamuk
         namespace = "com.lagradost.${project.name.lowercase().replace("[^a-zA-Z0-9]".toRegex(), "")}"
         compileSdkVersion(35)
 
         defaultConfig {
             minSdk = 21
             targetSdk = 35
+        }
+
+        // TAKTIK PARALISIS HALUS: Jika bukan folder DrakorProvider, kosongkan barisan source kodenya!
+        // Dengan begitu, task kemasan tetep jalan dengan aman, tapi gak ada kode tetangga yang di-compile!
+        if (project.name != "DrakorProvider") {
+            sourceSets.getByName("main").java.setSrcDirs(emptyList<File>())
         }
 
         compileOptions {
