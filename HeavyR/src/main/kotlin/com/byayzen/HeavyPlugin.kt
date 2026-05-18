@@ -7,7 +7,7 @@ import android.content.Context
 
 @CloudstreamPlugin
 class HeavyPlugin: Plugin() {
-    override fun load() {
+    override fun load(context: Context) { // FIX: Tambah parameter context agar valid dengan superclass Plugin
         registerMainAPI(Heavy())
     }
 }

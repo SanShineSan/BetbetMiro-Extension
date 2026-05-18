@@ -16,20 +16,21 @@ class Heavy : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded
 
+    // KATEGORI BARU: Semua kategori rahasia udah gua aktifin plus pake emoji biar sedap dipandang!
     override val mainPage = mainPageOf(
-        "${mainUrl}/free_porn/amateur.html" to "Amateur",
-        "${mainUrl}/free_porn/anal.html" to "Anal",
-        "${mainUrl}/free_porn/asian.html" to "Asian",
-        "${mainUrl}/free_porn/ass.html" to "Ass",
-        "${mainUrl}/free_porn/bdsm.html" to "BDSM",
-        "${mainUrl}/free_porn/big-dick.html" to "Big Dick",
-        "${mainUrl}/free_porn/big-tits.html" to "Big Tits",
-        "${mainUrl}/free_porn/creampie.html" to "Creampie",
-        //"${mainUrl}/free_porn/dp.html" to "DP",
-        //"${mainUrl}/free_porn/fisting.html" to "Fisting",
-        //"${mainUrl}/free_porn/hardcore.html" to "Hardcore",
-        //"${mainUrl}/free_porn/lesbian.html" to "Lesbian",
-        //"${mainUrl}/free_porn/milf.html" to "MILF"
+        "${mainUrl}/free_porn/amateur.html" to "Amateur 🎥",
+        "${mainUrl}/free_porn/anal.html" to "Anal 🍑",
+        "${mainUrl}/free_porn/asian.html" to "Asian 🌏",
+        "${mainUrl}/free_porn/ass.html" to "Ass 🎯",
+        "${mainUrl}/free_porn/bdsm.html" to "BDSM ⛓️",
+        "${mainUrl}/free_porn/big-dick.html" to "Big Dick 🍆",
+        "${mainUrl}/free_porn/big-tits.html" to "Big Tits 🍒",
+        "${mainUrl}/free_porn/creampie.html" to "Creampie 🥧",
+        "${mainUrl}/free_porn/dp.html" to "Double Penetration (DP) 🔄",
+        "${mainUrl}/free_porn/fisting.html" to "Fisting 👊",
+        "${mainUrl}/free_porn/hardcore.html" to "Hardcore 💥",
+        "${mainUrl}/free_porn/lesbian.html" to "Lesbian 👩‍❤️‍💋‍👩",
+        "${mainUrl}/free_porn/milf.html" to "MILF 👩"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -65,8 +66,6 @@ class Heavy : MainAPI() {
         return newSearchResponseList(results, hasNext = results.isNotEmpty())
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
-
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -99,7 +98,7 @@ class Heavy : MainAPI() {
 
     override suspend fun loadLinks(
         data: String,
-        isCasting: Boolean,
+        isCaster: Boolean, // FIX: isCasting diubah jadi isCaster biar gak error override
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
