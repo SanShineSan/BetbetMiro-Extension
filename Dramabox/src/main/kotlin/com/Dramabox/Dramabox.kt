@@ -47,7 +47,8 @@ class Dramabox : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val dramaId = url.substringAfterLast("_").substringBefore("?").trim()
-        val drama = fetchDramaDetail(dramaId)?.data ?: throw ErrorLoadingException("Drama tidak ditemukan")
+        // fetchDramaDetail now returns DramaItem? directly (handles both API response formats)
+        val drama = fetchDramaDetail(dramaId) ?: throw ErrorLoadingException("Drama tidak ditemukan")
         val episodeCount = drama.episodeCount ?: inferEpisodeCount(dramaId)
         if (episodeCount <= 0) throw ErrorLoadingException("Episode tidak ditemukan")
 
@@ -127,14 +128,22 @@ class Dramabox : MainAPI() {
         }
     }
 
-    private suspend fun fetchDramaDetail(dramaId: String): DramaDetailResponse? {
+    // Returns DramaItem? directly instead of DramaDetailResponse?.
+    // FIX: API sometimes returns {"data": {...}} and sometimes just {...} without wrapper.
+    // Previously the code only tried the wrapped format — if the API returned the object
+    // directly, data would be null and "Drama tidak ditemukan" was always thrown.
+    // Now we try both formats: wrapped first, then unwrapped as fallback.
+    private suspend fun fetchDramaDetail(dramaId: String): DramaItem? {
         return try {
             val url = "$apiUrl/api/dramas/$dramaId"
             val body = executeWithRetry {
                 rateLimitDelay(moduleName = "Dramabox")
                 app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
             }
-            tryParseJson<DramaDetailResponse>(body)
+            // Try wrapped format {"data": {...}} first
+            tryParseJson<DramaDetailResponse>(body)?.data
+                // Fall back to direct object format {...}
+                ?: tryParseJson<DramaItem>(body)?.takeIf { it.id != null }
         } catch (e: Exception) {
             logError("Dramabox", "fetchDramaDetail failed for id=$dramaId", e)
             null
