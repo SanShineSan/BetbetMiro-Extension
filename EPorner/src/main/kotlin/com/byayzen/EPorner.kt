@@ -5,6 +5,10 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
+// FIX: getQualityFromName is defined inside the AppUtils object, so the wildcard
+// import com.lagradost.cloudstream3.utils.* does NOT resolve it automatically.
+// It must be imported explicitly as an extension/member of that object.
+import com.lagradost.cloudstream3.utils.AppUtils.getQualityFromName
 import org.jsoup.nodes.Element
 
 class EPorner : MainAPI() {
