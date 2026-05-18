@@ -61,7 +61,6 @@ class Gomunime : MainAPI() {
             it.toSearchResult()
         }
 
-        // FIX PARAMETER: Menggunakan format standar agar anti-crash di Cloudstream Prerelease
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
@@ -187,7 +186,7 @@ class Gomunime : MainAPI() {
 
     override suspend fun loadLinks(
         data: String,
-        isCaster: Boolean, // FIX SAKTI: Diubah dari isCasting ke isCaster agar lolos kompilasi!
+        isCaster: Boolean, // FIX: Wajib isCaster agar tidak error override signature!
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -234,9 +233,9 @@ class Gomunime : MainAPI() {
                 this.name = "Episode ${epNum ?: "?"}"
             }
         }.distinctBy {
-            it.url
+            it.data // FIX: Episode identifier menggunakan properti 'data', bukan 'url'
         }.sortedBy {
-            it.episode
+            it.episode ?: Int.MAX_VALUE
         }
     }
 
@@ -263,4 +262,10 @@ class Gomunime : MainAPI() {
     private fun fixUrlNull(url: String?): String? {
         return url?.let { fixUrl(it) }
     }
+
+    // FIX UTAMA: Mengembalikan data class ServerOption yang hilang agar Extractor tidak rontok!
+    data class ServerOption(
+        val name: String,
+        val url: String
+    )
 }
