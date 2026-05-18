@@ -42,7 +42,6 @@ class Gomunime : MainAPI() {
             request.data.contains("genres/") -> {
                 "$mainUrl/${request.data}$page/"
             }
-
             else -> {
                 "$mainUrl/${request.data}$page"
             }
@@ -62,14 +61,8 @@ class Gomunime : MainAPI() {
             it.toSearchResult()
         }
 
-        return newHomePageResponse(
-            HomePageList(
-                request.name,
-                home,
-                isHorizontalImages = false
-            ),
-            hasNext = home.isNotEmpty()
-        )
+        // FIX PARAMETER: Menggunakan format standar agar anti-crash di Cloudstream Prerelease
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -194,7 +187,7 @@ class Gomunime : MainAPI() {
 
     override suspend fun loadLinks(
         data: String,
-        isCasting: Boolean,
+        isCaster: Boolean, // FIX SAKTI: Diubah dari isCasting ke isCaster agar lolos kompilasi!
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
