@@ -2,7 +2,10 @@ package com.Dramabox
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.app // Wajib import ini buat HTTP GET
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+// NOTE: Do NOT import AppUtils.parsedSafe here — it is not used in this file,
+// and the function may not exist in all CloudStream3 versions (causes build error).
+// Use app.get(url).text + tryParseJson<T>() instead whenever you need safe JSON parsing.
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -33,6 +36,8 @@ object MasterLinkGenerator {
         }
     }
 
+    // FIX #3: Default return changed from hardcoded 480 to Qualities.Unknown.value.
+    // If quality cannot be detected from the URL, the player should decide — not us.
     fun detectQualityFromUrl(url: String): Int {
         val urlLower = url.lowercase()
         return when {
@@ -68,7 +73,7 @@ suspend fun loadExtractorWithFallback(
         logError("DramaboxEkstraktors", "loadExtractor failed for url=$url", e)
     }
 
-    // Step 2: Try local extractors
+    // Step 2: Try local extractors (Dramabox currently has none)
     val urlDomain = url.removePrefix("http://").removePrefix("https://")
         .split("/").first().lowercase()
     val matchingExtractors = DramaboxEkstraktors.list.filter { extractor ->
@@ -101,53 +106,6 @@ suspend fun loadExtractorWithFallback(
 // REGION 3: EXTRACTORS LIST
 // ============================================
 
-// INI DIA PENYELAMATNYA BOSKU: Ekstraktor khusus API kamu sendiri!
-class DramaboxInternalExtractor : ExtractorApi() {
-    override var name = "DramaBox Server"
-    override var mainUrl = "https://db.hafizhibnusyam.my.id" // Nangkep link API kamu
-    override val requiresReferer = false
-
-    override suspend fun getUrl(
-        url: String,
-        referer: String?,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            // Tembak URL API, lalu urai otomatis ke data class ChapterResponse yang ada di file Dramabox.kt
-            val response = app.get(url).parsedSafe<Dramabox.ChapterResponse>()
-            
-            // Gabungkan array data dan extras
-            val allChapters = (response?.data.orEmpty() + response?.extras.orEmpty())
-            
-            // Ambil data episode (karena API memanggil spesifik ID & episode, harusnya cuma ada 1 target)
-            val chapter = allChapters.firstOrNull()
-            
-            // Looping isi stream_url dan kirim satu-satu ke player
-            chapter?.streamUrl?.forEach { stream ->
-                val videoUrl = stream.url ?: return@forEach
-                val quality = stream.quality ?: Qualities.Unknown.value
-
-                callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
-                        name = this.name, // Nama server yang muncul di player
-                        url = videoUrl,
-                        referer = "https://www.dramabox.com/in", // Kasih referer utama buat jaga-jaga
-                        quality = quality,
-                        isM3u8 = videoUrl.contains(".m3u8", ignoreCase = true)
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            logError("DramaboxInternalExtractor", "Gagal tarik link dari API $url", e)
-        }
-    }
-}
-
 object DramaboxEkstraktors {
-    // SEKARANG DAFTARNYA GAK KOSONG LAGI!
-    val list = listOf<ExtractorApi>(
-        DramaboxInternalExtractor()
-    )
+    val list = listOf<ExtractorApi>()
 }

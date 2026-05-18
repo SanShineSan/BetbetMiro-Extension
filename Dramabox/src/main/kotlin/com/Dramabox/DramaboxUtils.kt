@@ -59,7 +59,10 @@ fun dramaboxGetQuality(name: String?): Int {
     if (name == null) return Qualities.Unknown.value
     return when {
         name.contains("2160") || name.lowercase().contains("4k") -> Qualities.P2160.value
-        name.contains("1440") || name.lowercase().contains("2k") -> Qualities.P1440.value
+        // FIX: Qualities.P1440 does not exist in CloudStream3 enum.
+        // Available values: Unknown, P144, P240, P360, P480, P720, P1080, P1080Hdr, P2160, P2160Hdr.
+        // 1440p/2K content is mapped to P1080 as the closest supported quality level.
+        name.contains("1440") || name.lowercase().contains("2k") -> Qualities.P1080.value
         name.contains("1080") -> Qualities.P1080.value
         name.contains("720") -> Qualities.P720.value
         name.contains("480") -> Qualities.P480.value
