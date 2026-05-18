@@ -8,9 +8,9 @@ import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
@@ -40,12 +40,22 @@ import kotlin.math.roundToInt
 class InternetArchiveProvider : MainAPI() {
     override var mainUrl = "https://archive.org"
     override var name = "Internet Archive"
-    override val supportedTypes = setOf(TvType.Others)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.Others)
     override var lang = "en"
     override val hasMainPage = true
 
+    // Menambahkan deretan kategori bawaan langsung dari library koleksi Internet Archive
+    override val mainPage = listOf(
+        MainPageData("Feature Films", "mediatype:(movies) AND collection:(feature_films)"),
+        MainPageData("Anime & Animation", "mediatype:(movies) AND (anime OR animation)"),
+        MainPageData("Asian Movies & Drama", "mediatype:(movies) AND (asian OR korea OR japan OR drama)"),
+        MainPageData("Sci-Fi & Horror", "mediatype:(movies) AND collection:(scifi_horror)"),
+        MainPageData("Classic Cartoons", "mediatype:(movies) AND collection:(classic_cartoons)"),
+        MainPageData("Action & Adventure", "mediatype:(movies) AND subject:(action OR adventure)"),
+        MainPageData("Comedy", "mediatype:(movies) AND subject:(comedy)")
+    )
+
     private val mapper by lazy {
-        // Some metadata uses different formats. We have to handle that here.
         jacksonObjectMapper().apply {
             configure(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY, true)
             configure(DeserializationFeature.ACCEPT_EMPTY_ARRAY_AS_NULL_OBJECT, true)
@@ -57,12 +67,15 @@ class InternetArchiveProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return try {
-            val responseText = app.get("$mainUrl/advancedsearch.php?q=mediatype:(movies)&fl[]=identifier&fl[]=title&fl[]=mediatype&rows=26&page=$page&output=json").text
+            // Memanfaatkan parameter data query dinamis dari list mainPage di atas
+            val query = request.data
+            val responseText = app.get("$mainUrl/advancedsearch.php?q=${query.encodeUri()}&fl[]=identifier&fl[]=title&fl[]=mediatype&rows=26&page=$page&output=json").text
             val featured = tryParseJson<SearchResult>(responseText)
             val homePageList = featured?.response?.docs?.map { it.toSearchResponse(this) } ?: emptyList()
+            
             newHomePageResponse(
                 listOf(
-                    HomePageList("Featured", homePageList, true)
+                    HomePageList(request.name, homePageList, true)
                 )
             )
         } catch (e: Exception) {
@@ -132,11 +145,11 @@ class InternetArchiveProvider : MainAPI() {
         companion object {
             private val seasonEpisodePatterns by lazy {
                 listOf(
-                    Regex("S(\\d+)E(\\d+)", RegexOption.IGNORE_CASE), // S01E01
-                    Regex("S(\\d+)\\s*E(\\d+)", RegexOption.IGNORE_CASE), // S01 E01
-                    Regex("Season\\s*(\\d+)\\D*Episode\\s*(\\d+)", RegexOption.IGNORE_CASE), // Season 1 Episode 1
-                    Regex("Episode\\s*(\\d+)\\D*Season\\s*(\\d+)", RegexOption.IGNORE_CASE), // Episode 1 Season 1
-                    Regex("Episode\\s*(\\d+)", RegexOption.IGNORE_CASE) // Episode 1
+                    Regex("S(\\d+)E(\\d+)", RegexOption.IGNORE_CASE),
+                    Regex("S(\\d+)\\s*E(\\d+)", RegexOption.IGNORE_CASE),
+                    Regex("Season\\s*(\\d+)\\D*Episode\\s*(\\d+)", RegexOption.IGNORE_CASE),
+                    Regex("Episode\\s*(\\d+)\\D*Season\\s*(\\d+)", RegexOption.IGNORE_CASE),
+                    Regex("Episode\\s*(\\d+)", RegexOption.IGNORE_CASE)
                 )
             }
         }
@@ -147,9 +160,9 @@ class InternetArchiveProvider : MainAPI() {
                 if (matchResult != null) {
                     val groups = matchResult.groupValues
                     return when (groups.count()) {
-                        3 -> Pair(groups[1].toIntOrNull(), groups[2].toIntOrNull()) // S01E01, S01 E01
-                        2 -> Pair(null, groups[1].toIntOrNull()) // Episode 1
-                        5 -> Pair(groups[1].toIntOrNull(), groups[3].toIntOrNull()) // Season 1 Episode 1
+                        3 -> Pair(groups[1].toIntOrNull(), groups[2].toIntOrNull())
+                        2 -> Pair(null, groups[1].toIntOrNull())
+                        5 -> Pair(groups[1].toIntOrNull(), groups[3].toIntOrNull())
                         else -> Pair(null, null)
                     }
                 }
@@ -158,26 +171,17 @@ class InternetArchiveProvider : MainAPI() {
         }
 
         private fun extractYear(dateString: String?): Int? {
-            // If it is impossible to find a date in the given string,
-            // we can exit early
             if (dateString == null || dateString.length < 4) return null
-
-            if (dateString.length == 4) {
-                // If the date is already a year (or it can not be one),
-                // we can exit early
-                return dateString.toIntOrNull()
-            }
+            if (dateString.length == 4) return dateString.toIntOrNull()
 
             val yearPattern = "\\b(\\d{4})\\b"
             val yearRangePattern = "\\b(\\d{4})-(\\d{4})\\b"
 
-            // Check for year ranges like YYYY-YYYY and get the start year if a match is found
             val yearRangeMatcher = Pattern.compile(yearRangePattern).matcher(dateString)
             if (yearRangeMatcher.find()) {
                 return yearRangeMatcher.group(1)?.toInt()
             }
 
-            // Check for single years within the date string in various formats
             val yearMatcher = Pattern.compile(yearPattern).matcher(dateString)
             if (yearMatcher.find()) {
                 return yearMatcher.group(1)?.toInt()
@@ -216,26 +220,18 @@ class InternetArchiveProvider : MainAPI() {
 
         private fun getUniqueName(fileName: String): String {
             return getCleanedName(fileName)
-                // Some files have versions with very similar names.
-                // In this case, we do not want treat the files as
-                // separate when checking for uniqueness, otherwise it
-                // will think it is a playlist when that is not the case.
                 .substringBeforeLast(".")
                 .replace("512kb", "")
                 .trim()
         }
 
         private fun cleanHtml(html: String): String {
-            // We need to make sure descriptions use the correct text
-            // color/style of the rest of the app for consistency.
             val document: Document = Jsoup.parse(html)
             val fontTags: Elements = document.select("font")
             for (fontTag: Element in fontTags) {
                 fontTag.unwrap()
             }
 
-            // Strip the last <div> tag to prevent to much padding
-            // towards the end.
             val divTags: Elements = document.select("div")
             if (divTags.isNotEmpty()) {
                 divTags.last()?.unwrap()
@@ -260,7 +256,6 @@ class InternetArchiveProvider : MainAPI() {
             } else TvType.Movie
 
             return if (videoFiles.distinctBy { getUniqueName(it.name) }.count() <= 1 || type == TvType.Audio) {
-                // TODO if audio-playlist, use tracks
                 provider.newMovieLoadResponse(
                     metadata.title ?: metadata.identifier,
                     "${provider.mainUrl}/details/${metadata.identifier}",
@@ -279,11 +274,6 @@ class InternetArchiveProvider : MainAPI() {
                     }
                 }
             } else {
-                /**
-                 * This may not be a TV series but we use it for video playlists as
-                 * it is better for resuming (or downloading) what specific track
-                 * you are on.
-                 */
                 val urlMap = mutableMapOf<String, MutableSet<URLData>>()
 
                 videoFiles.forEach { file ->
@@ -377,7 +367,6 @@ class InternetArchiveProvider : MainAPI() {
 
         private fun calculateLengthInSeconds(): Float {
             return length?.toFloatOrNull() ?: run {
-                // Check if length is in a different format and convert to seconds
                 if (length?.contains(":") == true) {
                     lengthToSeconds(length)
                 } else 0f
@@ -422,7 +411,6 @@ class InternetArchiveProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val load = tryParseJson<LoadData>(data)
-        // TODO if audio-playlist, use tracks
         if (load?.type == "video-playlist") {
             val distinctURLData = load.urlData.filterNot {
                 it.format.endsWith("IA")
