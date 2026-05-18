@@ -1,10 +1,8 @@
 package com.Dramabox
 
 import com.lagradost.api.Log
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.utils.Qualities
 import kotlinx.coroutines.delay
-import org.jsoup.nodes.Element
 import kotlin.random.Random
 
 // ============================================
@@ -49,23 +47,27 @@ fun logError(tag: String, message: String, error: Throwable? = null) {
     error?.let { Log.e(tag, "Cause: ${it.message}") }
 }
 
-fun base64Decode(str: String): String {
-    return try {
-        String(java.util.Base64.getDecoder().decode(str))
-    } catch (e: Exception) {
-        str
+// FIX #4: Removed unused imports (MainAPI, Element were imported but never used).
+
+// FIX #2: Renamed from getQualityFromName to dramaboxGetQuality to avoid shadowing
+// CloudStream3's built-in getQualityFromName from com.lagradost.cloudstream3.utils.
+// Having the same function name in the same package causes ambiguity and silently
+// overrides CloudStream3's version whenever the built-in is called from this package.
+// FIX #3: Default return changed from hardcoded 480 to Qualities.Unknown.value.
+// Unknown quality should not be assumed to be 480p — the player should auto-detect it.
+fun dramaboxGetQuality(name: String?): Int {
+    if (name == null) return Qualities.Unknown.value
+    return when {
+        name.contains("2160") || name.lowercase().contains("4k") -> Qualities.P2160.value
+        name.contains("1440") || name.lowercase().contains("2k") -> Qualities.P1440.value
+        name.contains("1080") -> Qualities.P1080.value
+        name.contains("720") -> Qualities.P720.value
+        name.contains("480") -> Qualities.P480.value
+        name.contains("360") -> Qualities.P360.value
+        else -> Qualities.Unknown.value
     }
 }
 
-fun getQualityFromName(name: String?): Int {
-    if (name == null) return 480
-    return when {
-        name.contains("2160") || name.contains("4k") -> 2160
-        name.contains("1440") || name.contains("2k") -> 1440
-        name.contains("1080") -> 1080
-        name.contains("720") -> 720
-        name.contains("480") -> 480
-        name.contains("360") -> 360
-        else -> 480
-    }
-}
+// FIX #2: Removed duplicate base64Decode — CloudStream3 already provides
+// com.lagradost.cloudstream3.utils.base64Decode with identical behavior.
+// Having a local copy with the same name shadows the imported one silently.
