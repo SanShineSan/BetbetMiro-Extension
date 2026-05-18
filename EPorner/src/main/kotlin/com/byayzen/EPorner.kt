@@ -5,9 +5,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
-// FIX: getQualityFromName and getQualityFromName are inside the AppUtils object.
-// Wildcard import com.lagradost.cloudstream3.utils.* does NOT resolve object members.
-// Must be imported explicitly.
 import org.jsoup.nodes.Element
 
 class EPorner : MainAPI() {
@@ -15,9 +12,6 @@ class EPorner : MainAPI() {
     override var name = "EPorner"
     override val hasMainPage = true
     override var lang = "id"
-    // FIX: hasQuickSearch = false but quickSearch was still implemented incorrectly.
-    // Set to false and remove the broken quickSearch override entirely — the framework
-    // will not call quickSearch when this is false, and a broken override causes compile errors.
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.NSFW)
 
@@ -34,95 +28,44 @@ class EPorner : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data.removeSuffix("/")}/$page/"
-        val home = app.get(url).document
-            .select("div#vidresults div.mb")
-            .mapNotNull { it.toSearchResult() }
-        return newHomePageResponse(HomePageList(request.name, home, true), true)
-    }
-
-    // FIX: Replaced search(query: String, page: Int): SearchResponseList with the standard
-    // CloudStream3 signature search(query: String): List<SearchResponse>?
-    // The paginated signature + SearchResponseList type + newSearchResponseList function
-    // do NOT exist in most CloudStream3 versions, causing "overrides nothing" and
-    // "Unresolved reference" compile errors.
-    override suspend fun search(query: String): List<SearchResponse>? {
-        val formattedQuery = query.replace(" ", "-")
-        val url = "$mainUrl/search/$formattedQuery/"
-        return app.get(url).document
-            .select("div#vidresults div.mb")
-            .mapNotNull { it.toSearchResult() }
+        val home = app.get(url).document.select("div#vidresults div.mb").mapNotNull { it.toSearchResult() }
+        return newHomePageResponse(request.name, home, hasNext = true)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val titleElement = this.selectFirst("p.mbtit a") ?: return null
-        val img = this.selectFirst("div.mbimg img")
-        val poster = fixUrlNull(
-            img?.attr("data-src")?.takeIf { it.isNotEmpty() && !it.startsWith("data:") }
-                ?: img?.attr("src")
-        )
-        return newMovieSearchResponse(
-            titleElement.text(),
-            fixUrl(titleElement.attr("href")),
-            TvType.NSFW
-        ) {
+        val title = this.selectFirst("p.title a")?.text() ?: return null
+        val href = mainUrl + (this.selectFirst("p.title a")?.attr("href") ?: return null)
+        val poster = this.selectFirst("div.img img")?.attr("src") ?: ""
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = poster
         }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$mainUrl/search/${query.replace(" ", "-")}/"
+        return app.get(url).document.select("div#vidresults div.mb").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = fixUrlNull(
-            document.selectFirst("meta[property=og:image]")?.attr("content")
-                ?: document.selectFirst("video#EPvideo")?.attr("poster")
-        )
-        val tags = document.select("div#video-info-tags ul li.vit-category a").map { it.text() }
-        val year = document.selectFirst("span.C a")?.text()?.trim()?.toIntOrNull()
-        val duration = document.selectFirst("span.vid-length")?.text()
-            ?.replace("min", "")?.trim()?.toIntOrNull()
-        val description = document.selectFirst("meta[property=og:description]")
-            ?.attr("content")?.trim()
-        val recommendations = document.select("div#relateddiv div.mb")
-            .mapNotNull { it.toRecommendationResult() }
-        val actors = document.select("span.valor a").map { Actor(it.text()) }
-
+        val title = document.selectFirst("h1")?.text() ?: return null
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: ""
+        
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
-            this.plot = description
-            this.year = year
-            this.tags = tags
-            this.duration = duration
-            this.recommendations = recommendations
-            addActors(actors)
-        }
-    }
-
-    private fun Element.toRecommendationResult(): SearchResponse? {
-        val titleElement = this.selectFirst("p.mbtit a") ?: return null
-        val posterUrl = fixUrlNull(
-            this.selectFirst("div.mbimg img")?.attr("data-src")
-                ?: this.selectFirst("div.mbimg img")?.attr("src")
-        )
-        return newMovieSearchResponse(
-            titleElement.text(),
-            fixUrl(titleElement.attr("href")),
-            TvType.NSFW
-        ) {
-            this.posterUrl = posterUrl
         }
     }
 
     override suspend fun loadLinks(
         data: String,
-        isCasting: Boolean,
+        isCaster: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val url = fixUrl(data)
         var videoFound = false
-
+        val url = data
         val resolver = WebViewResolver(
-            interceptUrl = """https?://www\.eporner\.com/xhr/video/.*""".toRegex(),
+            """www\.eporner\.com/xhr/video/.*""".toRegex(),
             userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             useOkhttp = true
         )
@@ -144,7 +87,7 @@ class EPorner : MainAPI() {
                                     type = ExtractorLinkType.VIDEO
                                 ) {
                                     this.referer = "https://www.eporner.com/"
-                                    this.quality = getQualityFromName(match.groupValues[1])
+                                    this.quality = AppUtils.getQualityFromName(match.groupValues[1])
                                 }
                             )
                             videoFound = true
