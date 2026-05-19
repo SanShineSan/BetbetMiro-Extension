@@ -39,16 +39,39 @@ jobs:
           echo "=== Changed Files ==="
           git diff --name-only HEAD^ HEAD
 
-          plugins=$(git diff --name-only HEAD^ HEAD \
-            | grep '^src/' \
-            | awk -F/ '{print $2}' \
-            | sort -u \
-            | tr '\n' ' ')
+          # Memeriksa apakah ada perubahan pada konfigurasi global dasar
+          global_change=false
+          if git diff --name-only HEAD^ HEAD | grep -E "^(build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|\.github/)"; then
+            global_change=true
+          fi
 
-          echo "Detected plugins:"
-          echo "$plugins"
+          # Mendata seluruh provider aktif yang tersedia di dalam proyek
+          all_plugins=""
+          for dir in *; do
+            if [ -d "$dir" ] && [ -f "$dir/build.gradle.kts" ] && [ "$dir" != "buildSrc" ]; then
+              all_plugins="$all_plugins $dir"
+            fi
+          done
+          all_plugins=$(echo $all_plugins | xargs)
 
+          if [ "$global_change" = "true" ]; then
+            echo "Global configuration changed. Rebuilding all plugins."
+            plugins="$all_plugins"
+          else
+            # Mengambil nama folder utama dari berkas-berkas yang dimodifikasi
+            changed_dirs=$(git diff --name-only HEAD^ HEAD | awk -F/ '{print $1}' | sort -u)
+            plugins=""
+            for dir in $changed_dirs; do
+              if [ -d "$dir" ] && [ -f "$dir/build.gradle.kts" ] && [ "$dir" != "buildSrc" ]; then
+                plugins="$plugins $dir"
+              fi
+            done
+            plugins=$(echo $plugins | xargs)
+          fi
+
+          echo "Detected plugins to build: $plugins"
           echo "plugins=$plugins" >> $GITHUB_OUTPUT
+          echo "all_plugins=$all_plugins" >> $GITHUB_OUTPUT
 
       - name: Setup JDK 21
         uses: actions/setup-java@v4
@@ -75,7 +98,6 @@ jobs:
           SUPERSTREAM_SECOND_API: ${{ secrets.SUPERSTREAM_SECOND_API }}
           SUPERSTREAM_THIRD_API: ${{ secrets.SUPERSTREAM_THIRD_API }}
           SUPERSTREAM_FOURTH_API: ${{ secrets.SUPERSTREAM_FOURTH_API }}
-
         run: |
           cd $GITHUB_WORKSPACE/src
 
@@ -106,19 +128,32 @@ jobs:
       - name: Build Changed Plugins
         run: |
           cd $GITHUB_WORKSPACE/src
-
           chmod +x gradlew
 
           plugins="${{ steps.changed.outputs.plugins }}"
+          all_plugins="${{ steps.changed.outputs.all_plugins }}"
 
           if [ -z "$plugins" ]; then
             echo "No plugin changes detected."
             exit 0
           fi
 
-          echo "Building plugins:"
-          echo "$plugins"
+          # Langkah 1: Memulihkan berkas binary .cs3 lama milik provider yang TIDAK berubah
+          for plugin in $all_plugins; do
+            if [[ ! " $plugins " =~ " $plugin " ]]; then
+              echo "Restoring cached binary for unchanged plugin: $plugin"
+              mkdir -p "$plugin/build"
+              if [ -f "$GITHUB_WORKSPACE/builds/$plugin.cs3" ]; then
+                cp "$GITHUB_WORKSPACE/builds/$plugin.cs3" "$plugin/build/$plugin.cs3"
+              elif [ -f "$GITHUB_WORKSPACE/builds/${plugin}-debug.cs3" ]; then
+                cp "$GITHUB_WORKSPACE/builds/${plugin}-debug.cs3" "$plugin/build/${plugin}-debug.cs3"
+              else
+                cp $GITHUB_WORKSPACE/builds/*$plugin*.cs3 "$plugin/build/" 2>/dev/null || true
+              fi
+            fi
+          done
 
+          # Langkah 2: Hanya membangun kompilasi ulang pada provider yang berubah saja
           for plugin in $plugins; do
             echo "======================="
             echo "Building $plugin"
@@ -126,12 +161,13 @@ jobs:
 
             ./gradlew ":$plugin:make"
 
-            find . -path "*/build/*.cs3" -name "*.cs3" -exec cp {} $GITHUB_WORKSPACE/builds \;
+            mkdir -p $GITHUB_WORKSPACE/builds
+            find "$plugin/build" -name "*.cs3" -exec cp {} $GITHUB_WORKSPACE/builds \;
           done
 
+          # Langkah 3: Membuat ulang metadata berkas perekam plugins.json secara penuh
           ./gradlew makePluginsJson
-
-          cp build/plugins.json $GITHUB_WORKSPACE/builds
+          cp build/plugins.json $GITHUB_WORKSPACE/builds/
 
       - name: Push builds
         run: |
@@ -141,7 +177,5 @@ jobs:
           git config --local user.name "GitHub Actions"
 
           git add .
-
-          git commit -m "Build updated plugins $GITHUB_SHA" || exit 0
-
+          git commit -m "Build updated plugins: ${{ steps.changed.outputs.plugins }} ($GITHUB_SHA)" || exit 0
           git push
