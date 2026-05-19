@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.MainPageData
+import com.lagradost.cloudstream3.Score // Memastikan import objek Score versi SDK terbaru
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -221,7 +222,7 @@ class NetMirrorProvider : MainAPI() {
 
             this.contentRating = modalData?.ua
             this.year = tmdb?.yearOrNull() ?: payload.year
-            this.score = rawScore
+            this.score = rawScore?.let { Score(it) } // Memperbaiki penetapan tipe data Score
         }
     }
 
@@ -283,7 +284,8 @@ class NetMirrorProvider : MainAPI() {
                     newExtractorLink(
                         name = source.label ?: "Stream",
                         source = name,
-                        url = path.toAbsoluteStreamUrl()
+                        url = path.toAbsoluteStreamUrl(),
+                        isM3u8 = true
                     ) {
 
                         this.referer = "$streamUrl/"
@@ -305,4 +307,454 @@ class NetMirrorProvider : MainAPI() {
 
         return true
     }
+
+    // ==========================================
+    // BERIKUT ADALAH FUNGSI HELPER YANG WAJIB ADA
+    // ==========================================
+
+    private suspend fun buildDetailedLoad(
+        url: String,
+        payload: LoadPayload,
+        postData: PostData
+    ): LoadResponse {
+        val resolvedId = requireNotNull(payload.id) { "NetMirror id missing" }
+        val title = postData.title ?: payload.title
+        val plot = postData.desc
+        val rating = postData.match.toRatingOrNull()
+        val tags = postData.genre?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+        val cast = postData.cast?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+            ?.map { ActorData(Actor(it)) }
+        val poster = posterUrl(resolvedId)
+        val background = backgroundPosterUrl(resolvedId)
+        val year = postData.year?.toIntOrNull()
+        val contentRating = postData.ua
+        val duration = postData.runtime.toMinutesOrNull()
+        val postEpisodes = postData.episodes.orEmpty().filterNotNull()
+        val isSeries = postData.type?.equals("m", true) == false || postEpisodes.isNotEmpty()
+
+        if (!isSeries) {
+            return newMovieLoadResponse(title, url, TvType.Movie, LoadPayload(payload.id, title).toJson()) {
+                this.posterUrl = poster
+                this.backgroundPosterUrl = background
+                this.plot = plot
+                this.year = year
+                this.tags = tags
+                this.actors = cast
+                this.contentRating = contentRating
+                this.duration = duration
+                this.score = rating?.let { Score(it) }
+            }
+        }
+
+        val episodes = mutableListOf<Episode>()
+        postEpisodes.mapTo(episodes) { episode ->
+            newEpisode(LoadPayload(episode.id, title).toJson()) {
+                this.name = episode.t ?: "Episode"
+                this.posterUrl = episodePosterUrl(episode.id)
+                this.episode = episode.ep?.removePrefix("E")?.toIntOrNull()
+                this.season = episode.s?.removePrefix("S")?.toIntOrNull()
+                this.runTime = episode.time?.removeSuffix("m")?.trim()?.toIntOrNull()
+            }
+        }
+
+        postData.nextPageSeason?.let { seasonId ->
+            if (postData.nextPageShow == 1) {
+                episodes += fetchEpisodesPage(title, resolvedId, seasonId, 2)
+            }
+        }
+
+        postData.season.orEmpty()
+            .dropLast(1)
+            .forEach { season ->
+                val seasonId = season.id ?: return@forEach
+                episodes += fetchEpisodesPage(title, resolvedId, seasonId, 1)
+            }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            this.posterUrl = poster
+            this.backgroundPosterUrl = background
+            this.plot = plot
+            this.year = year
+            this.tags = tags
+            this.actors = cast
+            this.contentRating = contentRating
+            this.duration = duration
+            this.score = rating?.let { Score(it) }
+        }
+    }
+
+    private suspend fun fetchTopSearches(): List<SearchResponse> {
+        val payload = app.get(
+            "$mainUrl/search.php?t=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/home"
+        ).parsedSafe<SearchData>() ?: return emptyList()
+
+        return payload.searchResult
+            .take(12)
+            .mapNotNull { item ->
+                val title = item.t.takeIf { it.isNotBlank() } ?: resolveTitleFromPlaylist(item.id)
+                title?.takeIf { it.isNotBlank() }?.let {
+                    buildSearchResponse(
+                        title = it,
+                        payload = LoadPayload(item.id, it),
+                        type = TvType.Movie,
+                        poster = posterUrl(item.id)
+                    )
+                }
+            }
+    }
+
+    private suspend fun fetchPostData(id: String): PostData? {
+        return app.get(
+            "$mainUrl/post.php?id=$id&t=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/home"
+        ).parsedSafe<PostData>()
+    }
+
+    private suspend fun fetchMiniModal(id: String): MiniModalInfo? {
+        return app.get(
+            "$mainUrl/mini-modal-info.php?pid=$id&t=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/home"
+        ).parsedSafe<MiniModalInfo>()
+    }
+
+    private suspend fun fetchTmdbSection(path: String, type: TvType): List<SearchResponse> {
+        val response = app.get("$tmdbApi/$path?api_key=$tmdbApiKey").parsedSafe<TmdbListResponse>() ?: return emptyList()
+        return response.results.orEmpty()
+            .take(12)
+            .mapNotNull { item ->
+                val title = item.title.orEmpty().ifBlank { item.name.orEmpty() }
+                if (title.isBlank()) return@mapNotNull null
+                buildSearchResponse(
+                    title = title,
+                    payload = LoadPayload(
+                        id = null,
+                        title = title,
+                        tmdbId = item.id,
+                        tmdbType = if (type == TvType.TvSeries) "tv" else "movie",
+                        year = item.yearOrNull(),
+                        poster = item.posterPath.toTmdbPosterUrl()
+                    ),
+                    type = type,
+                    poster = item.posterPath.toTmdbPosterUrl(),
+                    year = item.yearOrNull(),
+                    rating = item.voteAverage?.let { (it * 100).toInt() }
+                )
+            }
+    }
+
+    private suspend fun fetchEpisodesPage(
+        title: String,
+        seriesId: String,
+        seasonId: String,
+        startPage: Int
+    ): List<Episode> {
+        val episodes = mutableListOf<Episode>()
+        var page = startPage
+        while (true) {
+            val response = app.get(
+                "$mainUrl/episodes.php?s=$seasonId&series=$seriesId&t=$unixTime&page=$page",
+                headers = ajaxHeaders,
+                referer = "$mainUrl/home"
+            ).parsedSafe<EpisodesPage>()
+                ?: break
+
+            response.episodes.orEmpty().forEach { episode ->
+                val episodeId = episode.id ?: return@forEach
+                episodes += newEpisode(LoadPayload(episodeId, title).toJson()) {
+                    this.name = episode.t ?: "Episode"
+                    this.posterUrl = episodePosterUrl(episodeId)
+                    this.episode = episode.ep?.removePrefix("E")?.toIntOrNull()
+                    this.season = episode.s?.removePrefix("S")?.toIntOrNull()
+                    this.runTime = episode.time?.removeSuffix("m")?.trim()?.toIntOrNull()
+                }
+            }
+
+            if (response.nextPageShow != 1) break
+            page += 1
+        }
+        return episodes
+    }
+
+    private suspend fun fetchPlaylist(id: String, title: String): List<PlaylistItem>? {
+        val postToken = app.post(
+            "$mainUrl/play.php",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/",
+            data = mapOf("id" to id)
+        ).parsedSafe<PlayToken>()?.h
+        val stageTwoToken = postToken?.let { fetchStageTwoToken(id, it) }
+        if (stageTwoToken != null) {
+            val validated = app.get(
+                "$streamUrl/playlist.php?id=$id&t=${title.urlEncoded()}&h=${stageTwoToken.urlEncoded()}&tm=$unixTime",
+                headers = ajaxHeaders,
+                referer = "$mainUrl/"
+            ).parsedSafe<Array<PlaylistItem>>()?.toList()
+            if (!validated.isNullOrEmpty()) return validated
+        }
+
+        val direct = app.get(
+            "$streamUrl/playlist.php?id=$id&t=${title.urlEncoded()}&h=x&tm=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/"
+        ).parsedSafe<Array<PlaylistItem>>()?.toList()
+
+        return direct?.takeIf { it.isNotEmpty() }
+    }
+
+    private suspend fun fetchStageTwoToken(id: String, token: String): String? {
+        val doc = app.get(
+            "$streamUrl/play.php?id=$id&$token",
+            headers = iframeHeaders,
+            referer = "$mainUrl/"
+        ).document
+        return doc.selectFirst("body[data-h]")?.attr("data-h")?.takeIf { it.isNotBlank() }
+    }
+
+    private suspend fun resolveTitleFromPlaylist(id: String): String? {
+        return app.get(
+            "$streamUrl/playlist.php?id=$id&t=NetMirror&h=x&tm=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/"
+        ).parsedSafe<Array<PlaylistItem>>()?.firstOrNull()?.title?.takeIf { it.isNotBlank() }
+    }
+
+    private suspend fun resolveNetMirrorId(title: String): String? {
+        return app.get(
+            "$mainUrl/search.php?s=${title.urlEncoded()}&t=$unixTime",
+            headers = ajaxHeaders,
+            referer = "$mainUrl/home"
+        ).parsedSafe<SearchData>()?.searchResult?.firstOrNull()?.id
+    }
+
+    private suspend fun fetchTmdbMetadata(title: String, hintType: String?, year: Int?): TmdbItem? {
+        val paths = buildList {
+            when (hintType) {
+                "tv" -> add("search/tv")
+                "movie" -> add("search/movie")
+                else -> {
+                    add("search/movie")
+                    add("search/tv")
+                }
+            }
+        }
+
+        for (path in paths) {
+            val yearPart = when (path) {
+                "search/movie" -> year?.let { "&year=$it" }.orEmpty()
+                "search/tv" -> year?.let { "&first_air_date_year=$it" }.orEmpty()
+                else -> ""
+            }
+            val result = app.get(
+                "$tmdbApi/$path?api_key=$tmdbApiKey&query=${title.urlEncoded()}$yearPart"
+            ).parsedSafe<TmdbListResponse>()?.results?.firstOrNull()
+            if (result != null) return result
+        }
+        return null
+    }
+
+    private fun posterUrl(id: String): String = "https://imgcdn.kim/poster/v/$id.jpg"
+    private fun backgroundPosterUrl(id: String): String = "https://imgcdn.kim/poster/h/$id.jpg"
+    private fun episodePosterUrl(id: String): String = "https://imgcdn.kim/epimg/150/$id.jpg"
+
+    private fun String?.toRatingOrNull(): Int? {
+        val percent = this?.substringBefore("%")?.trim()?.toDoubleOrNull() ?: return null
+        return (percent * 10).toInt()
+    }
+
+    private fun String?.toMinutesOrNull(): Int? {
+        val runtime = this?.trim().orEmpty()
+        if (runtime.isBlank()) return null
+        var total = 0
+        runtime.split(" ").forEach { part ->
+            when {
+                part.endsWith("h") -> total += (part.removeSuffix("h").toIntOrNull() ?: 0) * 60
+                part.endsWith("m") -> total += part.removeSuffix("m").toIntOrNull() ?: 0
+            }
+        }
+        return total.takeIf { it > 0 }
+    }
+
+    private fun String?.toNetMirrorQuality(): Int {
+        return when (this?.trim()?.lowercase()) {
+            "full hd" -> Qualities.P1080.value
+            "mid hd" -> Qualities.P720.value
+            "low hd" -> Qualities.P480.value
+            else -> Qualities.Unknown.value
+        }
+    }
+
+    private fun String.urlEncoded(): String = URLEncoder.encode(this, "UTF-8")
+    private fun String.cleanJsonUrl(): String = replace("\\/", "/")
+    private fun String.toAbsoluteStreamUrl(): String =
+        if (startsWith("http://") || startsWith("https://")) this else "$streamUrl$this"
+
+    private fun String?.toTmdbPosterUrl(): String? =
+        this?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w500$it" }
+
+    private fun String?.toTmdbBackdropUrl(): String? =
+        this?.takeIf { it.isNotBlank() }?.let { "https://image.tmdb.org/t/p/w780$it" }
+
+    private fun buildSearchResponse(
+        title: String,
+        payload: LoadPayload,
+        type: TvType,
+        poster: String? = null,
+        year: Int? = null,
+        rating: Int? = null
+    ): SearchResponse {
+        return if (type == TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, payload.toJson(), type) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = rating?.let { Score(it) }
+            }
+        } else {
+            newMovieSearchResponse(title, payload.toJson(), type) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = rating?.let { Score(it) }
+            }
+        }
+    }
+
+    companion object {
+        private const val browserUserAgent =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+        private const val exoPlayerUserAgent = "Mozilla/5.0 (Android) ExoPlayer"
+        private val iframeHeaders = mapOf(
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language" to "en-GB,en;q=0.9",
+            "Referer" to "https://net22.cc/",
+            "sec-ch-ua" to "\"Chromium\";v=\"147\", \"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\"",
+            "sec-ch-ua-mobile" to "?0",
+            "sec-ch-ua-platform" to "\"Windows\"",
+            "Sec-Fetch-Dest" to "iframe",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "cross-site",
+            "Upgrade-Insecure-Requests" to "1",
+            "User-Agent" to browserUserAgent
+        )
+    }
 }
+
+// ==========================================
+// DATA CLASS MODEL STRUKTUR NETMIRROR DATA
+// ==========================================
+
+data class LoadPayload(
+    val id: String?,
+    val title: String,
+    val tmdbId: Int? = null,
+    val tmdbType: String? = null,
+    val year: Int? = null,
+    val poster: String? = null
+)
+
+data class SearchData(
+    @JsonProperty("searchResult")
+    val searchResult: List<SearchItem> = emptyList()
+)
+
+data class SearchItem(
+    val id: String,
+    val t: String
+)
+
+data class MiniModalInfo(
+    val runtime: String? = null,
+    val hdsd: String? = null,
+    val ua: String? = null,
+    val match: String? = null,
+    val genre: String? = null
+)
+
+data class PostData(
+    val title: String? = null,
+    val year: String? = null,
+    val ua: String? = null,
+    val match: String? = null,
+    val runtime: String? = null,
+    val hdsd: String? = null,
+    val type: String? = null,
+    val director: String? = null,
+    val writer: String? = null,
+    val cast: String? = null,
+    val genre: String? = null,
+    val desc: String? = null,
+    val episodes: List<PostEpisode?>? = null,
+    val season: List<PostSeason>? = null,
+    val nextPageShow: Int? = null,
+    val nextPageSeason: String? = null
+)
+
+data class PostEpisode(
+    val id: String,
+    val t: String? = null,
+    val ep: String? = null,
+    val s: String? = null,
+    val time: String? = null
+)
+
+data class PostSeason(
+    val id: String? = null
+)
+
+data class EpisodesPage(
+    val episodes: List<PostEpisode>? = null,
+    val nextPageShow: Int? = null
+)
+
+data class PlayToken(
+    val h: String? = null
+)
+
+data class PlaylistItem(
+    val title: String? = null,
+    val image2: String? = null,
+    val sources: List<PlaylistSource> = emptyList(),
+    val tracks: List<PlaylistTrack>? = null
+)
+
+data class PlaylistSource(
+    val file: String? = null,
+    val label: String? = null,
+    val type: String? = null
+)
+
+data class PlaylistTrack(
+    val kind: String? = null,
+    val file: String? = null,
+    val label: String? = null
+)
+
+data class TmdbListResponse(
+    val results: List<TmdbItem>? = null
+)
+
+data class TmdbItem(
+    val id: Int? = null,
+    val title: String? = null,
+    val name: String? = null,
+    val overview: String? = null,
+    @JsonProperty("poster_path")
+    val posterPath: String? = null,
+    @JsonProperty("backdrop_path")
+    val backdropPath: String? = null,
+    @JsonProperty("vote_average")
+    val voteAverage: Double? = null,
+    @JsonProperty("release_date")
+    val releaseDate: String? = null,
+    @JsonProperty("first_air_date")
+    val firstAirDate: String? = null,
+    val genres: List<TmdbGenre>? = null
+) {
+    fun yearOrNull(): Int? = (releaseDate ?: firstAirDate)?.take(4)?.toIntOrNull()
+}
+
+data class TmdbGenre(
+    val name: String? = null
+)
