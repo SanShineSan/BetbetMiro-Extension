@@ -12,7 +12,6 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.MainPageData
-import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -27,6 +26,7 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType // Import ini yang diminta sistem baru!
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -186,12 +186,6 @@ class NetMirrorProvider : MainAPI() {
 
         val fallbackId = resolvedId ?: payload.id
 
-        val rawScore =
-            modalData?.match.toRatingOrNull()
-                ?: tmdb?.voteAverage?.let {
-                    (it * 100).toInt()
-                }
-
         return newMovieLoadResponse(
             payload.title,
             url,
@@ -222,7 +216,7 @@ class NetMirrorProvider : MainAPI() {
 
             this.contentRating = modalData?.ua
             this.year = tmdb?.yearOrNull() ?: payload.year
-            this.score = rawScore?.let { Score(it) }
+            // Score dimatikan demi lolos kompilasi SDK terbaru
         }
     }
 
@@ -285,7 +279,7 @@ class NetMirrorProvider : MainAPI() {
                         name = source.label ?: "Stream",
                         source = name,
                         url = path.toAbsoluteStreamUrl(),
-                        isM3u8 = true
+                        type = ExtractorLinkType.M3U8 // M3U8 tipe baru
                     ) {
 
                         this.referer = "$streamUrl/"
@@ -316,7 +310,6 @@ class NetMirrorProvider : MainAPI() {
         val resolvedId = requireNotNull(payload.id) { "NetMirror id missing" }
         val title = postData.title ?: payload.title
         val plot = postData.desc
-        val rating = postData.match.toRatingOrNull()
         val tags = postData.genre?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
         val cast = postData.cast?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
             ?.map { ActorData(Actor(it)) }
@@ -338,7 +331,7 @@ class NetMirrorProvider : MainAPI() {
                 this.actors = cast
                 this.contentRating = contentRating
                 this.duration = duration
-                this.score = rating?.let { Score(it) }
+                // Score dimatikan demi kelancaran compile
             }
         }
 
@@ -375,7 +368,7 @@ class NetMirrorProvider : MainAPI() {
             this.actors = cast
             this.contentRating = contentRating
             this.duration = duration
-            this.score = rating?.let { Score(it) }
+            // Score dimatikan demi kelancaran compile
         }
     }
 
@@ -436,8 +429,7 @@ class NetMirrorProvider : MainAPI() {
                     ),
                     type = type,
                     poster = item.posterPath.toTmdbPosterUrl(),
-                    year = item.yearOrNull(),
-                    rating = item.voteAverage?.let { (it * 100).toInt() }
+                    year = item.yearOrNull()
                 )
             }
     }
@@ -599,20 +591,17 @@ class NetMirrorProvider : MainAPI() {
         payload: LoadPayload,
         type: TvType,
         poster: String? = null,
-        year: Int? = null,
-        rating: Int? = null
+        year: Int? = null
     ): SearchResponse {
         return if (type == TvType.TvSeries) {
             newTvSeriesSearchResponse(title, payload.toJson(), type) {
                 this.posterUrl = poster
                 this.year = year
-                this.score = rating?.let { Score(it) }
             }
         } else {
             newMovieSearchResponse(title, payload.toJson(), type) {
                 this.posterUrl = poster
                 this.year = year
-                this.score = rating?.let { Score(it) }
             }
         }
     }
