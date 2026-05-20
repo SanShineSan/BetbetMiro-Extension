@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
 import java.util.Locale
+import kotlinx.coroutines.runBlocking
 
 class AutoEmbedProvider : MainAPI() {
     override var mainUrl = "https://www.themoviedb.org"
@@ -244,23 +245,25 @@ class AutoEmbedProvider : MainAPI() {
         for (server in buildWebsiteServers(linkData)) {
             runCatching {
                 loadExtractor(server.url, server.referer ?: server.url, subtitleCallback) { link ->
-                    callback.invoke(
-                        newExtractorLink(
-                            source = server.name,
-                            name = if (link.name.equals(server.name, ignoreCase = true)) {
-                                server.name
-                            } else {
-                                "${server.name} - ${link.name}"
-                            },
-                            url = link.url,
-                            type = link.type
-                        ) {
-                            quality = link.quality
-                            headers = link.headers
-                            extractorData = link.extractorData
-                            referer = link.referer
-                        }
-                    )
+                    runBlocking {
+                        callback.invoke(
+                            newExtractorLink(
+                                source = server.name,
+                                name = if (link.name.equals(server.name, ignoreCase = true)) {
+                                    server.name
+                                } else {
+                                    "${server.name} - ${link.name}"
+                                },
+                                url = link.url,
+                                type = link.type
+                            ) {
+                                quality = link.quality
+                                headers = link.headers
+                                extractorData = link.extractorData
+                                referer = link.referer
+                            }
+                        )
+                    }
                 }
             }
         }
