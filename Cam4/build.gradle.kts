@@ -1,18 +1,18 @@
 version = 1
 
 cloudstream {
-    authors     = listOf("BetbetMiro")
-    language    = "id"
-    description = "Watch & Chat with Sexy Webcam Girls Fucking, Fingering and Squirting Live on Cam - Chat with 750+ Hot Women Who Are Broadcasting & Wanking Now - Waiting for you."
+    authors = listOf("BetbetMiro")
+    language = "id"
+    description = "Provider NSFW untuk konten live cam dewasa dari CAM4."
 
     /**
-     * Status int as the following:
+     * Status int:
      * 0: Down
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-    **/
-    status  = 1 // will be 3 if unspecified
+     */
+    status = 1
     tvTypes = listOf("NSFW")
     iconUrl = "https://cam4-static-test.xcdnpro.com/web/v2/app/phoenix/assets/static/media/favicon-512.d64f9b4e.png"
 }
