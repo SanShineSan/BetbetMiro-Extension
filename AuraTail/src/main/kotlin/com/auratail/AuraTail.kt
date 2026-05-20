@@ -9,10 +9,12 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
+import java.util.Locale
 
 class AuraTail : MainAPI() {
     override var mainUrl = "https://auratail.vip"
-    override var name = "AuraTail😕"
+    override var name = "AuraTail"
     override val hasMainPage = true
     override var lang = "id"
 
@@ -42,28 +44,107 @@ class AuraTail : MainAPI() {
         }
     }
 
+    private fun translateGenre(raw: String): String {
+        return when (raw.trim().lowercase(Locale.ROOT)) {
+            "action" -> "Aksi"
+            "adventure" -> "Petualangan"
+            "comedy" -> "Komedi"
+            "drama" -> "Drama"
+            "fantasy" -> "Fantasi"
+            "gag humor" -> "Humor Gag"
+            "gore" -> "Gore"
+            "historical" -> "Sejarah"
+            "horror" -> "Horor"
+            "isekai" -> "Isekai"
+            "martial arts" -> "Martial Arts"
+            "military" -> "Militer"
+            "mystery" -> "Misteri"
+            "mythology" -> "Mitologi"
+            "parody" -> "Parodi"
+            "psychological" -> "Psikologis"
+            "reincarnation" -> "Reinkarnasi"
+            "romance" -> "Romantis"
+            "school" -> "Sekolah"
+            "sci-fi" -> "Sci-Fi"
+            "seinen" -> "Seinen"
+            "shounen" -> "Shounen"
+            "supernatural" -> "Supernatural"
+            "suspense" -> "Suspense"
+            "time travel" -> "Perjalanan Waktu"
+            "urban fantasy" -> "Urban Fantasy"
+            "video game" -> "Video Game"
+            else -> raw.trim()
+        }
+    }
+
     override val mainPage = mainPageOf(
-        "page/%d/" to "Update Terbaru",
-        "page/%d/" to "Movie",
-        "page/%d/" to "TV Series",
+        "" to "Update Terbaru",
+        "anime/" to "Daftar Anime",
+        "genres/action/" to "Aksi",
+        "genres/adventure/" to "Petualangan",
+        "genres/comedy/" to "Komedi",
+        "genres/drama/" to "Drama",
+        "genres/fantasy/" to "Fantasi",
+        "genres/gag-humor/" to "Humor Gag",
+        "genres/gore/" to "Gore",
+        "genres/historical/" to "Sejarah",
+        "genres/horror/" to "Horor",
+        "genres/isekai/" to "Isekai",
+        "genres/martial-arts/" to "Martial Arts",
+        "genres/military/" to "Militer",
+        "genres/mystery/" to "Misteri",
+        "genres/mythology/" to "Mitologi",
+        "genres/parody/" to "Parodi",
+        "genres/psychological/" to "Psikologis",
+        "genres/reincarnation/" to "Reinkarnasi",
+        "genres/romance/" to "Romantis",
+        "genres/school/" to "Sekolah",
+        "genres/sci-fi/" to "Sci-Fi",
+        "genres/seinen/" to "Seinen",
+        "genres/shounen/" to "Shounen",
+        "genres/supernatural/" to "Supernatural",
+        "genres/suspense/" to "Suspense",
+        "genres/time-travel/" to "Perjalanan Waktu",
+        "genres/urban-fantasy/" to "Urban Fantasy",
+        "genres/video-game/" to "Video Game",
     )
 
+    private fun buildMainPageUrl(page: Int, data: String): String {
+        val path = data.trim().trimStart('/')
+        return when {
+            path.isBlank() -> {
+                if (page <= 1) mainUrl else "$mainUrl/page/$page/"
+            }
+            page <= 1 -> "$mainUrl/${path.trimEnd('/')}/"
+            else -> "$mainUrl/${path.trimEnd('/')}/page/$page/"
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(fixUrl(request.data.format(page))).document
+        val document = app.get(buildMainPageUrl(page, request.data)).document
         val items =
             document
                 .select("div.listupd article.bs")
-                .mapNotNull { card ->
-                    val type = getType(card.selectFirst(".typez, .limit .type, span.type")?.text()?.trim())
-                    if (!matchesMainPage(request.name, type)) return@mapNotNull null
-                    card.toSearchResult()
-                }
-        return newHomePageResponse(request.name, items)
+                .mapNotNull { it.toSearchResult() }
+                .distinctBy { it.url }
+
+        val hasNext = document.selectFirst(
+            "a.nextpostslink, a[rel=next], .pagination a:contains(Next), .hpage a:contains(Next), .wp-pagenavi a:contains(Next)"
+        ) != null
+
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, items, isHorizontalImages = true)),
+            hasNext
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=$query").document
-        return document.select("div.listupd article.bs").mapNotNull { it.toSearchResult() }
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val document = app.get("$mainUrl/?s=$encodedQuery").document
+        return document
+            .select("div.listupd article.bs")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -143,7 +224,7 @@ class AuraTail : MainAPI() {
         val typeText = document.selectFirst("span:matchesOwn(Tipe:)")?.ownText()?.trim()
         val type = if (isEpisodePage) TvType.Anime else getType(typeText)
 
-        val tags = document.select("div.genxed a").map { it.text() }
+        val tags = document.select("div.genxed a").map { translateGenre(it.text()) }
         val actors = document.select("span:has(b:matchesOwn(Artis:)) a").map { it.text().trim() }
         val rating =
             document
@@ -343,15 +424,6 @@ class AuraTail : MainAPI() {
             else -> newAnimeSearchResponse(cleanTitle, fixUrl(href), type) {
                 this.posterUrl = posterUrl
             }
-        }
-    }
-
-    private fun matchesMainPage(sectionName: String, type: TvType): Boolean {
-        return when (sectionName) {
-            "Movie" -> type == TvType.AnimeMovie
-            "TV Series" -> type == TvType.Anime
-            "ONA" -> type == TvType.OVA
-            else -> true
         }
     }
 

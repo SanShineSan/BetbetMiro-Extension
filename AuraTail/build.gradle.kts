@@ -1,7 +1,7 @@
 version = 1
 
 cloudstream {
-    description = "AuraTail Donghua"
+    description = "AuraTail Donghua - Donghua Subtitle Indonesia"
     language = "id"
     authors = listOf("BetbetMiro")
 
