@@ -1,51 +1,51 @@
-package com.kraptor
+package com.kerimmkirac
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
+import java.net.URLDecoder
 import java.net.URLEncoder
 
-class Chatrubate : MainAPI() {
-    override var mainUrl = "https://chaturbate.com"
-    override var name = "Chaturbate"
+class CamWh : MainAPI() {
+    override var mainUrl = "https://camwh.com"
+    override var name = "CamWh"
     override val hasMainPage = true
+    override val hasQuickSearch = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded
 
     override val mainPage = mainPageOf(
-        "/api/ts/roomlist/room-list/?limit=90" to "Unggulan",
-        "/api/ts/roomlist/room-list/?limit=90&hd=true" to "HD",
-        "/api/ts/roomlist/room-list/?genders=f&limit=90" to "Perempuan",
-        "/api/ts/roomlist/room-list/?genders=m&limit=90" to "Pria",
-        "/api/ts/roomlist/room-list/?genders=c&limit=90" to "Pasangan",
-        "/api/ts/roomlist/room-list/?genders=t&limit=90" to "Transgender",
-        "/api/ts/roomlist/room-list/?regions=NA&limit=90" to "Amerika Utara",
-        "/api/ts/roomlist/room-list/?regions=SA&limit=90" to "Amerika Selatan",
-        "/api/ts/roomlist/room-list/?regions=AS&limit=90" to "Asia",
-        "/api/ts/roomlist/room-list/?regions=ER&limit=90" to "Eropa / Rusia",
-        "/api/ts/roomlist/room-list/?hashtags=asian&limit=90" to "Asian",
-        "/api/ts/roomlist/room-list/?hashtags=latina&limit=90" to "Latina",
-        "/api/ts/roomlist/room-list/?hashtags=milf&limit=90" to "MILF",
-        "/api/ts/roomlist/room-list/?hashtags=ebony&limit=90" to "Ebony",
-        "/api/ts/roomlist/room-list/?hashtags=cosplay&limit=90" to "Cosplay"
+        "$mainUrl/latest-updates/" to "Update Terbaru",
+        "$mainUrl/top-rated/" to "Rating Tertinggi",
+        "$mainUrl/most-popular/" to "Paling Dilihat",
+        "$mainUrl/categories/anal/" to "Kategori Anal",
+        "$mainUrl/categories/blowjob/" to "Kategori Oral",
+        "$mainUrl/categories/boobs/" to "Kategori Boobs",
+        "$mainUrl/categories/lesbian/" to "Kategori Lesbian",
+        "$mainUrl/categories/masturbation/" to "Kategori Solo",
+        "$mainUrl/categories/public/" to "Kategori Public",
+        "$mainUrl/categories/webcam/" to "Kategori Webcam",
+        "$mainUrl/tags/solo/" to "Solo",
+        "$mainUrl/tags/webcam/" to "Webcam",
+        "$mainUrl/tags/blonde/" to "Blonde",
+        "$mainUrl/tags/brunette/" to "Brunette",
+        "$mainUrl/tags/big-tits/" to "Big Tits",
+        "$mainUrl/tags/amateur/" to "Amateur"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val offset = if (page <= 1) 0 else 90 * (page - 1)
-        val url = appendOffset(request.data, offset)
-
-        val response = app.get(
-            "$mainUrl$url",
-            headers = apiHeaders,
+        val document = app.get(
+            buildPagedUrl(request.data, page),
+            headers = defaultHeaders,
             referer = "$mainUrl/"
-        ).parsedSafe<Response>()
+        ).document
 
-        val items = response?.rooms.orEmpty()
-            .mapNotNull { it.toLiveSearchResult() }
+        val items = document.select("div.item, .list-videos .item, .thumb, .video-item")
+            .mapNotNull { it.toSearchResult() }
             .distinctBy { it.url }
 
         return newHomePageResponse(
@@ -54,56 +54,80 @@ class Chatrubate : MainAPI() {
         )
     }
 
+    override suspend fun search(query: String): List<SearchResponse> {
+        return search(query, 1).items
+    }
+
+    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
+
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val offset = if (page <= 1) 0 else 90 * (page - 1)
+        val searchUrl = "$mainUrl/search/$encodedQuery/?mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=$encodedQuery&category_ids=&sort_by=&from_videos=$page&from_albums=1"
 
-        val response = app.get(
-            "$mainUrl/api/ts/roomlist/room-list/?keywords=$encodedQuery&limit=90&offset=$offset",
-            referer = "$mainUrl/",
-            headers = apiHeaders
-        ).parsedSafe<Response>()
+        val document = app.get(
+            searchUrl,
+            headers = defaultHeaders,
+            referer = "$mainUrl/search/$encodedQuery/"
+        ).document
 
-        val results = response?.rooms.orEmpty()
-            .mapNotNull { it.toLiveSearchResult() }
+        val results = document.select("div.item, .list-videos .item, .thumb, .video-item")
+            .mapNotNull { it.toSearchResult() }
             .distinctBy { it.url }
 
         return newSearchResponseList(results, hasNext = results.isNotEmpty())
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val cleanUrl = normalizeRoomUrl(url)
         val document = app.get(
-            cleanUrl,
-            headers = htmlHeaders,
+            url,
+            headers = defaultHeaders,
             referer = "$mainUrl/"
         ).document
 
-        val username = cleanUrl.trimEnd('/').substringAfterLast("/")
-        val title = document.selectFirst("meta[property=og:title]")
-            ?.attr("content")
+        val title = document.selectFirst("div.headline h1, h1")
+            ?.text()
             ?.trim()
-            ?.replace("| Chaturbate", "", ignoreCase = true)
             ?.ifBlank { null }
-            ?: username
+            ?: throw ErrorLoadingException("Judul tidak ditemukan.")
 
         val poster = fixUrlNull(
-            document.selectFirst("meta[property=og:image], [property='og:image']")
-                ?.attr("content")
+            document.selectFirst("div.fp-poster img, meta[property=og:image], link[rel=image_src]")
+                ?.let { element ->
+                    when (element.tagName()) {
+                        "meta" -> element.attr("content")
+                        "link" -> element.attr("href")
+                        else -> element.attr("src").ifBlank { element.attr("data-original") }
+                    }
+                }
         )
 
-        val description = document.selectFirst("meta[property=og:description]")
-            ?.attr("content")
+        val description = document.selectFirst("div.item:contains(Description:) em, meta[name=description], meta[property=og:description]")
+            ?.let { element ->
+                if (element.tagName() == "meta") element.attr("content") else element.text()
+            }
             ?.trim()
             ?.ifBlank { null }
 
-        return newLiveStreamLoadResponse(
-            name = title,
-            url = cleanUrl,
-            dataUrl = cleanUrl
-        ) {
-            posterUrl = poster
-            plot = description ?: "Live stream Chaturbate"
+        val actors = document.select("div.item:contains(Tags:) a, .tags a")
+            .map { it.text().trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        val tags = document.select("div.item:contains(Categories:) a, .categories a")
+            .map { translateTag(it.text().trim()) }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        val recommendations = document.select("div.list-videos div.item, .related-videos div.item")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
+
+        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+            this.posterUrl = poster
+            this.plot = description
+            this.tags = tags
+            this.recommendations = recommendations
+            addActors(actors)
         }
     }
 
@@ -113,126 +137,185 @@ class Chatrubate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val roomUrl = normalizeRoomUrl(data)
-        val username = roomUrl.trimEnd('/').substringAfterLast("/")
-        if (username.isBlank()) return false
+        val emitted = linkedSetOf<String>()
 
-        val apiUrl = "$mainUrl/api/chatvideocontext/$username/"
-
-        val response = app.get(
-            apiUrl,
-            headers = apiHeaders,
-            referer = roomUrl
-        )
-
-        Log.d("kraptor_$name", "streamInfo status = ${response.code}")
-
-        val parsed = response.parsedSafe<ChatResponse>()
-        val apiStream = parsed?.hlsSource
-            ?.takeIf { it.isNotBlank() }
-            ?: parsed?.hlsSourceCamel
+        fun emitDirect(rawUrl: String?, label: String = name) {
+            val videoUrl = rawUrl
+                ?.decodeEscapedUrl()
                 ?.takeIf { it.isNotBlank() }
+                ?: return
 
-        val fallbackStream = apiStream ?: extractM3u8FromText(response.text)
+            if (!emitted.add(videoUrl)) return
 
-        if (fallbackStream.isNullOrBlank()) {
-            return false
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = label,
+                    url = videoUrl,
+                    type = inferType(videoUrl)
+                ) {
+                    this.referer = data
+                    this.quality = getQualityFromName(label)
+                    this.headers = streamHeaders(data)
+                }
+            )
         }
 
-        callback.invoke(
-            newExtractorLink(
-                source = name,
-                name = "$name - Live",
-                url = fallbackStream,
-                type = ExtractorLinkType.M3U8
-            ) {
-                this.referer = roomUrl
-                this.quality = Qualities.Unknown.value
-                this.headers = mapOf(
-                    "Accept" to "*/*",
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to roomUrl,
-                    "Origin" to mainUrl,
-                    "X-Requested-With" to "XMLHttpRequest"
-                )
+        fun extractFromHtml(html: String) {
+            val patterns = listOf(
+                Regex("""video_alt_url\d*\s*[:=]\s*['"]([^'"]+)""", RegexOption.IGNORE_CASE),
+                Regex("""video_url\d*\s*[:=]\s*['"]([^'"]+)""", RegexOption.IGNORE_CASE),
+                Regex("""file\s*[:=]\s*['"]([^'"]+\.(?:mp4|m3u8)[^'"]*)""", RegexOption.IGNORE_CASE),
+                Regex("""source\s*[:=]\s*['"]([^'"]+\.(?:mp4|m3u8)[^'"]*)""", RegexOption.IGNORE_CASE),
+                Regex("""['"](https?://[^'"]+/(?:get_file|contents|videos)/[^'"]+)['"]""", RegexOption.IGNORE_CASE),
+                Regex("""['"](https?://[^'"]+\.(?:mp4|m3u8)(?:\?[^'"]*)?)['"]""", RegexOption.IGNORE_CASE)
+            )
+
+            patterns.forEach { pattern ->
+                pattern.findAll(html).forEach { match ->
+                    emitDirect(match.groupValues.getOrNull(1), "$name - Direct")
+                }
+            }
+        }
+
+        val response = app.get(
+            data,
+            headers = defaultHeaders,
+            referer = "$mainUrl/"
+        )
+        val document = response.document
+
+        extractFromHtml(response.text)
+
+        document.select("video source[src], video[src], source[src]").forEach { element ->
+            emitDirect(element.attr("src"), "$name - Video")
+        }
+
+        document.select("iframe[src], iframe[data-src], [data-video], [data-url]").forEach { element ->
+            val iframeUrl = element.attr("src")
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("data-video") }
+                .ifBlank { element.attr("data-url") }
+
+            if (iframeUrl.isNotBlank()) {
+                runCatching {
+                    loadExtractor(fixUrl(iframeUrl), data, subtitleCallback, callback)
+                }
+            }
+        }
+
+        if (emitted.isNotEmpty()) return true
+
+        val webview = WebViewResolver(
+            interceptUrl = Regex(""".*/get_file/.*"""),
+            userAgent = USER_AGENT,
+            useOkhttp = false
+        )
+
+        var capturedFileUrl = ""
+
+        webview.resolveUsingWebView(
+            url = data,
+            referer = "$mainUrl/",
+            requestCallBack = { request ->
+                val currentUrl = request.url.toString()
+
+                if (currentUrl.contains("/get_file/")) {
+                    capturedFileUrl = currentUrl
+                    true
+                } else {
+                    false
+                }
             }
         )
 
-        return true
-    }
+        if (capturedFileUrl.isNotBlank()) {
+            val redirected = app.get(
+                capturedFileUrl,
+                headers = streamHeaders(data),
+                allowRedirects = false
+            ).headers["Location"] ?: capturedFileUrl
 
-    private fun Room.toLiveSearchResult(): SearchResponse? {
-        val cleanUsername = username.trim()
-        if (cleanUsername.isBlank()) return null
-
-        return newLiveSearchResponse(
-            name = cleanUsername,
-            url = "$mainUrl/$cleanUsername",
-            type = TvType.Live,
-            fix = false
-        ) {
-            posterUrl = img.takeIf { it.isNotBlank() }
-            lang = null
+            emitDirect(redirected, "$name - WebView")
         }
+
+        return emitted.isNotEmpty()
     }
 
-    private fun appendOffset(path: String, offset: Int): String {
-        val joiner = if (path.contains("?")) "&" else "?"
-        return "$path${joiner}offset=$offset"
-    }
+    private fun Element.toSearchResult(): SearchResponse? {
+        val anchor = selectFirst("a[href]") ?: return null
+        val title = anchor.attr("title").trim()
+            .ifBlank { selectFirst(".title, strong, .video-title")?.text()?.trim().orEmpty() }
+            .ifBlank { selectFirst("img")?.attr("alt")?.trim().orEmpty() }
 
-    private fun normalizeRoomUrl(raw: String): String {
-        val clean = raw.trim()
-        return when {
-            clean.startsWith("http://", true) || clean.startsWith("https://", true) -> clean
-            clean.startsWith("/") -> "$mainUrl$clean"
-            else -> "$mainUrl/$clean"
-        }.substringBefore("?")
-    }
+        if (title.isBlank()) return null
 
-    private fun extractM3u8FromText(text: String): String? {
-        val patterns = listOf(
-            Regex(""""hls_source"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-            Regex(""""hlsSource"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-            Regex("""(https?:\\?/\\?/[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
-            Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)""")
+        val href = fixUrlNull(anchor.attr("href")) ?: return null
+        val img = selectFirst("img")
+        val poster = fixUrlNull(
+            img?.attr("data-original")
+                ?.takeIf { it.isNotBlank() }
+                ?: img?.attr("data-webp")?.takeIf { it.isNotBlank() }
+                ?: img?.attr("data-src")?.takeIf { it.isNotBlank() }
+                ?: img?.attr("src")
         )
 
-        return patterns.firstNotNullOfOrNull { pattern ->
-            pattern.find(text)?.groupValues?.getOrNull(1)
-                ?.replace("\\u002F", "/")
-                ?.replace("\\/", "/")
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = poster
         }
     }
 
-    data class ChatResponse(
-        @JsonProperty("hls_source") val hlsSource: String? = null,
-        @JsonProperty("hlsSource") val hlsSourceCamel: String? = null,
-        @JsonProperty("broadcaster_username") val username: String? = null
-    )
+    private fun buildPagedUrl(rawUrl: String, page: Int): String {
+        if (page <= 1) return rawUrl
+        val clean = rawUrl.trimEnd('/')
+        return when {
+            clean.contains("from=") -> clean.replace(Regex("""from=\d+"""), "from=$page")
+            clean.contains("?") -> "$clean&from=$page"
+            else -> "$clean/$page/"
+        }
+    }
 
-    data class Room(
-        @JsonProperty("img") val img: String = "",
-        @JsonProperty("username") val username: String = "",
-        @JsonProperty("subject") val subject: String = "",
-        @JsonProperty("tags") val tags: List<String> = emptyList()
-    )
+    private fun inferType(url: String): ExtractorLinkType {
+        return when {
+            url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+            else -> ExtractorLinkType.VIDEO
+        }
+    }
 
-    data class Response(
-        @JsonProperty("all_rooms_count") val allRoomsCount: String = "",
-        @JsonProperty("room_list_id") val roomListId: String = "",
-        @JsonProperty("total_count") val totalCount: String = "",
-        @JsonProperty("rooms") val rooms: List<Room> = emptyList()
-    )
+    private fun streamHeaders(refererUrl: String): Map<String, String> {
+        return mapOf(
+            "Accept" to "*/*",
+            "User-Agent" to USER_AGENT,
+            "Referer" to refererUrl,
+            "Origin" to mainUrl
+        )
+    }
 
-    private val apiHeaders = mapOf(
-        "Accept" to "application/json,text/plain,*/*",
-        "User-Agent" to USER_AGENT,
-        "Referer" to "$mainUrl/",
-        "X-Requested-With" to "XMLHttpRequest"
-    )
+    private fun String.decodeEscapedUrl(): String {
+        return replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("&amp;", "&")
+            .let { value ->
+                runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
+            }
+    }
 
-    private val htmlHeaders = mapOf(
+    private fun translateTag(tag: String): String {
+        return when (tag.lowercase()) {
+            "latest videos" -> "Video Terbaru"
+            "top rated videos" -> "Rating Tertinggi"
+            "most viewed videos" -> "Paling Dilihat"
+            "webcam" -> "Webcam"
+            "amateur" -> "Amateur"
+            "solo" -> "Solo"
+            "public" -> "Public"
+            "blonde" -> "Blonde"
+            "brunette" -> "Brunette"
+            else -> tag
+        }
+    }
+
+    private val defaultHeaders = mapOf(
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/"
