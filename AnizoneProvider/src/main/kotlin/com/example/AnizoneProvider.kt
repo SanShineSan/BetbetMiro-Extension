@@ -46,11 +46,8 @@ class AnizoneProvider : MainAPI() {
     override val hasMainPage = true
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
-    override val mainPage = mainPageOf(
-        "2" to "Anime",
-        "4" to "Film Anime",
-        "6" to "Konten Lainnya",
 
+    override val mainPage = mainPageOf(
         // Kategori / genre dari tag AniZone
         "tag/hmi0gccz" to "Manga",
         "tag/bio3ygrp" to "Komedi",
@@ -63,6 +60,7 @@ class AnizoneProvider : MainAPI() {
         "tag/n6ta6ma6" to "Kehidupan Sekolah",
         "tag/7kov4siq" to "Kekerasan"
     )
+
     private fun translateGenre(name: String): String {
         return when (name.trim().lowercase(Locale.ROOT)) {
             "action" -> "Aksi"
@@ -91,19 +89,19 @@ class AnizoneProvider : MainAPI() {
         "wireSnapshot" to "",
         "token" to ""
     )
+
     private suspend fun initializeLiveWire(): Boolean {
         if (!wireData["wireSnapshot"].isNullOrBlank()) return true
 
         try {
             val initReq = app.get("$mainUrl/anime")
-
             val doc = initReq.document
 
             val csrfToken = doc.select("script[data-csrf]").attr("data-csrf")
             val snapshot = getSnapshot(doc)
 
             if (csrfToken.isBlank() || snapshot.isBlank()) {
-                Log.e("AniZone Init", "Fallo la inicialización: token o snapshot vacíos. Esto puede ser un error de HTML/CAPTCHA en la página inicial.")
+                Log.e("AniZone Init", "Inisialisasi gagal: token atau snapshot kosong.")
                 return false
             }
 
@@ -113,53 +111,66 @@ class AnizoneProvider : MainAPI() {
 
             sortAnimeLatest()
             return true
-
         } catch (e: Exception) {
-            Log.e("AniZone Init", "Error fatal durante initializeLiveWire: ${e.message}")
+            Log.e("AniZone Init", "Error initializeLiveWire: ${e.message}")
             return false
         }
     }
 
     private suspend fun sortAnimeLatest() {
         try {
-            liveWireBuilder(mapOf("sort" to "release-desc"), mutableListOf(), this.cookies, this.wireData, true)
+            liveWireBuilder(
+                mapOf("sort" to "release-desc"),
+                mutableListOf(),
+                this.cookies,
+                this.wireData,
+                true
+            )
         } catch (e: Exception) {
-            Log.e("AniZone Init", "Error al ejecutar sortAnimeLatest (Livewire): ${e.message}")
+            Log.e("AniZone Init", "Error sortAnimeLatest: ${e.message}")
         }
     }
 
-
-    private fun getSnapshot(doc : Document) : String {
+    private fun getSnapshot(doc: Document): String {
         return doc.select("main div[wire:snapshot]")
-            .attr("wire:snapshot").replace("&quot;", "\"")
+            .attr("wire:snapshot")
+            .replace("&quot;", "\"")
     }
-    private fun getSnapshot(json : JSONObject) : String {
+
+    private fun getSnapshot(json: JSONObject): String {
         return json.getJSONArray("components")
-            .getJSONObject(0).getString("snapshot")
+            .getJSONObject(0)
+            .getString("snapshot")
     }
 
-    private  fun getHtmlFromWire(json: JSONObject): Document {
-        return Jsoup.parse(json.getJSONArray("components")
-            .getJSONObject(0).getJSONObject("effects")
-            .getString("html"))
+    private fun getHtmlFromWire(json: JSONObject): Document {
+        return Jsoup.parse(
+            json.getJSONArray("components")
+                .getJSONObject(0)
+                .getJSONObject("effects")
+                .getString("html")
+        )
     }
 
-    private suspend fun liveWireBuilder (
-        updates : Map<String,String>, calls: List<Map<String, Any>>,
-        biscuit : MutableMap<String, String>,
-        wireCreds : MutableMap<String,String>,
-        remember : Boolean): JSONObject {
-
+    private suspend fun liveWireBuilder(
+        updates: Map<String, String>,
+        calls: List<Map<String, Any>>,
+        biscuit: MutableMap<String, String>,
+        wireCreds: MutableMap<String, String>,
+        remember: Boolean
+    ): JSONObject {
         val payload = mapOf(
-            "_token" to wireCreds["token"], "components" to listOf(
-                mapOf("snapshot" to wireCreds["wireSnapshot"], "updates" to updates,
+            "_token" to wireCreds["token"],
+            "components" to listOf(
+                mapOf(
+                    "snapshot" to wireCreds["wireSnapshot"],
+                    "updates" to updates,
                     "calls" to calls
                 )
             )
         )
 
         val jsonString = payload.toJson()
-
         val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
         val requestBody = jsonString.toRequestBody(mediaType)
 
@@ -176,14 +187,15 @@ class AnizoneProvider : MainAPI() {
         val bodyString = req.text
 
         if (bodyString.isBlank()) {
-            throw Exception("Respuesta Livewire vacía o en blanco (HTTP ${req.code}).")
+            throw Exception("Respons Livewire kosong. HTTP ${req.code}.")
         }
 
-        if (bodyString.trim().startsWith("<!DOCTYPE", ignoreCase = true) ||
-            bodyString.trim().startsWith("<html", ignoreCase = true)) {
-            Log.e("AniZone", "Respuesta inesperada: Recibido HTML/<!DOCTYPE en lugar de JSON. El sitio podría estar bloqueando el acceso o mostrando un CAPTCHA/error.")
-
-            throw Exception("Livewire no devolvió JSON. Código de estado HTTP: ${req.code}. URL: ${req.url}")
+        if (
+            bodyString.trim().startsWith("<!DOCTYPE", ignoreCase = true) ||
+            bodyString.trim().startsWith("<html", ignoreCase = true)
+        ) {
+            Log.e("AniZone", "Livewire mengembalikan HTML, bukan JSON.")
+            throw Exception("Livewire tidak mengembalikan JSON. HTTP ${req.code}. URL: ${req.url}")
         }
 
         val responseJson = JSONObject(bodyString)
@@ -196,54 +208,73 @@ class AnizoneProvider : MainAPI() {
         return responseJson
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
     ): HomePageResponse {
-
         if (request.data.startsWith("tag/")) {
             return getTagMainPage(page, request)
         }
 
         val initialized = initializeLiveWire()
         if (!initialized) {
-            Log.w("AniZone", "Inisialisasi LiveWire gagal. Mengembalikan daftar awal kosong.")
+            Log.w("AniZone", "Inisialisasi LiveWire gagal.")
             return newHomePageResponse(
                 HomePageList(request.name, emptyList(), isHorizontalImages = false),
                 hasNext = false
             )
         }
-        try {
+
+        return try {
             var responseJson = liveWireBuilder(
-                mapOf("type" to request.data), mutableListOf(), this.cookies, this.wireData, true
+                mapOf("type" to request.data),
+                mutableListOf(),
+                this.cookies,
+                this.wireData,
+                true
             )
+
             var doc = getHtmlFromWire(responseJson)
 
             for (i in 1 until page) {
                 if (doc.selectFirst(".h-12[x-intersect=\"\$wire.loadMore()\"]") == null) break
 
                 responseJson = liveWireBuilder(
-                    mutableMapOf(), mutableListOf(
-                        mapOf("path" to "", "method" to "loadMore", "params" to listOf<String>())
-                    ), this.cookies, this.wireData, true
+                    mutableMapOf(),
+                    mutableListOf(
+                        mapOf(
+                            "path" to "",
+                            "method" to "loadMore",
+                            "params" to listOf<String>()
+                        )
+                    ),
+                    this.cookies,
+                    this.wireData,
+                    true
                 )
+
                 doc = getHtmlFromWire(responseJson)
             }
 
-            val home: List<Element> = doc.select("div[wire:key]")
+            val home = doc.select("div[wire:key]")
 
-            return newHomePageResponse(
+            newHomePageResponse(
                 HomePageList(request.name, home.map { toResult(it) }, isHorizontalImages = false),
-                hasNext = (doc.selectFirst(".h-12[x-intersect=\"\$wire.loadMore()\"]") != null)
+                hasNext = doc.selectFirst(".h-12[x-intersect=\"\$wire.loadMore()\"]") != null
             )
         } catch (e: Exception) {
-            Log.e("AniZone", "Gagal memproses LiveWire di getMainPage: ${e.message}")
-            return newHomePageResponse(
+            Log.e("AniZone", "Gagal memproses getMainPage: ${e.message}")
+            newHomePageResponse(
                 HomePageList(request.name, emptyList(), isHorizontalImages = false),
                 hasNext = false
             )
         }
     }
 
-    private suspend fun getTagMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    private suspend fun getTagMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
         return try {
             val url = if (page <= 1) {
                 "$mainUrl/${request.data}"
@@ -252,13 +283,19 @@ class AnizoneProvider : MainAPI() {
             }
 
             val doc = app.get(url).document
+
             val items = doc.select("div[wire:key]")
                 .ifEmpty { doc.select("article") }
                 .ifEmpty { doc.select("a[href*='/anime/']").mapNotNull { it.parent() } }
-                .distinctBy { it.selectFirst("a[href*='/anime/']")?.attr("href") ?: it.text() }
-                .mapNotNull { toResult(it) }
+                .distinctBy {
+                    it.selectFirst("a[href*='/anime/']")?.attr("href") ?: it.text()
+                }
+                .map { toResult(it) }
+                .filter { it.name.isNotBlank() }
 
-            val hasNext = doc.selectFirst("a[rel=next], a[href*='page=${page + 1}'], .h-12[x-intersect=\"\$wire.loadMore()\"]") != null
+            val hasNext = doc.selectFirst(
+                "a[rel=next], a[href*='page=${page + 1}'], .h-12[x-intersect=\"\$wire.loadMore()\"]"
+            ) != null
 
             newHomePageResponse(
                 HomePageList(request.name, items, isHorizontalImages = false),
@@ -283,40 +320,58 @@ class AnizoneProvider : MainAPI() {
             ?: ""
 
         return newMovieSearchResponse(title, url, TvType.Anime) {
-            this.posterUrl = post.selectFirst("img")
-                ?.attr("src")
+            this.posterUrl = post.selectFirst("img")?.attr("src")
         }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
-
         initializeLiveWire()
 
-        val doc = getHtmlFromWire(liveWireBuilder(mapOf("search" to query),mutableListOf(), this.cookies,
-            this.wireData,false))
-        return doc.select("div[wire:key]").mapNotNull { toResult(it) }
+        val doc = getHtmlFromWire(
+            liveWireBuilder(
+                mapOf("search" to query),
+                mutableListOf(),
+                this.cookies,
+                this.wireData,
+                false
+            )
+        )
+
+        return doc.select("div[wire:key]").map { toResult(it) }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val r = Jsoup.connect(url)
-            .method(Connection.Method.GET).execute()
+            .method(Connection.Method.GET)
+            .execute()
+
         val doc = Jsoup.parse(r.body())
         val cookie = r.cookies()
+
         val wireData = mutableMapOf(
-            "wireSnapshot" to getSnapshot(doc=r.parse()),
+            "wireSnapshot" to getSnapshot(doc = r.parse()),
             "token" to doc.select("script[data-csrf]").attr("data-csrf")
         )
+
         val title = doc.selectFirst("h1")?.text()
             ?: throw NotImplementedError("Unable to find title")
+
         val bgImage = doc.selectFirst("main img")?.attr("src")
         val synopsis = doc.selectFirst(".sr-only + div")?.text() ?: ""
         val rowLines = doc.select("span.inline-block").map { it.text() }
         val releasedYear = rowLines.getOrNull(3)
-        val status = if (rowLines.getOrNull(1) == "Completed") ShowStatus.Completed
-        else if (rowLines.getOrNull(1) == "Ongoing") ShowStatus.Ongoing else null
-        val genres = doc.select("a[wire:navigate][wire:key]").map { translateGenre(it.text()) }
+
+        val status = when (rowLines.getOrNull(1)) {
+            "Completed" -> ShowStatus.Completed
+            "Ongoing" -> ShowStatus.Ongoing
+            else -> null
+        }
+
+        val genres = doc.select("a[wire:navigate][wire:key]").map {
+            translateGenre(it.text())
+        }
 
         val imdbLink = doc.selectFirst("a[href*='imdb.com']")
 
@@ -328,34 +383,49 @@ class AnizoneProvider : MainAPI() {
             }
             ?: "tt0000000"
 
-        Log.d("AniZoneIMDB", "IMDB ID encontrado en LOAD: $imdbId")
+        Log.d("AniZoneIMDB", "IMDB ID ditemukan di LOAD: $imdbId")
 
         var currentDoc = doc
         var attempts = 0
         val maxAttempts = 100
 
-        while (currentDoc.selectFirst(".h-12[x-intersect=\"\$wire.loadMore()\"]") != null && attempts < maxAttempts) {
+        while (
+            currentDoc.selectFirst(".h-12[x-intersect=\"\$wire.loadMore()\"]") != null &&
+            attempts < maxAttempts
+        ) {
             attempts++
             try {
                 val responseJson = liveWireBuilder(
-                    mutableMapOf(), mutableListOf(
-                        mapOf("path" to "", "method" to "loadMore", "params" to listOf<String>())
-                    ), cookie, wireData, true
+                    mutableMapOf(),
+                    mutableListOf(
+                        mapOf(
+                            "path" to "",
+                            "method" to "loadMore",
+                            "params" to listOf<String>()
+                        )
+                    ),
+                    cookie,
+                    wireData,
+                    true
                 )
+
                 currentDoc = getHtmlFromWire(responseJson)
             } catch (e: Exception) {
-                Log.e("AniZone Load", "Error al cargar más episodios en el intento $attempts: ${e.message}")
+                Log.e("AniZone Load", "Error loadMore episode percobaan $attempts: ${e.message}")
                 break
             }
         }
 
         val epiElms = currentDoc.select("li[x-data]")
 
-        val episodes = epiElms.map{ elt ->
+        val episodes = epiElms.map { elt ->
             newEpisode(
-                data = elt.selectFirst("a")?.attr("href") ?: "") {
+                data = elt.selectFirst("a")?.attr("href") ?: ""
+            ) {
                 this.name = elt.selectFirst("h3")?.text()
-                    ?.substringAfter(":")?.trim()
+                    ?.substringAfter(":")
+                    ?.trim()
+
                 this.season = 0
                 this.posterUrl = elt.selectFirst("img")?.attr("src")
                 this.data = "${elt.selectFirst("a")?.attr("href")}|||$imdbId"
@@ -367,14 +437,14 @@ class AnizoneProvider : MainAPI() {
                     ?.replace(Regex("\\s+"), "")
                     ?.ifEmpty { null }
                     ?.let { dateText ->
-                        Log.d("AniZone", "Fecha encontrada para ${this.name}: $dateText")
+                        Log.d("AniZone", "Tanggal ditemukan untuk ${this.name}: $dateText")
 
                         try {
-                            val parsedTime = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).parse(dateText)?.time
-                            Log.d("AniZone", "Parseo exitoso para ${this.name}: $parsedTime")
-                            parsedTime
+                            SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
+                                .parse(dateText)
+                                ?.time
                         } catch (e: Exception) {
-                            Log.e("AniZone", "FALLO de parseo para ${this.name} con texto '$dateText': ${e.message}")
+                            Log.e("AniZone", "Gagal parse tanggal '$dateText': ${e.message}")
                             null
                         }
                     } ?: 0L
@@ -400,21 +470,22 @@ class AnizoneProvider : MainAPI() {
         val parts = data.split("|||")
         val episodeUrl = parts[0]
 
-        Log.d("AniZoneSub", "-> Iniciando loadLinks para: $episodeUrl")
+        Log.d("AniZoneSub", "Mulai loadLinks: $episodeUrl")
 
         val webReq = app.get(episodeUrl)
         val web = webReq.document
         val cookie = webReq.cookies
-        val sourceName = web.selectFirst("span.truncate")?.text() ?: ""
+
+        val sourceName = web.selectFirst("span.truncate")?.text() ?: name
         val mediaPlayer = web.selectFirst("media-player")
         val masterUrl = mediaPlayer?.attr("src") ?: ""
 
-        Log.d("AniZoneSub", "-> Source: $sourceName, M3U8: $masterUrl")
+        Log.d("AniZoneSub", "Source: $sourceName, M3U8: $masterUrl")
 
         if (masterUrl.isBlank()) return false
 
         mediaPlayer?.select("track")?.forEach {
-            Log.d("AniZoneSub", "-> [AniZone] Subtítulo encontrado: ${it.attr("label")}")
+            Log.d("AniZoneSub", "Subtitle ditemukan: ${it.attr("label")}")
             subtitleCallback.invoke(
                 newSubtitleFile(
                     it.attr("label"),
@@ -442,6 +513,7 @@ class AnizoneProvider : MainAPI() {
                 this.headers = baseHeaders
             }
         )
+
         return true
     }
 }
