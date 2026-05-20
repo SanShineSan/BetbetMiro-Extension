@@ -25,7 +25,7 @@ open class Animekhor : MainAPI() {
         "anime/?status=&type=ona" to "Donghua Series",
         "anime/?status=&sub=&order=latest" to "Latest Added",
         "anime/?status=&type=&order=popular" to "Popular",
-        "anime/?status=completed&order=update" to "Completed",
+        "anime/?status=completed&order=update" to "Completed"
     )
 
     override suspend fun getMainPage(
@@ -37,11 +37,10 @@ open class Animekhor : MainAPI() {
             "$mainUrl/${request.data}&page=$page"
         ).document
 
-        val home = document.select(
-            "div.listupd > article"
-        ).mapNotNull {
-            it.toSearchResult()
-        }
+        val home = document.select("div.listupd > article")
+            .mapNotNull { it.toSearchResult() }
+
+        val hasNext = document.select("li.next a").isNotEmpty()
 
         return newHomePageResponse(
             list = HomePageList(
@@ -49,145 +48,64 @@ open class Animekhor : MainAPI() {
                 list = home,
                 isHorizontalImages = false
             ),
-            hasNext = true
+            hasNext = hasNext
         )
     }
 
     private fun Element.toSearchResult(): SearchResponse {
+        val title = this.select("div.bsx > a").attr("title")
+        val href = fixUrl(this.select("div.bsx > a").attr("href"))
+        val posterUrl = fixUrlNull(this.selectFirst("div.bsx > a img")?.getsrcAttribute())
 
-        val title = this.select(
-            "div.bsx > a"
-        ).attr("title")
-
-        val href = fixUrl(
-            this.select("div.bsx > a").attr("href")
-        )
-
-        val posterUrl = fixUrlNull(
-            this.selectFirst("div.bsx > a img")
-                ?.getsrcAttribute()
-        )
-
-        return newMovieSearchResponse(
-            title,
-            href,
-            TvType.Movie
-        ) {
+        return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
         }
     }
 
-    private fun Element.toSearchquery(): SearchResponse {
+    override suspend fun search(query: String): List<SearchResponse> {
 
-        val title = this.select(
-            "div.bsx > a"
-        ).attr("title")
-
-        val href = fixUrl(
-            this.select("div.bsx > a").attr("href")
-        )
-
-        val posterUrl = fixUrlNull(
-            this.selectFirst("div.bsx > a img")
-                ?.getsrcAttribute()
-        )
-
-        return newMovieSearchResponse(
-            title,
-            href,
-            TvType.Movie
-        ) {
-            this.posterUrl = posterUrl
-        }
-    }
-
-    override suspend fun search(
-        query: String
-    ): List<SearchResponse> {
-
-        val searchResponse =
-            mutableListOf<SearchResponse>()
+        val searchResponse = mutableListOf<SearchResponse>()
 
         for (i in 1..3) {
+            val document = app.get("${mainUrl}/page/$i/?s=$query").document
+            val results = document.select("div.listupd > article")
+                .mapNotNull { it.toSearchResult() }
 
-            val document = app.get(
-                "${mainUrl}/page/$i/?s=$query"
-            ).document
-
-            val results = document.select(
-                "div.listupd > article"
-            ).mapNotNull {
-                it.toSearchquery()
-            }
+            if (results.isEmpty()) break
 
             if (!searchResponse.containsAll(results)) {
                 searchResponse.addAll(results)
             } else {
                 break
             }
-
-            if (results.isEmpty()) break
         }
 
         return searchResponse
     }
 
-    override suspend fun load(
-        url: String
-    ): LoadResponse {
+    override suspend fun load(url: String): LoadResponse {
 
         val document = app.get(url).document
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim().toString()
+        val href = document.selectFirst(".eplister li > a")?.attr("href") ?: ""
+        val poster = document.select("meta[property=og:image]").attr("content")
+        val description = document.selectFirst("div.entry-content")?.text()?.trim()
+        val type = document.selectFirst(".spe")?.text().toString()
 
-        val title = document.selectFirst(
-            "h1.entry-title"
-        )?.text()?.trim().toString()
-
-        val href = document.selectFirst(
-            ".eplister li > a"
-        )?.attr("href") ?: ""
-
-        var poster = document.select(
-            "meta[property=og:image]"
-        ).attr("content")
-
-        val description = document.selectFirst(
-            "div.entry-content"
-        )?.text()?.trim()
-
-        val type = document.selectFirst(
-            ".spe"
-        )?.text().toString()
-
-        val tvtag =
-            if (type.contains("Movie"))
-                TvType.Movie
-            else
-                TvType.TvSeries
+        val tvtag = if (type.contains("Movie")) TvType.Movie else TvType.TvSeries
 
         return if (tvtag == TvType.TvSeries) {
 
-            val epPage = document.selectFirst(
-                ".eplister li > a"
-            )?.attr("href") ?: ""
+            if (href.isEmpty()) return newMovieLoadResponse(title, url, TvType.Movie, "")
 
-            val doc = app.get(epPage).document
+            val doc = app.get(href).document
+            val epPoster = doc.select("meta[property=og:image]").attr("content")
 
-            val epPoster = doc.select(
-                "meta[property=og:image]"
-            ).attr("content")
+            val episodes = doc.select("div.episodelist > ul > li").map { info ->
 
-            val episodes = doc.select(
-                "div.episodelist > ul > li"
-            ).map { info ->
-
-                val href1 = info.select("a")
-                    .attr("href")
-
-                val episode = info.select(
-                    "a span"
-                ).text()
-                    .substringAfter("-")
-                    .substringBeforeLast("-")
+                val href1 = info.select("a").attr("href")
+                val epText = info.select("a span").text()
+                val episode = epText.substringAfter("-", epText).substringBeforeLast("-", epText)
 
                 newEpisode(href1) {
                     this.name = episode
@@ -195,36 +113,19 @@ open class Animekhor : MainAPI() {
                 }
             }
 
-            newTvSeriesLoadResponse(
-                title,
-                url,
-                TvType.Anime,
-                episodes.reversed()
-            ) {
-
+            newTvSeriesLoadResponse(title, url, TvType.Anime, episodes.reversed()) {
                 this.posterUrl = poster
                 this.plot = description
             }
 
         } else {
 
-            if (poster.isEmpty()) {
+            val finalPoster = if (poster.isEmpty()) {
+                document.selectFirst("meta[property=og:image]")?.attr("content")?.trim().orEmpty()
+            } else poster
 
-                poster = document.selectFirst(
-                    "meta[property=og:image]"
-                )?.attr("content")
-                    ?.trim()
-                    .toString()
-            }
-
-            newMovieLoadResponse(
-                title,
-                url,
-                TvType.Movie,
-                href
-            ) {
-
-                this.posterUrl = poster
+            newMovieLoadResponse(title, url, TvType.Movie, href) {
+                this.posterUrl = finalPoster
                 this.plot = description
             }
         }
@@ -238,83 +139,43 @@ open class Animekhor : MainAPI() {
     ): Boolean {
 
         val document = app.get(data).document
-
-        val servers = document.select(
-            ".mobius option, #mobius option, select option"
-        )
+        val servers = document.select(".mobius option, #mobius option, select option")
 
         servers.forEach { server ->
 
             val base64 = server.attr("value")
-
             if (base64.isBlank()) return@forEach
 
             try {
-
                 val decoded = base64Decode(base64)
-
                 val patterns = listOf(
-
-                    Regex(
-                        """src=["']([^"']+)["']""",
-                        RegexOption.IGNORE_CASE
-                    ),
-
-                    Regex(
-                        """iframe.+?src=["']([^"']+)["']""",
-                        RegexOption.IGNORE_CASE
-                    ),
-
-                    Regex(
-                        """file["']?\s*:\s*["']([^"']+)["']""",
-                        RegexOption.IGNORE_CASE
-                    ),
-
-                    Regex(
-                        """data-src=["']([^"']+)["']""",
-                        RegexOption.IGNORE_CASE
-                    )
+                    Regex("""src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""iframe.+?src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""file["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""data-src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                 )
 
                 var extractedUrl: String? = null
-
                 for (regex in patterns) {
-
                     val match = regex.find(decoded)
-
                     if (match != null) {
-
-                        extractedUrl =
-                            match.groupValues[1]
-
+                        extractedUrl = match.groupValues[1]
                         break
                     }
                 }
 
-                if (extractedUrl.isNullOrBlank()) {
-                    return@forEach
-                }
+                if (extractedUrl.isNullOrBlank()) return@forEach
 
                 var fixedUrl = extractedUrl.trim()
-
-                if (fixedUrl.startsWith("//")) {
-                    fixedUrl = httpsify(fixedUrl)
-                }
-
-                if (!fixedUrl.startsWith("http")) {
-                    return@forEach
-                }
+                if (fixedUrl.startsWith("//")) fixedUrl = httpsify(fixedUrl)
+                if (!fixedUrl.startsWith("http")) return@forEach
 
                 Log.d("Animekhor", fixedUrl)
 
-                loadExtractor(
-                    fixedUrl,
-                    referer = mainUrl,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
+                loadExtractor(fixedUrl, referer = mainUrl, subtitleCallback = subtitleCallback, callback = callback)
 
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("Animekhor", "Failed to decode server link: ${e.message}")
             }
         }
 
@@ -322,18 +183,8 @@ open class Animekhor : MainAPI() {
     }
 
     private fun Element.getsrcAttribute(): String {
-
         val src = this.attr("src")
-
         val dataSrc = this.attr("data-src")
-
-        return when {
-
-            src.startsWith("http") -> src
-
-            dataSrc.startsWith("http") -> dataSrc
-
-            else -> ""
-        }
+        return src.takeIf { it.startsWith("http") } ?: dataSrc.takeIf { it.startsWith("http") } ?: ""
     }
 }
