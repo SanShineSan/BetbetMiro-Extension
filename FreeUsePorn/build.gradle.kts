@@ -1,11 +1,20 @@
-// ! Bu araç @Kraptor123 tarafından | @Cs-GizliKeyif için yazılmıştır.
-version = 2
+version = 3
 
 cloudstream {
-    authors     = listOf("BetbetMiro")
-    language    = "id"
-    description = "Watch High Quality Freeuse Porn Videos for free! Thousands of videos available for all freeuse porn categories including: Free Service Porn, Hypno Porn, Mind Control Porn, and more! Join our community and unlock video downloads, custom favorite lists, and more!"
-    status  = 1 // will be 3 if unspecified
+    authors = listOf("BetbetMiro")
+    language = "id"
+    description = "FreeUsePorn NSFW video provider"
+
+    /**
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+     */
+    status = 1
+
     tvTypes = listOf("NSFW")
-    iconUrl = "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://www.freeuseporn.com&size=128"
+
+    iconUrl = "https://www.google.com/s2/favicons?domain=freeuseporn.com&sz=%size%"
 }
