@@ -330,6 +330,13 @@ class DrakoridProvider : MainAPI() {
         }
     }
 
+    private fun String.cleanTitle(): String {
+        return replace(Regex("""\s+"""), " ")
+            .replace(Regex("""(?i)\s+-\s+Drakor\.id.*$"""), "")
+            .replace(Regex("""(?i)^Nonton\s+"""), "")
+            .trim()
+    }
+
     private fun buildPageUrl(path: String, page: Int): String {
         val clean = path.trim().trim('/')
         return when {
