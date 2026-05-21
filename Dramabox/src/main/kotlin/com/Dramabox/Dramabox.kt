@@ -14,7 +14,7 @@ import org.jsoup.nodes.Element
 class Dramabox : MainAPI() {
     override var mainUrl = "https://www.dramabox.com/in"
     private val apiUrl = "https://db.hafizhibnusyam.my.id"
-    override var name = "DramaBox"
+    override var name = "DramaBox👌"
     override var lang = "id"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -510,6 +510,89 @@ class Dramabox : MainAPI() {
         }
     }
 
+
+    private suspend fun fetchChapterBodies(
+        dramaId: String,
+        episodeNo: Int,
+        chapterId: String? = null
+    ): List<String> {
+        val bodies = mutableListOf<String>()
+        val endpoint = "$apiUrl/api/chapters/video"
+
+        suspend fun tryGet(url: String) {
+            runCatching {
+                executeWithRetry {
+                    rateLimitDelay(moduleName = "Dramabox")
+                    app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
+                }
+            }.onSuccess { body ->
+                if (body.isNotBlank()) bodies.add(body)
+            }.onFailure { e ->
+                logError("Dramabox", "chapter GET failed url=$url", e)
+            }
+        }
+
+        suspend fun tryPost(payload: Map<String, String>) {
+            runCatching {
+                executeWithRetry {
+                    rateLimitDelay(moduleName = "Dramabox")
+                    app.post(
+                        endpoint,
+                        data = payload,
+                        timeout = AutoUsedConstants.DEFAULT_TIMEOUT
+                    ).text
+                }
+            }.onSuccess { body ->
+                if (body.isNotBlank()) bodies.add(body)
+            }.onFailure { e ->
+                logError("Dramabox", "chapter POST failed payload=$payload", e)
+            }
+        }
+
+        if (!chapterId.isNullOrBlank()) {
+            listOf(
+                "$endpoint?book_id=$dramaId&chapter_id=$chapterId",
+                "$endpoint?book_id=$dramaId&chapterId=$chapterId",
+                "$endpoint?book_id=$dramaId&id=$chapterId",
+                "$endpoint?chapter_id=$chapterId",
+                "$endpoint?chapterId=$chapterId",
+                "$endpoint?id=$chapterId",
+                "$apiUrl/api/chapters/$chapterId",
+                "$apiUrl/api/chapters/video/$chapterId"
+            ).distinct().forEach { tryGet(it) }
+
+            listOf(
+                mapOf("book_id" to dramaId, "chapter_id" to chapterId),
+                mapOf("book_id" to dramaId, "chapterId" to chapterId),
+                mapOf("book_id" to dramaId, "id" to chapterId),
+                mapOf("bookId" to dramaId, "chapter_id" to chapterId),
+                mapOf("bookId" to dramaId, "chapterId" to chapterId),
+                mapOf("bookId" to dramaId, "id" to chapterId),
+                mapOf("chapter_id" to chapterId),
+                mapOf("chapterId" to chapterId),
+                mapOf("id" to chapterId)
+            ).forEach { tryPost(it) }
+        }
+
+        // Endpoint lama dan endpoint POST resmi. Docs Swagger API ini menampilkan /api/chapters/video sebagai POST,
+        // jadi kita coba dua-duanya supaya kompatibel dengan versi API lama dan baru.
+        listOf(
+            "$endpoint?book_id=$dramaId&episode=$episodeNo",
+            "$endpoint?bookId=$dramaId&episode=$episodeNo",
+            "$endpoint?book_id=$dramaId&episode_no=$episodeNo",
+            "$endpoint?book_id=$dramaId&episodeNo=$episodeNo"
+        ).distinct().forEach { tryGet(it) }
+
+        listOf(
+            mapOf("book_id" to dramaId, "episode" to episodeNo.toString()),
+            mapOf("bookId" to dramaId, "episode" to episodeNo.toString()),
+            mapOf("book_id" to dramaId, "episode_no" to episodeNo.toString()),
+            mapOf("book_id" to dramaId, "episodeNo" to episodeNo.toString())
+        ).forEach { tryPost(it) }
+
+        return bodies.distinct()
+    }
+
     // FIX #1: Changed app.post() to app.get().
     // The endpoint uses query string parameters (?book_id=...&episode=...),
     // which is a GET-style API. Using POST with no body was returning
@@ -519,38 +602,16 @@ class Dramabox : MainAPI() {
         episodeNo: Int,
         chapterId: String? = null
     ): ChapterContent? {
-        val urls = buildList {
-            if (!chapterId.isNullOrBlank()) {
-                add("$apiUrl/api/chapters/video?book_id=$dramaId&chapter_id=$chapterId")
-                add("$apiUrl/api/chapters/video?book_id=$dramaId&chapterId=$chapterId")
-                add("$apiUrl/api/chapters/video?book_id=$dramaId&id=$chapterId")
-                add("$apiUrl/api/chapters/video?chapter_id=$chapterId")
-                add("$apiUrl/api/chapters/video?id=$chapterId")
-                add("$apiUrl/api/chapters/$chapterId")
-                add("$apiUrl/api/chapters/video/$chapterId")
-            }
+        val bodies = fetchChapterBodies(dramaId, episodeNo, chapterId)
 
-            // Endpoint lama tetap dipertahankan karena beberapa drama masih cocok dengan episode number.
-            add("$apiUrl/api/chapters/video?book_id=$dramaId&episode=$episodeNo")
-        }.distinct()
+        bodies.forEach { body ->
+            val typed = tryParseJson<ChapterResponse>(body)
+            val typedChapters = typed?.allChapters().orEmpty()
+            val parsedChapters = parseChaptersFromJson(body)
+            val chapters = (typedChapters + parsedChapters)
+                .distinctBy { "${it.chapterIndex}-${it.chapterIdValue()}-${it.streamUrl?.firstOrNull()?.url}" }
 
-        for (url in urls) {
-            try {
-                val body = executeWithRetry {
-                    rateLimitDelay(moduleName = "Dramabox")
-                    app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
-                }
-
-                val typed = tryParseJson<ChapterResponse>(body)
-                val typedChapters = typed?.allChapters().orEmpty()
-                val parsedChapters = parseChaptersFromJson(body)
-                val chapters = (typedChapters + parsedChapters)
-                    .distinctBy { "${it.chapterIndex}-${it.chapterIdValue()}-${it.streamUrl?.firstOrNull()?.url}" }
-
-                selectBestChapter(chapters, episodeNo, chapterId)?.let { return it }
-            } catch (e: Exception) {
-                logError("Dramabox", "fetchChapterForEpisode failed url=$url", e)
-            }
+            selectBestChapter(chapters, episodeNo, chapterId)?.let { return it }
         }
 
         return null
@@ -559,19 +620,20 @@ class Dramabox : MainAPI() {
     // FIX #1 (same): inferEpisodeCount also used app.post() on the same endpoint.
     private suspend fun inferEpisodeCount(dramaId: String): Int {
         return try {
-            val url = "$apiUrl/api/chapters/video?book_id=$dramaId&episode=1"
-            val body = executeWithRetry {
-                rateLimitDelay(moduleName = "Dramabox")
-                app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
+            val bodies = fetchChapterBodies(dramaId, episodeNo = 1, chapterId = null)
+            var max = 0
+
+            bodies.forEach { body ->
+                val typed = tryParseJson<ChapterResponse>(body)
+                val typedMax = typed?.allChapters()
+                    .orEmpty()
+                    .mapNotNull { it.chapterIndex?.toIntOrNull() }
+                    .maxOrNull() ?: 0
+
+                max = maxOf(max, typedMax, inferEpisodeCountFromRawJson(body))
             }
 
-            val typed = tryParseJson<ChapterResponse>(body)
-            val typedMax = typed?.allChapters()
-                .orEmpty()
-                .mapNotNull { it.chapterIndex?.toIntOrNull() }
-                .maxOrNull() ?: 0
-
-            maxOf(typedMax, inferEpisodeCountFromRawJson(body))
+            max
         } catch (e: Exception) {
             logError("Dramabox", "inferEpisodeCount failed for id=$dramaId", e)
             0
@@ -585,20 +647,18 @@ class Dramabox : MainAPI() {
         title: String,
         poster: String?
     ): List<Episode> {
-        val body = try {
-            val url = "$apiUrl/api/chapters/video?book_id=$dramaId&episode=1"
-            executeWithRetry {
-                rateLimitDelay(moduleName = "Dramabox")
-                app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
-            }
+        val bodies = try {
+            fetchChapterBodies(dramaId, episodeNo = 1, chapterId = null)
         } catch (e: Exception) {
             logError("Dramabox", "fetchEpisodeList failed id=$dramaId", e)
             return emptyList()
         }
 
-        val typed = tryParseJson<ChapterResponse>(body)?.allChapters().orEmpty()
-        val parsed = parseChaptersFromJson(body)
-        val chapters = (typed + parsed)
+        val chapters = bodies.flatMap { body ->
+            val typed = tryParseJson<ChapterResponse>(body)?.allChapters().orEmpty()
+            val parsed = parseChaptersFromJson(body)
+            typed + parsed
+        }
             .distinctBy { "${it.chapterIndex}-${it.chapterIdValue()}-${it.streamUrl?.firstOrNull()?.url}" }
             .sortedBy { it.chapterIndex?.toIntOrNull() ?: Int.MAX_VALUE }
 
@@ -897,6 +957,15 @@ class Dramabox : MainAPI() {
                 ?: opt("videos")
                 ?: opt("play_url")
                 ?: opt("playUrl")
+                ?: opt("video_link")
+                ?: opt("videoLink")
+                ?: opt("download_link")
+                ?: opt("downloadLink")
+                ?: opt("m3u8")
+                ?: opt("mp4")
+                ?: opt("source")
+                ?: opt("sources")
+                ?: this
         )
 
         val id = optString("id").takeIf { it.isNotBlank() }
@@ -929,6 +998,16 @@ class Dramabox : MainAPI() {
                         .ifBlank { value.optString("file") }
                         .ifBlank { value.optString("video_url") }
                         .ifBlank { value.optString("videoUrl") }
+                        .ifBlank { value.optString("stream_url") }
+                        .ifBlank { value.optString("streamUrl") }
+                        .ifBlank { value.optString("play_url") }
+                        .ifBlank { value.optString("playUrl") }
+                        .ifBlank { value.optString("video_link") }
+                        .ifBlank { value.optString("videoLink") }
+                        .ifBlank { value.optString("download_link") }
+                        .ifBlank { value.optString("downloadLink") }
+                        .ifBlank { value.optString("m3u8") }
+                        .ifBlank { value.optString("mp4") }
                         .ifBlank { value.optString("src") }
                         .ifBlank { value.optString("link") }
 
@@ -947,8 +1026,15 @@ class Dramabox : MainAPI() {
                         val child = value.opt(key)
                         val keyQuality = key.filter { it.isDigit() }.toIntOrNull()
 
-                        if (child is String && child.startsWith("http", true)) {
-                            result.add(StreamItem(keyQuality ?: child.detectQuality(), child))
+                        if (child is String) {
+                            val cleanedChild = child
+                                .replace("\\u002F", "/")
+                                .replace("\\/", "/")
+                                .replace("&amp;", "&")
+                                .trim()
+                            if (cleanedChild.startsWith("http", true)) {
+                                result.add(StreamItem(keyQuality ?: cleanedChild.detectQuality(), cleanedChild))
+                            }
                         }
 
                         if (child is JSONObject || child is JSONArray) parseOne(child)
@@ -958,7 +1044,21 @@ class Dramabox : MainAPI() {
                     for (i in 0 until value.length()) parseOne(value.opt(i))
                 }
                 is String -> {
-                    if (value.startsWith("http", true)) result.add(StreamItem(null, value))
+                    val cleaned = value
+                        .replace("\\u002F", "/")
+                        .replace("\\/", "/")
+                        .replace("&amp;", "&")
+                        .trim()
+
+                    if (cleaned.startsWith("http", true)) {
+                        result.add(StreamItem(cleaned.detectQuality(), cleaned))
+                    } else {
+                        Regex("""https?://[^"'\<>\s]+""", RegexOption.IGNORE_CASE)
+                            .findAll(cleaned)
+                            .forEach { match ->
+                                result.add(StreamItem(match.value.detectQuality(), match.value))
+                            }
+                    }
                 }
             }
         }
