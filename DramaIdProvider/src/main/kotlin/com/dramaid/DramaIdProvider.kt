@@ -37,27 +37,74 @@ import java.util.Base64
 
 class DramaIdProvider : MainAPI() {
     override var mainUrl = "https://drama-id.com"
-    override var name = "DramaID"
+    override var name = "DramaID."
     override var lang = "id"
     override val hasMainPage = true
+    override val hasQuickSearch = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
 
     override val mainPage = mainPageOf(
         "$mainUrl/page/%d/" to "Update Terbaru",
+
+        // Negara
         "$mainUrl/negara/korea-selatan/page/%d/" to "Drama Korea",
         "$mainUrl/negara/china/page/%d/" to "Drama China",
         "$mainUrl/negara/japan/page/%d/" to "Drama Jepang",
         "$mainUrl/negara/thailand/page/%d/" to "Drama Thailand",
+        "$mainUrl/negara/taiwan/page/%d/" to "Drama Taiwan",
+        "$mainUrl/negara/hongkong/page/%d/" to "Drama Hongkong",
+        "$mainUrl/negara/philippines/page/%d/" to "Drama Philippines",
+
+        // Status
         "$mainUrl/status-drama/ongoing/page/%d/" to "Ongoing",
         "$mainUrl/status-drama/complete/page/%d/" to "Tamat",
+
+        // Genre utama
+        "$mainUrl/genre/action/page/%d/" to "Action",
+        "$mainUrl/genre/adventure/page/%d/" to "Adventure",
+        "$mainUrl/genre/business/page/%d/" to "Business",
+        "$mainUrl/genre/comedy/page/%d/" to "Comedy",
+        "$mainUrl/genre/crime/page/%d/" to "Crime",
+        "$mainUrl/genre/drama/page/%d/" to "Drama",
+        "$mainUrl/genre/family/page/%d/" to "Family",
+        "$mainUrl/genre/fantasy/page/%d/" to "Fantasy",
+        "$mainUrl/genre/food/page/%d/" to "Food",
+        "$mainUrl/genre/friendship/page/%d/" to "Friendship",
+        "$mainUrl/genre/historical/page/%d/" to "Historical",
+        "$mainUrl/genre/horror/page/%d/" to "Horror",
+        "$mainUrl/genre/law/page/%d/" to "Law",
+        "$mainUrl/genre/life/page/%d/" to "Life",
+        "$mainUrl/genre/melodrama/page/%d/" to "Melodrama",
+        "$mainUrl/genre/military/page/%d/" to "Military",
+        "$mainUrl/genre/music/page/%d/" to "Music",
+        "$mainUrl/genre/mystery/page/%d/" to "Mystery",
+        "$mainUrl/genre/office/page/%d/" to "Office",
+        "$mainUrl/genre/political/page/%d/" to "Political",
+        "$mainUrl/genre/psychological/page/%d/" to "Psychological",
+        "$mainUrl/genre/romance/page/%d/" to "Romance",
+        "$mainUrl/genre/school/page/%d/" to "School",
+        "$mainUrl/genre/sci-fi/page/%d/" to "Sci-Fi",
+        "$mainUrl/genre/sports/page/%d/" to "Sports",
+        "$mainUrl/genre/supernatural/page/%d/" to "Supernatural",
+        "$mainUrl/genre/thriller/page/%d/" to "Thriller",
+        "$mainUrl/genre/variety-show/page/%d/" to "Variety Show",
+        "$mainUrl/genre/war/page/%d/" to "War",
+        "$mainUrl/genre/youth/page/%d/" to "Youth",
+
+        // Rating umur
+        "$mainUrl/rating/semua-umur/page/%d/" to "Semua Umur",
+        "$mainUrl/rating/13/page/%d/" to "Rating 13",
+        "$mainUrl/rating/15/page/%d/" to "Rating 15",
+        "$mainUrl/rating/17/page/%d/" to "Rating 17",
+        "$mainUrl/rating/18/page/%d/" to "Rating 18"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = pageUrl(request.data, page)
         val document = app.get(url, referer = "$mainUrl/").document
         val items = document.toSearchResults()
-        val hasNext = document.select(".pagination a[href]:matchesOwn((?i)Next), .pagination a[href*='/page/${page + 1}/']").isNotEmpty()
+        val hasNext = document.select(".pagination a[href]:matchesOwn((?i)Next), .pagination a[href*='/page/${page + 1}/'], a.next[href], a[href*='/page/${page + 1}/']").isNotEmpty()
         return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 

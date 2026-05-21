@@ -1,11 +1,19 @@
-version = 1
+version = 2
 
 cloudstream {
-    description = "DramaID"
+    description = "DramaID - drama Asia subtitle Indonesia."
     language = "id"
     authors = listOf("BetbetMiro")
 
+    /**
+     * Status int:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta-only
+     */
     status = 1
+
     tvTypes = listOf(
         "AsianDrama",
         "TvSeries",
