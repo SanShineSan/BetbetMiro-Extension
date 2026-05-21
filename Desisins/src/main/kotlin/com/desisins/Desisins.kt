@@ -11,7 +11,7 @@ class Desisins : MainAPI() {
     override var mainUrl = "https://desisins.com"
     private val shortsUrl = "https://shorts.desisins.com"
 
-    override var name = "Desisins"
+    override var name = "Desisins."
     override val hasMainPage = true
     override val hasQuickSearch = true
     override var lang = "hi"
@@ -162,14 +162,10 @@ class Desisins : MainAPI() {
             ?.ifBlank { null }
             ?: "Desisins"
 
-        val poster = document.selectFirst("meta[property=og:image], meta[name=twitter:image], .entry-content img, article img")
-            ?.let {
-                when (it.tagName()) {
-                    "meta" -> it.attr("content")
-                    else -> it.attr("data-src").ifBlank { it.attr("src") }
-                }
-            }
+        val poster = document.selectFirst("meta[property=og:image], meta[name=twitter:image]")
+            ?.attr("content")
             ?.let { absoluteUrlOrNull(it, url) }
+            ?: findPosterUrl(document.body(), url)
 
         val description = document.selectFirst("meta[property=og:description], meta[name=description], div.g1-meta, .entry-summary")
             ?.let {
@@ -289,15 +285,84 @@ class Desisins : MainAPI() {
 
         if (title.isBlank()) return null
 
-        val image = container.selectFirst("img")
-        val poster = image?.attr("data-src")
-            ?.ifBlank { image.attr("data-lazy-src") }
-            ?.ifBlank { image.attr("src") }
-            ?.ifBlank { image.attr("data-original") }
-            ?.let { absoluteUrlOrNull(it, fixedHref) }
+        val poster = findPosterUrl(container, fixedHref)
 
         return newMovieSearchResponse(title, fixedHref, TvType.NSFW) {
             this.posterUrl = poster
         }
+    }
+
+    private fun findPosterUrl(container: Element, pageUrl: String): String? {
+        val boxes = listOfNotNull(
+            container,
+            container.parent(),
+            container.parent()?.parent(),
+            container.parent()?.parent()?.parent()
+        ).distinct()
+
+        for (box in boxes) {
+            extractImageFromElement(box, pageUrl)?.let { return it }
+
+            box.select("img, source, a, span, div").forEach { element ->
+                extractImageFromElement(element, pageUrl)?.let { return it }
+            }
+        }
+
+        return null
+    }
+
+    private fun extractImageFromElement(element: Element, pageUrl: String): String? {
+        val attrs = listOf(
+            "data-src",
+            "data-lazy-src",
+            "data-original",
+            "data-bg",
+            "data-background",
+            "data-thumb",
+            "data-image",
+            "src",
+            "poster"
+        )
+
+        attrs.forEach { attr ->
+            val value = element.attr(attr).trim()
+            if (value.isValidImageValue()) {
+                return absoluteUrlOrNull(value, pageUrl)
+            }
+        }
+
+        listOf("srcset", "data-srcset").forEach { attr ->
+            val value = element.attr(attr).trim()
+            val firstImage = value.split(",")
+                .map { it.trim().substringBefore(" ").trim() }
+                .firstOrNull { it.isValidImageValue() }
+            if (!firstImage.isNullOrBlank()) {
+                return absoluteUrlOrNull(firstImage, pageUrl)
+            }
+        }
+
+        val style = element.attr("style")
+        if (style.isNotBlank()) {
+            Regex("""url\((['"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
+                .find(style)
+                ?.groupValues
+                ?.getOrNull(2)
+                ?.trim()
+                ?.takeIf { it.isValidImageValue() }
+                ?.let { return absoluteUrlOrNull(it, pageUrl) }
+        }
+
+        return null
+    }
+
+    private fun String.isValidImageValue(): Boolean {
+        if (isBlank()) return false
+        if (startsWith("data:", true)) return false
+        if (contains("blank", true) || contains("placeholder", true) || contains("spacer", true)) return false
+        return contains(".jpg", true) ||
+            contains(".jpeg", true) ||
+            contains(".png", true) ||
+            contains(".webp", true) ||
+            contains("/wp-content/uploads/", true)
     }
 }
