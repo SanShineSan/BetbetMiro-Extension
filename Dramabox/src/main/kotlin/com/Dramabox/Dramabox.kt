@@ -148,8 +148,7 @@ class Dramabox : MainAPI() {
             ?: extractDramaId(url)
             ?: throw ErrorLoadingException("ID DramaBox tidak ditemukan")
 
-        // Pakai cara file awal: ID tetap jadi kunci utama untuk API.
-        // Bedanya sekarang URL web dibuat valid, bukan /drama/_ID.
+        // Pakai ID tetap sebagai kunci utama API, tapi episode sekarang menyimpan chapterId/webUrl juga.
         val detail = fetchDramaDetail(dramaId)
 
         val title = cleanTitle(
@@ -164,16 +163,27 @@ class Dramabox : MainAPI() {
 
         val episodeCount = detail?.episodeCount?.takeIf { it > 0 }
             ?: inferEpisodeCount(dramaId)
-            // Jangan lempar "Episode tidak ditemukan" saat endpoint count gagal.
-            // Tetap tampilkan daftar episode fallback agar episode 1 bisa dicoba seperti provider awal.
-            .takeIf { it > 0 }
+                .takeIf { it > 0 }
             ?: FALLBACK_EPISODE_COUNT
 
-        val episodes = (1..episodeCount).map { ep ->
-            newEpisode(LoadData(bookId = dramaId, episodeNo = ep).toJson()) {
-                this.name = "Episode $ep"
-                this.episode = ep
-                this.posterUrl = poster
+        val episodesFromApi = fetchEpisodeList(dramaId, title, poster)
+        val episodes = if (episodesFromApi.isNotEmpty()) {
+            episodesFromApi
+        } else {
+            (1..episodeCount).map { ep ->
+                newEpisode(
+                    LoadData(
+                        bookId = dramaId,
+                        episodeNo = ep,
+                        title = title,
+                        webUrl = null,
+                        chapterId = null
+                    ).toJson()
+                ) {
+                    this.name = "Episode $ep"
+                    this.episode = ep
+                    this.posterUrl = poster
+                }
             }
         }
 
@@ -193,23 +203,37 @@ class Dramabox : MainAPI() {
         val parsed = runCatching { parseJson<LoadData>(data) }.getOrNull() ?: return false
         val dramaId = parsed.bookId?.trim()?.takeIf { it.isNotBlank() } ?: return false
         val episodeNo = parsed.episodeNo ?: return false
+        val chapterId = parsed.chapterId?.trim()?.takeIf { it.isNotBlank() }
+        val officialVideoUrl = parsed.webUrl?.trim()?.takeIf { it.isNotBlank() }
 
-        val chapter = fetchChapterForEpisode(dramaId, episodeNo)
-        val streams = chapter?.streamUrl.orEmpty()
-            .mapNotNull { stream ->
-                val fixedUrl = stream.url
-                    ?.replace("\\u002F", "/")
-                    ?.replace("\\/", "/")
-                    ?.replace("&amp;", "&")
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
-
-                if (fixedUrl == null) null else stream.copy(url = fixedUrl)
-            }
+        val chapter = fetchChapterForEpisode(dramaId, episodeNo, chapterId)
+        val apiStreams = chapter?.streamUrl.orEmpty()
+            .mapNotNull { it.normalizedOrNull() }
             .distinctBy { it.url }
             .sortedByDescending { it.quality ?: 0 }
 
-        if (streams.isEmpty()) return false
+        val webStreams = if (apiStreams.isEmpty() && !officialVideoUrl.isNullOrBlank()) {
+            fetchOfficialVideoStreams(officialVideoUrl)
+                .mapNotNull { it.normalizedOrNull() }
+                .distinctBy { it.url }
+                .sortedByDescending { it.quality ?: 0 }
+        } else {
+            emptyList()
+        }
+
+        val streams = if (apiStreams.isNotEmpty()) apiStreams else webStreams
+        if (streams.isEmpty()) {
+            // Last fallback: beri kesempatan extractor umum membaca halaman video resmi.
+            if (!officialVideoUrl.isNullOrBlank()) {
+                return loadExtractorWithFallback(
+                    officialVideoUrl,
+                    "$mainUrl/",
+                    subtitleCallback,
+                    callback
+                )
+            }
+            return false
+        }
 
         streams.forEach { stream ->
             val streamUrl = stream.url ?: return@forEach
@@ -228,9 +252,9 @@ class Dramabox : MainAPI() {
                     linkType
                 ) {
                     this.quality = qualityFromNumber(stream.quality)
-                    this.referer = "$mainUrl/"
+                    this.referer = officialVideoUrl ?: "$mainUrl/"
                     this.headers = mapOf(
-                        "Referer" to "$mainUrl/",
+                        "Referer" to (officialVideoUrl ?: "$mainUrl/"),
                         "Origin" to "https://www.dramabox.com",
                         "User-Agent" to USER_AGENT,
                         "Accept" to "*/*"
@@ -490,26 +514,46 @@ class Dramabox : MainAPI() {
     // The endpoint uses query string parameters (?book_id=...&episode=...),
     // which is a GET-style API. Using POST with no body was returning
     // 405 Method Not Allowed / empty response, causing all video loading to fail.
-    private suspend fun fetchChapterForEpisode(dramaId: String, episodeNo: Int): ChapterContent? {
-        return try {
-            val url = "$apiUrl/api/chapters/video?book_id=$dramaId&episode=$episodeNo"
-            val body = executeWithRetry {
-                rateLimitDelay(moduleName = "Dramabox")
-                app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
+    private suspend fun fetchChapterForEpisode(
+        dramaId: String,
+        episodeNo: Int,
+        chapterId: String? = null
+    ): ChapterContent? {
+        val urls = buildList {
+            if (!chapterId.isNullOrBlank()) {
+                add("$apiUrl/api/chapters/video?book_id=$dramaId&chapter_id=$chapterId")
+                add("$apiUrl/api/chapters/video?book_id=$dramaId&chapterId=$chapterId")
+                add("$apiUrl/api/chapters/video?book_id=$dramaId&id=$chapterId")
+                add("$apiUrl/api/chapters/video?chapter_id=$chapterId")
+                add("$apiUrl/api/chapters/video?id=$chapterId")
+                add("$apiUrl/api/chapters/$chapterId")
+                add("$apiUrl/api/chapters/video/$chapterId")
             }
 
-            val typed = tryParseJson<ChapterResponse>(body)
-            val typedChapters = typed?.allChapters().orEmpty()
-            typedChapters.firstOrNull { it.chapterIndex?.toIntOrNull() == episodeNo && it.streamUrl?.isNotEmpty() == true }
-                ?: typedChapters.firstOrNull { it.streamUrl?.isNotEmpty() == true }
-                ?: parseChaptersFromJson(body).let { chapters ->
-                    chapters.firstOrNull { it.chapterIndex?.toIntOrNull() == episodeNo && it.streamUrl?.isNotEmpty() == true }
-                        ?: chapters.firstOrNull { it.streamUrl?.isNotEmpty() == true }
+            // Endpoint lama tetap dipertahankan karena beberapa drama masih cocok dengan episode number.
+            add("$apiUrl/api/chapters/video?book_id=$dramaId&episode=$episodeNo")
+        }.distinct()
+
+        for (url in urls) {
+            try {
+                val body = executeWithRetry {
+                    rateLimitDelay(moduleName = "Dramabox")
+                    app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
                 }
-        } catch (e: Exception) {
-            logError("Dramabox", "fetchChapterForEpisode failed id=$dramaId ep=$episodeNo", e)
-            null
+
+                val typed = tryParseJson<ChapterResponse>(body)
+                val typedChapters = typed?.allChapters().orEmpty()
+                val parsedChapters = parseChaptersFromJson(body)
+                val chapters = (typedChapters + parsedChapters)
+                    .distinctBy { "${it.chapterIndex}-${it.chapterIdValue()}-${it.streamUrl?.firstOrNull()?.url}" }
+
+                selectBestChapter(chapters, episodeNo, chapterId)?.let { return it }
+            } catch (e: Exception) {
+                logError("Dramabox", "fetchChapterForEpisode failed url=$url", e)
+            }
         }
+
+        return null
     }
 
     // FIX #1 (same): inferEpisodeCount also used app.post() on the same endpoint.
@@ -534,6 +578,161 @@ class Dramabox : MainAPI() {
         }
     }
 
+
+
+    private suspend fun fetchEpisodeList(
+        dramaId: String,
+        title: String,
+        poster: String?
+    ): List<Episode> {
+        val body = try {
+            val url = "$apiUrl/api/chapters/video?book_id=$dramaId&episode=1"
+            executeWithRetry {
+                rateLimitDelay(moduleName = "Dramabox")
+                app.get(url, timeout = AutoUsedConstants.DEFAULT_TIMEOUT).text
+            }
+        } catch (e: Exception) {
+            logError("Dramabox", "fetchEpisodeList failed id=$dramaId", e)
+            return emptyList()
+        }
+
+        val typed = tryParseJson<ChapterResponse>(body)?.allChapters().orEmpty()
+        val parsed = parseChaptersFromJson(body)
+        val chapters = (typed + parsed)
+            .distinctBy { "${it.chapterIndex}-${it.chapterIdValue()}-${it.streamUrl?.firstOrNull()?.url}" }
+            .sortedBy { it.chapterIndex?.toIntOrNull() ?: Int.MAX_VALUE }
+
+        return chapters.mapNotNull { chapter ->
+            val ep = chapter.chapterIndex?.toIntOrNull() ?: return@mapNotNull null
+            val chapterId = chapter.chapterIdValue()
+            val webUrl = if (!chapterId.isNullOrBlank()) {
+                buildVideoWebUrl(title, dramaId, chapterId, ep)
+            } else {
+                null
+            }
+
+            newEpisode(
+                LoadData(
+                    bookId = dramaId,
+                    episodeNo = ep,
+                    chapterId = chapterId,
+                    webUrl = webUrl,
+                    title = title
+                ).toJson()
+            ) {
+                this.name = "Episode $ep"
+                this.episode = ep
+                this.posterUrl = poster
+            }
+        }
+    }
+
+    private fun selectBestChapter(
+        chapters: List<ChapterContent>,
+        episodeNo: Int,
+        chapterId: String?
+    ): ChapterContent? {
+        val withStreams = chapters.filter { it.streamUrl?.isNotEmpty() == true }
+        if (withStreams.isEmpty()) return null
+
+        if (!chapterId.isNullOrBlank()) {
+            withStreams.firstOrNull { it.chapterIdValue() == chapterId }?.let { return it }
+        }
+
+        withStreams.firstOrNull { it.chapterIndex?.toIntOrNull() == episodeNo }?.let { return it }
+        return withStreams.firstOrNull()
+    }
+
+    private fun ChapterContent.chapterIdValue(): String? {
+        return listOf(id, chapterId, chapterIdCamel, cid, chapterNo, chapterNoCamel)
+            .firstOrNull { value ->
+                !value.isNullOrBlank() &&
+                    value.any { it.isDigit() } &&
+                    value != chapterIndex
+            }
+    }
+
+    private fun StreamItem.normalizedOrNull(): StreamItem? {
+        val fixedUrl = url
+            ?.replace("\\u002F", "/")
+            ?.replace("\\/", "/")
+            ?.replace("&amp;", "&")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        return copy(url = fixedUrl)
+    }
+
+    private suspend fun fetchOfficialVideoStreams(videoUrl: String): List<StreamItem> {
+        return try {
+            val html = executeWithRetry {
+                rateLimitDelay(moduleName = "Dramabox")
+                app.get(
+                    videoUrl,
+                    headers = webHeaders,
+                    referer = "$mainUrl/"
+                ).text
+            }
+
+            parseStreamItemsFromHtml(html)
+        } catch (e: Exception) {
+            logError("Dramabox", "fetchOfficialVideoStreams failed url=$videoUrl", e)
+            emptyList()
+        }
+    }
+
+    private fun parseStreamItemsFromHtml(html: String): List<StreamItem> {
+        val decodedHtml = html
+            .replace("\\u002F", "/")
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+
+        val result = mutableListOf<StreamItem>()
+
+        val directPatterns = listOf(
+            Regex("""https?://[^"'\\<>\s]+?\.(?:m3u8|mp4|mpd)(?:\?[^"'\\<>\s]*)?""", RegexOption.IGNORE_CASE),
+            Regex("""(?:playUrl|videoUrl|video_url|streamUrl|stream_url|file|src)["']?\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        )
+
+        directPatterns.forEach { pattern ->
+            pattern.findAll(decodedHtml).forEach { match ->
+                val raw = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
+                if (raw.startsWith("http", true)) {
+                    result.add(StreamItem(raw.detectQuality(), raw))
+                }
+            }
+        }
+
+        return result.distinctBy { it.url }
+    }
+
+    private fun String.detectQuality(): Int? {
+        val lower = lowercase()
+        return when {
+            lower.contains("2160") || lower.contains("4k") -> 2160
+            lower.contains("1440") || lower.contains("2k") -> 1440
+            lower.contains("1080") -> 1080
+            lower.contains("720") -> 720
+            lower.contains("480") -> 480
+            lower.contains("360") -> 360
+            lower.contains("240") -> 240
+            else -> null
+        }
+    }
+
+    private fun buildVideoWebUrl(title: String?, dramaId: String, chapterId: String, episodeNo: Int): String {
+        val dramaSlug = title
+            ?.let(::cleanTitle)
+            ?.replace(Regex("""['’`]+"""), "")
+            ?.replace("&", " and ")
+            ?.replace(Regex("""[^A-Za-z0-9]+"""), "-")
+            ?.trim('-')
+            ?.takeIf { it.isNotBlank() }
+            ?: "DramaBox"
+
+        return "$mainUrl/video/${dramaId}_${dramaSlug}/${chapterId}_Episode-$episodeNo"
+    }
 
     private fun qualityFromNumber(value: Int?): Int {
         return when (value) {
@@ -696,10 +895,28 @@ class Dramabox : MainAPI() {
                 ?: opt("streams")
                 ?: opt("video")
                 ?: opt("videos")
+                ?: opt("play_url")
+                ?: opt("playUrl")
         )
 
-        if (index == null && streams.isEmpty()) return null
-        return ChapterContent(index, streams)
+        val id = optString("id").takeIf { it.isNotBlank() }
+        val chapterId = optString("chapter_id").takeIf { it.isNotBlank() }
+        val chapterIdCamel = optString("chapterId").takeIf { it.isNotBlank() }
+        val cid = optString("cid").takeIf { it.isNotBlank() }
+        val chapterNo = optString("chapter_no").takeIf { it.isNotBlank() }
+        val chapterNoCamel = optString("chapterNo").takeIf { it.isNotBlank() }
+
+        if (index == null && streams.isEmpty() && id == null && chapterId == null && chapterIdCamel == null && cid == null) return null
+        return ChapterContent(
+            chapterIndex = index,
+            streamUrl = streams,
+            id = id,
+            chapterId = chapterId,
+            chapterIdCamel = chapterIdCamel,
+            cid = cid,
+            chapterNo = chapterNo,
+            chapterNoCamel = chapterNoCamel
+        )
     }
 
     private fun parseStreamItems(raw: Any?): List<StreamItem> {
@@ -731,7 +948,7 @@ class Dramabox : MainAPI() {
                         val keyQuality = key.filter { it.isDigit() }.toIntOrNull()
 
                         if (child is String && child.startsWith("http", true)) {
-                            result.add(StreamItem(keyQuality, child))
+                            result.add(StreamItem(keyQuality ?: child.detectQuality(), child))
                         }
 
                         if (child is JSONObject || child is JSONArray) parseOne(child)
@@ -767,8 +984,23 @@ class Dramabox : MainAPI() {
     data class ResponseMeta(@JsonProperty("pagination") val pagination: Pagination? = null)
     data class Pagination(@JsonProperty("has_more") val hasMore: Boolean? = null)
     data class ChapterResponse(@JsonProperty("data") val data: List<ChapterContent>? = null, @JsonProperty("extras") val extras: List<ChapterContent>? = null)
-    data class ChapterContent(@JsonProperty("chapter_index") val chapterIndex: String? = null, @JsonProperty("stream_url") val streamUrl: List<StreamItem>? = null)
+    data class ChapterContent(
+        @JsonProperty("chapter_index") val chapterIndex: String? = null,
+        @JsonProperty("stream_url") val streamUrl: List<StreamItem>? = null,
+        @JsonProperty("id") val id: String? = null,
+        @JsonProperty("chapter_id") val chapterId: String? = null,
+        @JsonProperty("chapterId") val chapterIdCamel: String? = null,
+        @JsonProperty("cid") val cid: String? = null,
+        @JsonProperty("chapter_no") val chapterNo: String? = null,
+        @JsonProperty("chapterNo") val chapterNoCamel: String? = null
+    )
     data class StreamItem(@JsonProperty("quality") val quality: Int? = null, @JsonProperty("url") val url: String? = null)
     data class DramaOpenData(@JsonProperty("id") val id: String? = null, @JsonProperty("title") val title: String? = null, @JsonProperty("coverImage") val coverImage: String? = null)
-    data class LoadData(@JsonProperty("bookId") val bookId: String? = null, @JsonProperty("episodeNo") val episodeNo: Int? = null)
+    data class LoadData(
+        @JsonProperty("bookId") val bookId: String? = null,
+        @JsonProperty("episodeNo") val episodeNo: Int? = null,
+        @JsonProperty("chapterId") val chapterId: String? = null,
+        @JsonProperty("webUrl") val webUrl: String? = null,
+        @JsonProperty("title") val title: String? = null
+    )
 }
