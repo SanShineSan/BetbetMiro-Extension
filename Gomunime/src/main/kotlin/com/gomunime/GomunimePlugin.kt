@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
 class GomunimePlugin : Plugin() {
-    override fun load(context: Context) {
-        registerMainAPI(Gomunime())
+//    override fun load(context: Context) {
+//        registerMainAPI(Gomunime())
     }
 }
