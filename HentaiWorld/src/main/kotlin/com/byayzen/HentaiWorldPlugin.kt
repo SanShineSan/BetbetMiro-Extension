@@ -1,13 +1,12 @@
-// ! Bu araç @ByAyzen tarafından | @Cs-GizliKeyif için yazılmıştır.
 package com.byayzen
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 
 @CloudstreamPlugin
-class HentaiWorldPlugin: Plugin() {
-    override fun load() {
+class HentaiWorldPlugin : Plugin() {
+    override fun load(context: Context) {
         registerMainAPI(HentaiWorld())
     }
 }
