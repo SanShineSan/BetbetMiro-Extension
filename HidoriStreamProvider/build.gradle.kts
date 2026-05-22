@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     description = "HidoriStream — Streaming Anime Subtitle Indonesia"
@@ -11,13 +11,14 @@ cloudstream {
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-     * */
-    status = 1 // will be 3 if unspecified
+     */
+    status = 1
+
     tvTypes = listOf(
-        "AnimeMovie",
-        "OVA",
         "Anime",
+        "AnimeMovie",
+        "OVA"
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://v2.hidoristream.online&size=%size%"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://v3.hidoristream.online&size=%size%"
 }
