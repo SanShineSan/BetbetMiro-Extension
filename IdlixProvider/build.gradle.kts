@@ -1,13 +1,9 @@
-// use an integer for version numbers
-version = 10
-
+version = 11
 
 cloudstream {
     language = "id"
-    // All of these properties are optional, you can safely remove them
-
-    // description = "Lorem Ipsum"
-     authors = listOf("BetbetMiro")
+    authors = listOf("BetbetMiro")
+    description = "Idlix provider with API homepage, categories, series episodes, subtitles, and hardened playback extraction."
 
     /**
      * Status int as the following:
@@ -15,14 +11,16 @@ cloudstream {
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-     * */
-    status = 1 // will be 3 if unspecified
+     */
+    status = 1
+
     tvTypes = listOf(
         "TvSeries",
         "Movie",
         "Anime",
-        "AsianDrama",
+        "AsianDrama"
     )
+
     isCrossPlatform = false
     iconUrl = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/idlix.png"
 }

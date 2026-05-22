@@ -1,14 +1,21 @@
 package com.idlix
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
-import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.getPacked
+import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import java.net.URI
+import java.net.URLDecoder
 
 class Jeniusplay : ExtractorApi() {
     override var name = "Jeniusplay"
@@ -22,51 +29,81 @@ class Jeniusplay : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         val cleanUrl = url.replace(" ", "%20")
-        try {
-            // Ambil teks HTML mentah sebagai lapis pertahanan pertama
-            val responseText = app.get(cleanUrl, referer = referer).text
-            val cleanHtml = responseText.replace("\\/", "/")
+        val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "*/*",
+            "Referer" to (referer ?: mainUrl)
+        )
 
-            // STRATEGI BYPASS 1: Cari langsung apakah ada link m3u8/mp4/txt nangkring di HTML halaman utama
-            val directStream = Regex("""https?://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*\.(?:m3u8|mp4|txt)[-a-zA-Z0-9+&@#/%=~_|]*""")
-                .findAll(cleanHtml)
-                .map { it.value }
-                .firstOrNull { !it.contains("jeniusplay.com/player/") && !it.contains("ajax.php") && !it.contains("index.php") }
+        val response = runCatching {
+            app.get(
+                cleanUrl,
+                referer = referer ?: mainUrl,
+                headers = headers,
+                timeout = 30L
+            )
+        }.getOrNull() ?: return
 
-            if (directStream != null) {
-                val finalStreamUrl = directStream.replace(".txt", ".m3u8")
-                generateM3u8(name, finalStreamUrl, cleanUrl).forEach(callback)
-                return
+        val html = response.text.cleanEscaped()
+        val found = linkedSetOf<String>()
+
+        extractStreamUrls(html).forEach {
+            found.add(normalizeUrl(it, cleanUrl))
+        }
+
+        val unpacked = runCatching {
+            if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
+        }.getOrNull()
+
+        if (!unpacked.isNullOrBlank()) {
+            extractStreamUrls(unpacked.cleanEscaped()).forEach {
+                found.add(normalizeUrl(it, cleanUrl))
             }
+        }
 
-            // STRATEGI BYPASS 2: Tembak API Player via POST (ajax.php atau index.php otomatis dideteksi)
-            val hash = cleanUrl.split("/").last().substringAfter("data=")
-            val endpoint = if (responseText.contains("ajax.php")) "$mainUrl/player/ajax.php?data=$hash&do=getVideo" else "$mainUrl/player/index.php?data=$hash&do=getVideo"
+        if (found.isEmpty()) {
+            val hash = cleanUrl.substringAfter("data=", cleanUrl.substringAfterLast("/"))
+                .substringBefore("&")
+                .substringBefore("?")
+                .trim()
 
-            val postResponse = app.post(
-                url = endpoint,
-                data = mapOf("hash" to hash, "r" to "$referer"),
+            val endpoints = listOf(
+                "$mainUrl/player/ajax.php?data=$hash&do=getVideo",
+                "$mainUrl/player/index.php?data=$hash&do=getVideo"
+            )
+
+            endpoints.forEach { endpoint ->
+                val postText = runCatching {
+                    app.post(
+                        url = endpoint,
+                        data = mapOf(
+                            "hash" to hash,
+                            "r" to (referer ?: "")
+                        ),
+                        referer = cleanUrl,
+                        headers = headers + mapOf("X-Requested-With" to "XMLHttpRequest"),
+                        timeout = 30L
+                    ).text.cleanEscaped()
+                }.getOrNull().orEmpty()
+
+                extractStreamUrls(postText).forEach {
+                    found.add(normalizeUrl(it, cleanUrl))
+                }
+            }
+        }
+
+        found.forEach { stream ->
+            emitVideo(
+                source = name,
+                streamUrl = stream,
                 referer = cleanUrl,
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).text
-            
-            val unescapedPost = postResponse.replace("\\/", "/")
-            
-            // UNIVERSAL SNIFFER: Ambil streaming link apa saja dari response JSON tanpa .parsed API kaku (anti runtime crash)
-            val extractedUrl = Regex("""https?://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*\.(?:m3u8|mp4|txt)[-a-zA-Z0-9+&@#/%=~_|]*""")
-                .find(unescapedPost)?.value
-
-            if (extractedUrl != null) {
-                val finalStreamUrl = extractedUrl.replace(".txt", ".m3u8")
-                generateM3u8(name, finalStreamUrl, cleanUrl).forEach(callback)
-            }
-        } catch (e: Exception) {
-            Log.e(name, "Extraction failed for $cleanUrl: ${e.message}")
+                callback = callback
+            )
         }
     }
 
     data class ResponseSource(
-        @JsonProperty("videoSource") val videoSource: String,
+        @JsonProperty("videoSource") val videoSource: String? = null
     )
 }
 
@@ -81,39 +118,195 @@ class Majorplay : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        try {
-            val domain = "https://" + java.net.URI(url).host
-            val document = app.get(url, referer = domain).document
-            val htmlContent = document.html().replace("\\/", "/")
-            
-            // UNIVERSAL SNIFFER: Scrape link .m3u8/.mp4 langsung dari isi HTML untuk menembus perubahan skrip player
-            var m3uLink = document.select("source").attr("src").trim()
-            if (m3uLink.isEmpty()) {
-                m3uLink = Regex("""https?://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*\.(?:m3u8|mp4)[-a-zA-Z0-9+&@#/%=~_|]*""")
-                    .find(htmlContent)?.value ?: ""
+        val domain = runCatching {
+            "https://${URI(url).host}"
+        }.getOrDefault(mainUrl)
+
+        val response = runCatching {
+            app.get(
+                url,
+                referer = referer ?: domain,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to (referer ?: domain),
+                    "Accept" to "*/*"
+                ),
+                timeout = 30L
+            )
+        }.getOrNull() ?: return
+
+        val html = response.text.cleanEscaped()
+        val document = response.document
+        val streams = linkedSetOf<String>()
+
+        document.select("video source[src], source[src], video[src]").forEach { source ->
+            val src = source.attr("src")
+                .ifBlank { source.attr("abs:src") }
+                .trim()
+
+            if (src.isNotBlank()) {
+                streams.add(normalizeUrl(src, url))
+            }
+        }
+
+        extractStreamUrls(html).forEach {
+            streams.add(normalizeUrl(it, url))
+        }
+
+        val unpacked = runCatching {
+            if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
+        }.getOrNull()
+
+        if (!unpacked.isNullOrBlank()) {
+            extractStreamUrls(unpacked.cleanEscaped()).forEach {
+                streams.add(normalizeUrl(it, url))
+            }
+        }
+
+        streams.forEach { stream ->
+            emitVideo(
+                source = name,
+                streamUrl = stream,
+                referer = domain,
+                callback = callback
+            )
+        }
+
+        val scripts = document.selectFirst("script:containsData(subtitles)")?.data().orEmpty()
+        val subRegex = Regex("""\\"label\\":\\"([^\\"]*?)\\"[^}]*?\\"path\\":\\"([^\\"]*?)\\\"""")
+
+        subRegex.findAll(scripts).forEach { match ->
+            val label = match.groupValues[1]
+            var vttUrl = match.groupValues[2].cleanEscaped()
+
+            if (!vttUrl.startsWith("http")) {
+                vttUrl = domain.trimEnd('/') + "/" + vttUrl.trimStart('/')
             }
 
-            if (m3uLink.isNotEmpty()) {
-                generateM3u8(name, m3uLink, domain).forEach(callback)
-            }
-
-            // Ekstraksi Subtitle Internal Majorplay
-            val scripts = document.selectFirst("script:containsData(subtitles)")?.data() ?: return
-            val subRegex = Regex("""\\"label\\":\\"([^\\"]*?)\\"[^}]*?\\"path\\":\\"([^\\"]*?)\\\"""")
-
-            subRegex.findAll(scripts).forEach { match ->
-                val label = match.groupValues[1]
-                var vttUrl = match.groupValues[2].replace("\\/", "/")
-
-                if (!vttUrl.startsWith("http")) {
-                    vttUrl = domain.trimEnd('/') + "/" + vttUrl.trimStart('/')
-                }
-                subtitleCallback.invoke(
-                    SubtitleFile(label, vttUrl)
+            subtitleCallback(
+                newSubtitleFile(
+                    label,
+                    vttUrl
                 )
-            }
-        } catch (e: Exception) {
-            Log.e(name, "Extraction failed: ${e.message}")
+            )
         }
     }
+}
+
+private fun emitVideo(
+    source: String,
+    streamUrl: String,
+    referer: String,
+    callback: (ExtractorLink) -> Unit
+) {
+    val fixedStream = streamUrl.cleanEscaped().replace(".txt", ".m3u8")
+
+    if (fixedStream.contains(".m3u8", true)) {
+        generateM3u8(
+            source = source,
+            streamUrl = fixedStream,
+            referer = referer
+        ).forEach(callback)
+    } else {
+        callback(
+            newExtractorLink(
+                source = source,
+                name = source,
+                url = fixedStream,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = referer
+                this.quality = getQualityFromName(fixedStream).takeIf {
+                    it != Qualities.Unknown.value
+                } ?: qualityFromUrl(fixedStream)
+            }
+        )
+    }
+}
+
+private fun extractStreamUrls(text: String): List<String> {
+    val urls = linkedSetOf<String>()
+    val cleanText = text.cleanEscaped()
+
+    Regex(
+        """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|txt)(?:\?[^"'\\\s<>]*)?""",
+        RegexOption.IGNORE_CASE
+    ).findAll(cleanText)
+        .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
+        .forEach { urls.add(it) }
+
+    Regex(
+        """https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.txt)[^"'\\\s<>]*""",
+        RegexOption.IGNORE_CASE
+    ).findAll(cleanText)
+        .map {
+            runCatching {
+                URLDecoder.decode(it.value, "UTF-8")
+            }.getOrDefault(it.value)
+        }
+        .map { it.cleanEscaped().replace(".txt", ".m3u8") }
+        .forEach { urls.add(it) }
+
+    Regex(
+        """(?:file|source|src|url|videoSource|videoUrl)\s*[:=]\s*["']([^"']+)["']""",
+        RegexOption.IGNORE_CASE
+    ).findAll(cleanText)
+        .mapNotNull { it.groupValues.getOrNull(1) }
+        .map { it.cleanEscaped().replace(".txt", ".m3u8") }
+        .filter {
+            it.contains(".m3u8", true) ||
+                it.contains(".mp4", true)
+        }
+        .forEach { urls.add(it) }
+
+    return urls.toList()
+}
+
+private fun normalizeUrl(
+    url: String,
+    baseUrl: String
+): String {
+    val clean = url.cleanEscaped()
+
+    return when {
+        clean.startsWith("http", true) -> clean
+        clean.startsWith("//") -> "https:$clean"
+        clean.startsWith("/") -> {
+            val origin = Regex("""^https?://[^/]+""")
+                .find(baseUrl)
+                ?.value
+                ?: ""
+            "$origin$clean"
+        }
+        else -> {
+            runCatching {
+                URI(baseUrl).resolve(clean).toString()
+            }.getOrElse {
+                val origin = Regex("""^https?://[^/]+""")
+                    .find(baseUrl)
+                    ?.value
+                    ?: ""
+                if (origin.isNotBlank()) "$origin/$clean" else clean
+            }
+        }
+    }
+}
+
+private fun qualityFromUrl(url: String): Int {
+    return when {
+        url.contains("2160", true) || url.contains("4k", true) -> Qualities.P2160.value
+        url.contains("1080", true) -> Qualities.P1080.value
+        url.contains("720", true) -> Qualities.P720.value
+        url.contains("480", true) -> Qualities.P480.value
+        url.contains("360", true) -> Qualities.P360.value
+        else -> Qualities.Unknown.value
+    }
+}
+
+private fun String.cleanEscaped(): String {
+    return this
+        .replace("\\/", "/")
+        .replace("\\u0026", "&")
+        .replace("&amp;", "&")
+        .trim()
 }

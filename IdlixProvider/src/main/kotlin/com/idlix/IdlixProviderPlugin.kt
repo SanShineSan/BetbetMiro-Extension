@@ -4,8 +4,8 @@ import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 
 @CloudstreamPlugin
-class IdlixProviderPlugin: BasePlugin() {
-    override fun load() { // FIX MUTLAK: Hapus parameter context karena BasePlugin butuh fungsi kosongan!
+class IdlixProviderPlugin : BasePlugin() {
+    override fun load() {
         registerMainAPI(IdlixProvider())
         registerExtractorAPI(Jeniusplay())
         registerExtractorAPI(Majorplay())
