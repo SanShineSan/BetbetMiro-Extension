@@ -1,7 +1,7 @@
 package com.idlix
 
 import com.lagradost.cloudstream3.Actor
-import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.Episode as CsEpisode
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -19,7 +19,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
-import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -155,14 +154,14 @@ class IdlixProvider : MainAPI() {
                     newMovieSearchResponse(title, link, TvType.Movie) {
                         this.posterUrl = poster
                         this.year = year
-                        this.quality = getSearchQuality(item.quality)
+                        this.quality = item.quality
                         this.score = Score.from10(item.voteAverage)
                     }
                 } else {
                     newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                         this.posterUrl = poster
                         this.year = year
-                        this.quality = getSearchQuality(item.quality)
+                        this.quality = item.quality
                         this.score = Score.from10(item.voteAverage)
                     }
                 }
@@ -267,12 +266,12 @@ class IdlixProvider : MainAPI() {
         }.getOrDefault(emptyList())
     }
 
-    private suspend fun getEpisodes(data: DetailResponse): List<Episode> {
-        val episodes = mutableListOf<Episode>()
+    private suspend fun getEpisodes(data: DetailResponse): List<CsEpisode> {
+        val episodes = mutableListOf<CsEpisode>()
         val firstSeason = data.firstSeasonFinal
 
         firstSeason?.episodes.orEmpty().forEach { episodeData ->
-            episodes.add(episodeData.toEpisode(firstSeason?.seasonNumberFinal))
+            episodes.add(episodeData.toCloudstreamEpisode(firstSeason?.seasonNumberFinal))
         }
 
         data.seasons.orEmpty().forEach { season ->
@@ -290,7 +289,7 @@ class IdlixProvider : MainAPI() {
             }.getOrNull()
 
             seasonData?.episodes.orEmpty().forEach { episodeData ->
-                episodes.add(episodeData.toEpisode(seasonNum))
+                episodes.add(episodeData.toCloudstreamEpisode(seasonNum))
             }
         }
 
@@ -298,12 +297,12 @@ class IdlixProvider : MainAPI() {
             .filter { it.data.isNotBlank() }
             .distinctBy { it.data }
             .sortedWith(
-                compareBy<Episode> { it.season ?: 0 }
+                compareBy<CsEpisode> { it.season ?: 0 }
                     .thenBy { it.episode ?: 0 }
             )
     }
 
-    private fun Episode.toEpisode(seasonNumber: Int?): com.lagradost.cloudstream3.Episode {
+    private fun com.idlix.Episode.toCloudstreamEpisode(seasonNumber: Int?): CsEpisode {
         return newEpisode(
             LoadData(
                 id = id.orEmpty(),
@@ -350,7 +349,7 @@ class IdlixProvider : MainAPI() {
             ) {
                 this.posterUrl = poster
                 this.year = year
-                this.quality = getSearchQuality(quality)
+                this.quality = quality
                 this.score = Score.from10(voteAverageFinal)
             }
         } else {
@@ -361,7 +360,7 @@ class IdlixProvider : MainAPI() {
             ) {
                 this.posterUrl = poster
                 this.year = year
-                this.quality = getSearchQuality(quality)
+                this.quality = quality
                 this.score = Score.from10(voteAverageFinal)
             }
         }
@@ -516,7 +515,7 @@ class IdlixProvider : MainAPI() {
         return extractPlayableUrls(response.text)
     }
 
-    private fun emitDirectLink(
+    private suspend fun emitDirectLink(
         link: String,
         referer: String,
         callback: (ExtractorLink) -> Unit

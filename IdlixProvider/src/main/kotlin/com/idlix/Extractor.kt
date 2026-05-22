@@ -193,7 +193,7 @@ class Majorplay : ExtractorApi() {
     }
 }
 
-private fun emitVideo(
+private suspend fun emitVideo(
     source: String,
     streamUrl: String,
     referer: String,
