@@ -1,6 +1,5 @@
 package com.kraptor
 
-import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
@@ -33,73 +32,54 @@ class FreeUsePorn : MainAPI() {
     override val vpnStatus = VPNStatus.MightBeNeeded
 
     override val mainPage = mainPageOf(
-        "videos" to "Video Terbaru",
+        "$mainUrl/videos/general-freeuse" to "General Freeuse",
+        "$mainUrl/videos/free-service" to "Free Service",
+        "$mainUrl/videos/mind-control" to "Mind Control",
+        "$mainUrl/videos/forced" to "Forced",
+        "$mainUrl/videos/japanese" to "Japanese",
+        "$mainUrl/videos/time-stop" to "Time Stop",
+        "$mainUrl/videos/ignored-sex" to "Ignored Sex",
+        "$mainUrl/videos/glory-hole" to "Glory Hole",
 
-        "videos/general-freeuse" to "General Freeuse",
-        "videos/free-service" to "Free Service",
-        "videos/mind-control" to "Mind Control",
-        "videos/forced" to "Forced",
-        "videos/japanese" to "Japanese",
-        "videos/time-stop" to "Time Stop",
-        "videos/ignored-sex" to "Ignored Sex",
-        "videos/glory-hole" to "Glory Hole",
-
-        "videos/hypno" to "Hypno",
-        "videos/public-freeuse" to "Public Freeuse",
-        "videos/office-freeuse" to "Office Freeuse",
-        "videos/maid" to "Maid",
-        "videos/creampie" to "Creampie",
-        "videos/cosplay" to "Cosplay",
-        "videos/amateur" to "Amateur",
-        "videos/compilation" to "Compilation"
+        "$mainUrl/videos/hypno" to "Hypno",
+        "$mainUrl/videos/maid" to "Maid",
+        "$mainUrl/videos/creampie" to "Creampie",
+        "$mainUrl/videos/cosplay" to "Cosplay",
+        "$mainUrl/videos/amateur" to "Amateur",
+        "$mainUrl/videos/compilation" to "Compilation"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page <= 1) {
-            fixUrl(request.data)
-        } else {
-            "${fixUrl(request.data)}?page=$page"
-        }
-
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): com.lagradost.cloudstream3.HomePageResponse {
+        val url = "${request.data}?page=${page.coerceAtLeast(1)}"
         val document = app.get(url).document
 
-        val home = document.select(
-            "div#videos-list a.group[href], " +
-                "a.group[href], " +
-                "div.related-video a[href]"
-        ).mapNotNull { it.toMainPageResult() }
+        val home = document
+            .select("div#videos-list a.group")
+            .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
 
         return newHomePageResponse(
             request.name,
             home,
             hasNext = document.selectFirst(
-                "a[rel=next], " +
-                    "a:contains(Next), " +
-                    "button:contains(Next), " +
-                    ".pagination a[href*='page=${page + 1}']"
+                "a[rel=next], a:contains(Next), .pagination a[href*='page=${page + 1}']"
             ) != null || home.isNotEmpty()
         )
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
-        val searchUrl = "$mainUrl/search/videos/$q?page=${page.coerceAtLeast(1)}"
-        val document = app.get(searchUrl).document
+        val document = app.get("$mainUrl/search/videos/$q?page=${page.coerceAtLeast(1)}").document
 
-        val results = document.select(
-            "div#videos-list a.group[href], " +
-                "a.group[href], " +
-                "div.related-video a[href]"
-        ).mapNotNull { it.toMainPageResult() }
+        val results = document
+            .select("div#videos-list a.group")
+            .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
 
         return newSearchResponseList(
             results,
             hasNext = document.selectFirst(
-                "a[rel=next], " +
-                    "a:contains(Next), " +
-                    ".pagination a[href*='page=${page + 1}']"
+                "a[rel=next], a:contains(Next), .pagination a[href*='page=${page + 1}']"
             ) != null
         )
     }
@@ -111,80 +91,28 @@ class FreeUsePorn : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst(
-            "h1, " +
-                "meta[property=og:title]"
-        )?.let { element ->
-            when {
-                element.hasAttr("content") -> element.attr("content")
-                else -> element.text()
-            }
-        }?.cleanTitle()
-            ?.takeIf { it.isNotBlank() }
-            ?: return null
+        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
 
         val poster = fixUrlNull(
-            document.selectFirst(
-                "meta[property=og:image], " +
-                    "video[poster], " +
-                    "img"
-            )?.let { element ->
-                when {
-                    element.hasAttr("content") -> element.attr("content")
-                    element.hasAttr("poster") -> element.attr("poster")
-                    element.hasAttr("data-src") -> element.attr("data-src")
-                    element.hasAttr("data-lazy-src") -> element.attr("data-lazy-src")
-                    else -> element.attr("src")
-                }
-            }
+            document.selectFirst("meta[property=og:image]")?.attr("content")
         )
 
-        val description = document.selectFirst(
-            "meta[property=og:description], " +
-                "div.prose, " +
-                "div.description, " +
-                "p"
-        )?.let { element ->
-            when {
-                element.hasAttr("content") -> element.attr("content")
-                else -> element.text()
-            }
-        }?.trim()
+        val description = document
+            .selectFirst("meta[property=og:description]")
+            ?.attr("content")
+            ?.trim()
             ?.takeIf { it.isNotBlank() }
 
-        val tags = document.select(
-            "a[href*='/search/videos/'], " +
-                "a[href*='/videos/'], " +
-                ".tags a"
-        ).map { it.text().trim() }
+        val tags = document
+            .select("a[href*='/search/videos/']")
+            .map { it.text().trim() }
             .filter { it.isNotBlank() }
             .distinct()
 
-        val recommendations = document.select(
-            "div.related-video, " +
-                "div#videos-list a.group[href], " +
-                "a.group[href]"
-        ).mapNotNull { element ->
-            when {
-                element.`is`("a") -> element.toMainPageResult()
-                else -> {
-                    val anchor = element.selectFirst("a[href]") ?: return@mapNotNull null
-                    val recTitle = element.selectFirst("span.text-sm.font-bold, h3, .font-bold")
-                        ?.text()
-                        ?.trim()
-                        ?: anchor.attr("title").trim()
-
-                    if (recTitle.isBlank()) return@mapNotNull null
-
-                    val recHref = fixUrl(anchor.attr("href"))
-                    val recPoster = fixUrlNull(element.selectFirst("img")?.getImageAttr())
-
-                    newMovieSearchResponse(recTitle.cleanTitle(), recHref, TvType.NSFW) {
-                        this.posterUrl = recPoster
-                    }
-                }
-            }
-        }.filter { it.url != url }
+        val recommendations = document
+            .select("div.related-video")
+            .mapNotNull { it.toRecommendResult() }
+            .filter { it.url != url }
             .distinctBy { it.url }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
@@ -202,42 +130,23 @@ class FreeUsePorn : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-        val videos = linkedSetOf<Pair<String, Int>>()
+        val videos = document.select("source[src]")
 
-        document.select(
-            "video source[src], " +
-                "source[src], " +
-                "video[src], " +
-                "a[href$=.mp4], " +
-                "a[href*=.mp4]"
-        ).forEach { video ->
-            val link = video.attr("src").ifBlank { video.attr("href") }.trim()
+        if (videos.isEmpty()) return false
+
+        videos.forEach { video ->
+            val link = video.attr("src").trim()
             if (link.isBlank()) return@forEach
 
             val quality = video.attr("res").toIntOrNull()
                 ?: video.attr("label").replace(Regex("\\D"), "").toIntOrNull()
                 ?: 0
 
-            videos.add(fixUrl(link) to quality)
-        }
-
-        document.select(
-            "meta[property=og:video], " +
-                "meta[property=og:video:url], " +
-                "meta[property=og:video:secure_url]"
-        ).forEach { meta ->
-            val link = meta.attr("content").trim()
-            if (link.isNotBlank()) {
-                videos.add(fixUrl(link) to 0)
-            }
-        }
-
-        videos.forEach { (link, quality) ->
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = this.name,
-                    url = link,
+                    url = fixUrl(link),
                     type = ExtractorLinkType.VIDEO
                 ) {
                     this.referer = "$mainUrl/"
@@ -246,47 +155,49 @@ class FreeUsePorn : MainAPI() {
             )
         }
 
-        return videos.isNotEmpty()
+        return true
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
-        val anchor = if (this.`is`("a")) this else selectFirst("a[href]") ?: return null
-        val href = fixUrlNull(anchor.attr("href")) ?: return null
+        val title = selectFirst("h3")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val href = fixUrlNull(attr("href")) ?: return null
 
-        val title = listOf(
-            selectFirst("h3")?.text()?.trim(),
-            selectFirst("span.text-sm.font-bold")?.text()?.trim(),
-            selectFirst(".font-bold")?.text()?.trim(),
-            anchor.attr("title").trim(),
-            selectFirst("img[alt]")?.attr("alt")?.trim(),
-            anchor.text().trim()
-        ).firstOrNull {
-            !it.isNullOrBlank() &&
-                !it.equals("Watch", true) &&
-                !it.equals("Play", true)
-        }?.cleanTitle() ?: return null
-
-        val posterUrl = fixUrlNull(selectFirst("img")?.getImageAttr())
+        val posterUrl = fixUrlNull(
+            selectFirst("img")?.let { img ->
+                when {
+                    img.hasAttr("data-src") -> img.attr("data-src")
+                    img.hasAttr("data-lazy-src") -> img.attr("data-lazy-src")
+                    img.hasAttr("srcset") -> img.attr("srcset").substringBefore(" ")
+                    else -> img.attr("src")
+                }
+            }
+        )
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
     }
 
-    private fun Element.getImageAttr(): String {
-        return when {
-            hasAttr("data-src") -> attr("data-src")
-            hasAttr("data-lazy-src") -> attr("data-lazy-src")
-            hasAttr("srcset") -> attr("srcset").substringBefore(" ")
-            hasAttr("data-original") -> attr("data-original")
-            else -> attr("src")
-        }
-    }
+    private fun Element.toRecommendResult(): SearchResponse? {
+        val title = selectFirst("span.text-sm.font-bold")?.text()?.trim()
+            ?: selectFirst("h3")?.text()?.trim()
+            ?: return null
 
-    private fun String.cleanTitle(): String {
-        return this
-            .replace(Regex("""\s+-\s+FreeUsePorn\s*$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+        val href = fixUrlNull(selectFirst("a")?.attr("href")) ?: return null
+
+        val posterUrl = fixUrlNull(
+            selectFirst("img")?.let { img ->
+                when {
+                    img.hasAttr("data-src") -> img.attr("data-src")
+                    img.hasAttr("data-lazy-src") -> img.attr("data-lazy-src")
+                    img.hasAttr("srcset") -> img.attr("srcset").substringBefore(" ")
+                    else -> img.attr("src")
+                }
+            }
+        )
+
+        return newMovieSearchResponse(title, href, TvType.NSFW) {
+            this.posterUrl = posterUrl
+        }
     }
 }
