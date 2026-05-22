@@ -18,6 +18,7 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.httpsify
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Document
@@ -191,8 +192,19 @@ class Gojodesu : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        val response = app.get(data, referer = mainUrl)
+        val document = response.document
         val links = linkedSetOf<String>()
+        var found = false
+
+        extractM3u8Urls(response.text).forEach { m3u8 ->
+            generateM3u8(
+                name = name,
+                streamUrl = m3u8,
+                referer = data
+            ).forEach(callback)
+            found = true
+        }
 
         document.select("a[href*='kotakajaib.me'], a[href*='kotakajaib']")
             .forEach { a ->
@@ -220,25 +232,29 @@ class Gojodesu : MainAPI() {
         }
 
         links.forEach { link ->
-            if (link.contains("kotakajaib", true)) {
-                loadExtractor(link, data, subtitleCallback, callback)
-                return@forEach
-            }
-
-            val embed = runCatching {
-                val mirrorDoc = app.get(link, referer = data).document
-
-                mirrorDoc.selectFirst("iframe[src], embed[src]")
-                    ?.attr("src")
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { httpsify(it) }
+            val linkResponse = runCatching {
+                app.get(link, referer = data)
             }.getOrNull()
 
-            loadExtractor(embed ?: link, data, subtitleCallback, callback)
+            val m3u8s = linkResponse?.text?.let { extractM3u8Urls(it) }.orEmpty()
+
+            if (m3u8s.isNotEmpty()) {
+                m3u8s.forEach { m3u8 ->
+                    generateM3u8(
+                        name = name,
+                        streamUrl = m3u8,
+                        referer = link
+                    ).forEach(callback)
+                    found = true
+                }
+            }
+
+            if (!found || link.contains("kotakajaib", true)) {
+                loadExtractor(link, data, subtitleCallback, callback)
+            }
         }
 
-        return links.isNotEmpty()
+        return found || links.isNotEmpty()
     }
 
     private fun parseEpisodes(
@@ -264,10 +280,8 @@ class Gojodesu : MainAPI() {
 
                 if (!isEpisodeUrl) return@forEach
 
-                val cleanName = "Episode $episodeNumber"
-
                 episodes[absoluteUrl] = newEpisode(absoluteUrl) {
-                    this.name = cleanName
+                    this.name = "Episode $episodeNumber"
                     this.episode = episodeNumber
                 }
             }
@@ -332,6 +346,14 @@ class Gojodesu : MainAPI() {
             tags.any { it.equals("OVA", true) } -> TvType.OVA
             else -> TvType.Anime
         }
+    }
+
+    private fun extractM3u8Urls(text: String): List<String> {
+        return Regex("""https?://[^"'\\\s<>]+\.m3u8[^"'\\\s<>]*""")
+            .findAll(text)
+            .map { it.value.replace("\\/", "/") }
+            .distinct()
+            .toList()
     }
 
     private fun Element.getImageAttr(): String {
