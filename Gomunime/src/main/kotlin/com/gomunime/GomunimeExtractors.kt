@@ -1,176 +1,184 @@
 package com.gomunime
 
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import java.net.URI
 import java.net.URLDecoder
 
+private data class HlsSource(
+    val url: String,
+    val referer: String,
+    val quality: Int = Qualities.Unknown.value
+)
+
 suspend fun loadGomunimeLinks(
     data: String,
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    val startResponse = app.get(data, referer = "https://gomunime.top/")
-    val startDocument = startResponse.document
-    val startHtml = startResponse.text
+    val headers = defaultHeaders(data)
 
-    val visited = linkedSetOf<String>()
-    val playerLinks = linkedSetOf<String>()
-    val m3u8Links = linkedMapOf<String, String>()
-    val directVideos = linkedMapOf<String, String>()
-
-    collectSourcesFromPage(
-        document = startDocument,
-        html = startHtml,
-        baseUrl = data,
-        outPlayers = playerLinks,
-        outM3u8 = m3u8Links,
-        outDirect = directVideos,
-        referer = data
+    val response = app.get(
+        data,
+        referer = "https://gomunime.top/",
+        headers = headers,
+        allowRedirects = true
     )
 
-    startDocument.select("select.mirror option[value]").forEach { option ->
-        val value = option.attr("value").trim()
-        if (value.isBlank()) return@forEach
+    val visited = linkedSetOf<String>()
+    val players = linkedSetOf<String>()
+    val hlsLinks = linkedMapOf<String, HlsSource>()
+    val directVideos = linkedMapOf<String, Pair<String, Int>>()
 
-        decodeIframeUrl(value)?.let { decoded ->
-            val normalized = normalizeUrl(decoded, data)
+    collectFromPage(
+        document = response.document,
+        html = response.text,
+        baseUrl = response.url,
+        referer = data,
+        outPlayers = players,
+        outHls = hlsLinks,
+        outDirect = directVideos
+    )
+
+    response.document.select("select.mirror option[value], option[value]").forEach { option ->
+        val raw = option.attr("value").trim()
+        if (raw.isBlank()) return@forEach
+
+        decodeMirrorValue(raw, response.url)?.let { decoded ->
+            val fixed = normalizeUrl(decoded, response.url)
 
             when {
-                normalized.contains(".m3u8", true) -> m3u8Links[normalized] = data
-                normalized.isDirectVideo() -> directVideos[normalized] = data
-                else -> playerLinks.add(normalized)
+                fixed.isHlsLike() -> hlsLinks[fixed] = HlsSource(fixed, data, qualityFromUrl(fixed))
+                fixed.isDirectVideo() -> directVideos[fixed] = data to qualityFromUrl(fixed)
+                isLikelyPlayerUrl(fixed) -> players.add(fixed)
             }
         }
     }
 
-    playerLinks.toList().forEach { player ->
+    players.toList().forEach { player ->
         crawlPlayer(
             url = player,
             referer = data,
             visited = visited,
-            outM3u8 = m3u8Links,
+            outPlayers = players,
+            outHls = hlsLinks,
             outDirect = directVideos,
             depth = 0
         )
     }
 
-    m3u8Links.forEach { (m3u8, referer) ->
-        generateM3u8(
-            source = "Gomunime",
-            streamUrl = m3u8,
-            referer = referer
-        ).forEach(callback)
-    }
-
-    directVideos.forEach { (video, referer) ->
+    hlsLinks.values.forEach { hls ->
         callback(
             newExtractorLink(
                 source = "Gomunime",
-                name = "Gomunime",
-                url = video,
-                type = if (video.contains(".m3u8", true)) {
-                    ExtractorLinkType.M3U8
-                } else {
-                    ExtractorLinkType.VIDEO
-                }
+                name = "Gomunime ${qualityName(hls.quality)}",
+                url = hls.url,
+                type = ExtractorLinkType.M3U8
             ) {
-                this.referer = referer
-                this.quality = qualityFromUrl(video)
+                this.referer = hls.referer
+                this.quality = hls.quality
+                this.headers = defaultHeaders(hls.referer)
             }
         )
     }
 
-    if (m3u8Links.isNotEmpty() || directVideos.isNotEmpty()) {
+    directVideos.forEach { (videoUrl, dataPair) ->
+        val referer = dataPair.first
+        val quality = dataPair.second
+
+        callback(
+            newExtractorLink(
+                source = "Gomunime",
+                name = "Gomunime ${qualityName(quality)}",
+                url = videoUrl,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = referer
+                this.quality = quality
+                this.headers = defaultHeaders(referer)
+            }
+        )
+    }
+
+    if (hlsLinks.isNotEmpty() || directVideos.isNotEmpty()) {
         return true
     }
 
-    var fallbackSent = false
+    var fallback = false
 
-    playerLinks.forEach { player ->
+    players.forEach { player ->
         loadExtractor(player, data, subtitleCallback, callback)
-        fallbackSent = true
+        fallback = true
     }
 
-    return fallbackSent
+    return fallback
 }
 
 private suspend fun crawlPlayer(
     url: String,
     referer: String,
     visited: MutableSet<String>,
-    outM3u8: MutableMap<String, String>,
-    outDirect: MutableMap<String, String>,
+    outPlayers: MutableSet<String>,
+    outHls: MutableMap<String, HlsSource>,
+    outDirect: MutableMap<String, Pair<String, Int>>,
     depth: Int
 ) {
-    if (depth > 5) return
+    if (depth > 6) return
 
-    val cleanUrl = normalizeUrl(url, referer)
-    if (cleanUrl in visited) return
-    visited.add(cleanUrl)
+    val fixedUrl = normalizeUrl(url, referer)
+    if (fixedUrl in visited) return
+    visited.add(fixedUrl)
 
     val response = runCatching {
         app.get(
-            cleanUrl,
+            fixedUrl,
             referer = referer,
+            headers = defaultHeaders(referer),
             allowRedirects = true
         )
     }.getOrNull() ?: return
 
     val currentUrl = response.url
     val html = response.text
-    val document = response.document
+    val trimmed = html.trimStart()
 
-    if (html.trimStart().startsWith("#EXTM3U")) {
-        outM3u8[currentUrl] = referer
+    if (trimmed.startsWith("#EXTM3U")) {
+        outHls[currentUrl] = HlsSource(
+            url = currentUrl,
+            referer = referer,
+            quality = qualityFromUrl(currentUrl)
+        )
         return
     }
 
     val nextPlayers = linkedSetOf<String>()
 
-    collectSourcesFromPage(
-        document = document,
+    collectFromPage(
+        document = response.document,
         html = html,
         baseUrl = currentUrl,
+        referer = fixedUrl,
         outPlayers = nextPlayers,
-        outM3u8 = outM3u8,
-        outDirect = outDirect,
-        referer = cleanUrl
+        outHls = outHls,
+        outDirect = outDirect
     )
 
-    val unpacked = runCatching {
-        if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
-    }.getOrNull()
-
-    if (!unpacked.isNullOrBlank()) {
-        collectSourcesFromText(
-            text = unpacked,
-            baseUrl = currentUrl,
-            outPlayers = nextPlayers,
-            outM3u8 = outM3u8,
-            outDirect = outDirect,
-            referer = cleanUrl
-        )
-    }
-
     extractBase64DecodedTexts(html).forEach { decoded ->
-        collectSourcesFromText(
+        collectFromText(
             text = decoded,
             baseUrl = currentUrl,
+            referer = fixedUrl,
             outPlayers = nextPlayers,
-            outM3u8 = outM3u8,
-            outDirect = outDirect,
-            referer = cleanUrl
+            outHls = outHls,
+            outDirect = outDirect
         )
     }
 
@@ -181,21 +189,22 @@ private suspend fun crawlPlayer(
                 url = next,
                 referer = currentUrl,
                 visited = visited,
-                outM3u8 = outM3u8,
+                outPlayers = outPlayers,
+                outHls = outHls,
                 outDirect = outDirect,
                 depth = depth + 1
             )
         }
 }
 
-private fun collectSourcesFromPage(
+private fun collectFromPage(
     document: Document,
     html: String,
     baseUrl: String,
+    referer: String,
     outPlayers: MutableSet<String>,
-    outM3u8: MutableMap<String, String>,
-    outDirect: MutableMap<String, String>,
-    referer: String
+    outHls: MutableMap<String, HlsSource>,
+    outDirect: MutableMap<String, Pair<String, Int>>
 ) {
     document.select(
         "iframe[src], " +
@@ -220,105 +229,136 @@ private fun collectSourcesFromPage(
 
         if (raw.isBlank()) return@forEach
 
-        val normalized = normalizeUrl(raw, baseUrl)
+        val fixed = normalizeUrl(raw, baseUrl)
 
         when {
-            normalized.contains(".m3u8", true) -> outM3u8[normalized] = referer
-            normalized.isDirectVideo() -> outDirect[normalized] = referer
-            isLikelyPlayerUrl(normalized) -> outPlayers.add(normalized)
+            fixed.isHlsLike() -> outHls[fixed] = HlsSource(fixed, referer, qualityFromUrl(fixed))
+            fixed.isDirectVideo() -> outDirect[fixed] = referer to qualityFromUrl(fixed)
+            isLikelyPlayerUrl(fixed) -> outPlayers.add(fixed)
         }
     }
 
-    document.select("select.mirror option[value]").forEach { option ->
-        val value = option.attr("value").trim()
-        if (value.isBlank()) return@forEach
+    document.select("select.mirror option[value], option[value]").forEach { option ->
+        val raw = option.attr("value").trim()
+        if (raw.isBlank()) return@forEach
 
-        decodeIframeUrl(value)?.let { decoded ->
-            val normalized = normalizeUrl(decoded, baseUrl)
+        decodeMirrorValue(raw, baseUrl)?.let { decoded ->
+            val fixed = normalizeUrl(decoded, baseUrl)
 
             when {
-                normalized.contains(".m3u8", true) -> outM3u8[normalized] = referer
-                normalized.isDirectVideo() -> outDirect[normalized] = referer
-                isLikelyPlayerUrl(normalized) -> outPlayers.add(normalized)
+                fixed.isHlsLike() -> outHls[fixed] = HlsSource(fixed, referer, qualityFromUrl(fixed))
+                fixed.isDirectVideo() -> outDirect[fixed] = referer to qualityFromUrl(fixed)
+                isLikelyPlayerUrl(fixed) -> outPlayers.add(fixed)
             }
         }
     }
 
-    collectSourcesFromText(
+    collectFromText(
         text = html,
         baseUrl = baseUrl,
+        referer = referer,
         outPlayers = outPlayers,
-        outM3u8 = outM3u8,
-        outDirect = outDirect,
-        referer = referer
+        outHls = outHls,
+        outDirect = outDirect
     )
 }
 
-private fun collectSourcesFromText(
+private fun collectFromText(
     text: String,
     baseUrl: String,
+    referer: String,
     outPlayers: MutableSet<String>,
-    outM3u8: MutableMap<String, String>,
-    outDirect: MutableMap<String, String>,
-    referer: String
+    outHls: MutableMap<String, HlsSource>,
+    outDirect: MutableMap<String, Pair<String, Int>>
 ) {
-    extractM3u8Urls(text, baseUrl).forEach { m3u8 ->
-        outM3u8[m3u8] = referer
+    extractHlsUrls(text, baseUrl).forEach { hls ->
+        outHls[hls] = HlsSource(hls, referer, qualityFromUrl(hls))
     }
 
     extractPossibleUrls(text).forEach { raw ->
-        val normalized = normalizeUrl(raw, baseUrl)
+        val fixed = normalizeUrl(raw, baseUrl)
 
         when {
-            normalized.contains(".m3u8", true) -> outM3u8[normalized] = referer
-            normalized.isDirectVideo() -> outDirect[normalized] = referer
-            isLikelyPlayerUrl(normalized) -> outPlayers.add(normalized)
+            fixed.isHlsLike() -> outHls[fixed] = HlsSource(fixed, referer, qualityFromUrl(fixed))
+            fixed.isDirectVideo() -> outDirect[fixed] = referer to qualityFromUrl(fixed)
+            isLikelyPlayerUrl(fixed) -> outPlayers.add(fixed)
         }
     }
 
-    findFileVariables(text).forEach { raw ->
-        val normalized = normalizeUrl(raw, baseUrl)
+    extractFileVariables(text).forEach { raw ->
+        val fixed = normalizeUrl(raw, baseUrl)
 
         when {
-            normalized.contains(".m3u8", true) -> outM3u8[normalized] = referer
-            normalized.isDirectVideo() -> outDirect[normalized] = referer
-            isLikelyPlayerUrl(normalized) -> outPlayers.add(normalized)
+            fixed.isHlsLike() -> outHls[fixed] = HlsSource(fixed, referer, qualityFromUrl(fixed))
+            fixed.isDirectVideo() -> outDirect[fixed] = referer to qualityFromUrl(fixed)
+            isLikelyPlayerUrl(fixed) -> outPlayers.add(fixed)
         }
     }
 }
 
-private fun decodeIframeUrl(encoded: String): String? {
-    val decoded = runCatching {
-        base64Decode(encoded).trim()
-    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+private fun decodeMirrorValue(
+    raw: String,
+    baseUrl: String
+): String? {
+    val clean = raw.cleanEscapedUrl()
 
-    return when {
-        decoded.startsWith("http", true) -> decoded
-        decoded.startsWith("//") -> "https:$decoded"
-        decoded.contains("<iframe", true) || decoded.contains("src=", true) -> {
-            Regex("""src=["']([^"']+)["']""")
-                .find(decoded)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.takeIf { it.isNotBlank() }
-        }
-        decoded.contains(".m3u8", true) -> decoded
-        else -> null
+    if (clean.startsWith("http", true) || clean.startsWith("//")) {
+        return clean
+    }
+
+    val urlDecoded = runCatching {
+        URLDecoder.decode(clean, "UTF-8")
+    }.getOrNull()
+
+    if (!urlDecoded.isNullOrBlank() && (urlDecoded.startsWith("http", true) || urlDecoded.contains("src=", true))) {
+        return extractIframeSrc(urlDecoded) ?: urlDecoded
+    }
+
+    val base64Decoded = runCatching {
+        base64Decode(clean).trim()
+    }.getOrNull()
+
+    if (!base64Decoded.isNullOrBlank()) {
+        return extractIframeSrc(base64Decoded)
+            ?: if (base64Decoded.startsWith("http", true) || base64Decoded.startsWith("//")) {
+                base64Decoded
+            } else {
+                null
+            }
+    }
+
+    return if (clean.contains("src=", true)) {
+        extractIframeSrc(clean)
+    } else {
+        normalizeUrl(clean, baseUrl)
     }
 }
 
-private fun extractM3u8Urls(
+private fun extractIframeSrc(text: String): String? {
+    return Regex("""src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(text)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.takeIf { it.isNotBlank() }
+}
+
+private fun extractHlsUrls(
     text: String,
     baseUrl: String
 ): List<String> {
     val urls = linkedSetOf<String>()
 
-    Regex("""https?://[^"'\\\s<>]+\.m3u8[^"'\\\s<>]*""")
+    Regex("""https?://[^"'\\\s<>]+\.m3u8[^"'\\\s<>]*""", RegexOption.IGNORE_CASE)
         .findAll(text)
         .map { it.value.cleanEscapedUrl() }
         .forEach { urls.add(it) }
 
-    Regex("""https?%3A%2F%2F[^"'\\\s<>]+?\.m3u8[^"'\\\s<>]*""", RegexOption.IGNORE_CASE)
+    Regex("""https?://[^"'\\\s<>]+play\.php\?[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+        .findAll(text)
+        .map { it.value.cleanEscapedUrl() }
+        .forEach { urls.add(it) }
+
+    Regex("""https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|play\.php)[^"'\\\s<>]*""", RegexOption.IGNORE_CASE)
         .findAll(text)
         .map {
             runCatching {
@@ -334,7 +374,7 @@ private fun extractM3u8Urls(
         .map { normalizeUrl(it, baseUrl) }
         .forEach { urls.add(it) }
 
-    Regex("""(?:file|src|url|source|hls|video)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+    Regex("""["']([^"']*play\.php\?[^"']*)["']""", RegexOption.IGNORE_CASE)
         .findAll(text)
         .mapNotNull { it.groupValues.getOrNull(1) }
         .map { normalizeUrl(it, baseUrl) }
@@ -366,7 +406,7 @@ private fun extractPossibleUrls(text: String): List<String> {
     return urls.toList()
 }
 
-private fun findFileVariables(text: String): List<String> {
+private fun extractFileVariables(text: String): List<String> {
     val urls = linkedSetOf<String>()
 
     Regex("""file\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -397,7 +437,12 @@ private fun extractBase64DecodedTexts(text: String): List<String> {
                 base64Decode(match.groupValues[1]).trim()
             }.getOrNull()
         }
-        .filter { it.contains("http", true) || it.contains(".m3u8", true) }
+        .filter {
+            it.contains("http", true) ||
+                it.contains(".m3u8", true) ||
+                it.contains("play.php", true) ||
+                it.contains("src=", true)
+        }
         .forEach { decoded.add(it.cleanEscapedUrl()) }
 
     Regex("""["']([A-Za-z0-9+/=]{40,})["']""")
@@ -410,29 +455,23 @@ private fun extractBase64DecodedTexts(text: String): List<String> {
         .filter {
             it.contains("http", true) ||
                 it.contains(".m3u8", true) ||
-                it.contains("play.php", true)
+                it.contains("play.php", true) ||
+                it.contains("src=", true)
         }
         .forEach { decoded.add(it.cleanEscapedUrl()) }
 
     return decoded.toList()
 }
 
-private fun Document.findDirectVideoSource(): String? {
-    val candidates = sequenceOf(
-        selectFirst("video source[src]")?.attr("src"),
-        selectFirst("source[src*='googlevideo']")?.attr("src"),
-        selectFirst("source[src*='.mp4']")?.attr("src"),
-        selectFirst("source[src*='.m3u8']")?.attr("src"),
-        selectFirst("video[src]")?.attr("src"),
-        Regex("""https?://[^"' ]+googlevideo\.com/videoplayback[^"' ]*""")
-            .find(html())?.value,
-        Regex("""https?://[^"' ]+\.mp4[^"' ]*""")
-            .find(html())?.value,
-        Regex("""https?://[^"' ]+\.m3u8[^"' ]*""")
-            .find(html())?.value
-    )
+private fun String.isHlsLike(): Boolean {
+    return contains(".m3u8", true) ||
+        contains("play.php?", true)
+}
 
-    return candidates.firstOrNull { !it.isNullOrBlank() }?.trim()
+private fun String.isDirectVideo(): Boolean {
+    return contains(".mp4", true) ||
+        contains("googlevideo.com/videoplayback", true) ||
+        contains("lh3.googleusercontent.com", true)
 }
 
 private fun isLikelyPlayerUrl(url: String): Boolean {
@@ -452,12 +491,6 @@ private fun isLikelyPlayerUrl(url: String): Boolean {
         url.contains("play.php", true) ||
         url.contains(".mp4", true) ||
         url.contains(".m3u8", true)
-}
-
-private fun String.isDirectVideo(): Boolean {
-    return contains(".mp4", true) ||
-        contains("googlevideo.com/videoplayback", true) ||
-        contains("lh3.googleusercontent.com", true)
 }
 
 private fun normalizeUrl(
@@ -490,6 +523,21 @@ private fun normalizeUrl(
     }
 }
 
+private fun defaultHeaders(referer: String): Map<String, String> {
+    val origin = Regex("""^https?://[^/]+""")
+        .find(referer)
+        ?.value
+        ?: "https://gomunime.top"
+
+    return mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to referer,
+        "Origin" to origin,
+        "Accept" to "*/*",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+    )
+}
+
 private fun String.cleanEscapedUrl(): String {
     return this
         .replace("\\/", "/")
@@ -508,5 +556,15 @@ private fun qualityFromUrl(url: String): Int {
         Regex("""itag=(22|59)""").containsMatchIn(url) -> Qualities.P720.value
         Regex("""itag=18""").containsMatchIn(url) -> Qualities.P360.value
         else -> Qualities.Unknown.value
+    }
+}
+
+private fun qualityName(quality: Int): String {
+    return when (quality) {
+        Qualities.P1080.value -> "1080p"
+        Qualities.P720.value -> "720p"
+        Qualities.P480.value -> "480p"
+        Qualities.P360.value -> "360p"
+        else -> "HLS"
     }
 }
