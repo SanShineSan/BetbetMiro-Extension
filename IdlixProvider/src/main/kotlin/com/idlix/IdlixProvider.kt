@@ -349,7 +349,7 @@ class IdlixProvider : MainAPI() {
             ) {
                 this.posterUrl = poster
                 this.year = year
-                this.quality = getSearchQuality(quality)
+                this.quality = quality
                 this.score = Score.from10(voteAverageFinal)
             }
         } else {
@@ -360,7 +360,7 @@ class IdlixProvider : MainAPI() {
             ) {
                 this.posterUrl = poster
                 this.year = year
-                this.quality = getSearchQuality(quality)
+                this.quality = quality
                 this.score = Score.from10(voteAverageFinal)
             }
         }
