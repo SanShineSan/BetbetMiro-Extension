@@ -39,48 +39,32 @@ class Gomunime : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "anime/?status=&type=&order=update&page=%d" to "Terbaru",
-        "anime/?status=ongoing&type=&order=update&page=%d" to "Ongoing",
-        "anime/?status=completed&type=&order=update&page=%d" to "Completed",
-        "anime/?status=&type=&order=popular&page=%d" to "Popular",
+        "__home__" to "Beranda",
+        "status/ongoing?page=%d" to "Ongoing",
+        "status/completed?page=%d" to "Tamat",
+        "type/movie?page=%d" to "Movie",
+        "type/ova?page=%d" to "OVA",
+        "type/ona?page=%d" to "ONA",
+        "type/special?page=%d" to "Special",
+        "koleksi/anime-skor-mal-tertinggi?page=%d" to "Top Rated",
 
-        "anime/?status=&type=movie&order=update&page=%d" to "Movie",
-        "anime/?status=&type=ova&order=update&page=%d" to "OVA",
-        "anime/?status=&type=ona&order=update&page=%d" to "ONA",
-        "anime/?status=&type=special&order=update&page=%d" to "Special",
-
-        "genres/action/page/%d/" to "Action",
-        "genres/adventure/page/%d/" to "Adventure",
-        "genres/comedy/page/%d/" to "Comedy",
-        "genres/demons/page/%d/" to "Demons",
-        "genres/drama/page/%d/" to "Drama",
-        "genres/ecchi/page/%d/" to "Ecchi",
-        "genres/fantasy/page/%d/" to "Fantasy",
-        "genres/game/page/%d/" to "Game",
-        "genres/harem/page/%d/" to "Harem",
-        "genres/historical/page/%d/" to "Historical",
-        "genres/horror/page/%d/" to "Horror",
-        "genres/isekai/page/%d/" to "Isekai",
-        "genres/magic/page/%d/" to "Magic",
-        "genres/martial-arts/page/%d/" to "Martial Arts",
-        "genres/mecha/page/%d/" to "Mecha",
-        "genres/military/page/%d/" to "Military",
-        "genres/music/page/%d/" to "Music",
-        "genres/mystery/page/%d/" to "Mystery",
-        "genres/parody/page/%d/" to "Parody",
-        "genres/psychological/page/%d/" to "Psychological",
-        "genres/romance/page/%d/" to "Romance",
-        "genres/school/page/%d/" to "School",
-        "genres/sci-fi/page/%d/" to "Sci-Fi",
-        "genres/seinen/page/%d/" to "Seinen",
-        "genres/shoujo/page/%d/" to "Shoujo",
-        "genres/shounen/page/%d/" to "Shounen",
-        "genres/slice-of-life/page/%d/" to "Slice of Life",
-        "genres/sports/page/%d/" to "Sports",
-        "genres/super-power/page/%d/" to "Super Power",
-        "genres/supernatural/page/%d/" to "Supernatural",
-        "genres/thriller/page/%d/" to "Thriller",
-        "genres/vampire/page/%d/" to "Vampire"
+        "genre/fantasy?page=%d" to "Fantasy",
+        "genre/action?page=%d" to "Action",
+        "genre/comedy?page=%d" to "Comedy",
+        "genre/shounen?page=%d" to "Shounen",
+        "genre/romance?page=%d" to "Romance",
+        "genre/adventure?page=%d" to "Adventure",
+        "genre/school?page=%d" to "School",
+        "genre/seinen?page=%d" to "Seinen",
+        "genre/isekai?page=%d" to "Isekai",
+        "genre/drama?page=%d" to "Drama",
+        "genre/ecchi?page=%d" to "Ecchi",
+        "genre/horror?page=%d" to "Horror",
+        "genre/mystery?page=%d" to "Mystery",
+        "genre/music?page=%d" to "Music",
+        "genre/slice-of-life?page=%d" to "Slice of Life",
+        "genre/sports?page=%d" to "Sports",
+        "genre/supernatural?page=%d" to "Supernatural"
     )
 
     override suspend fun getMainPage(
@@ -90,32 +74,30 @@ class Gomunime : MainAPI() {
         val url = buildPageUrl(request.data, page)
         val document = app.get(url).document
 
-        val home = document.select(
-            "div.listupd article, " +
-                "div.listupd div.bs, " +
-                "div.listupd .bs, " +
-                "article.bs, " +
-                ".bsx"
-        ).mapNotNull { element ->
-            element.toSearchResult()
-        }.distinctBy { it.url }
+        val home = parseAnimeCards(document)
+            .distinctBy { it.url }
 
         return newHomePageResponse(
             request.name,
             home,
             hasNext = document.selectFirst(
-                "a.next, " +
-                    ".pagination a:contains(Next), " +
-                    ".pagination a:contains(Berikutnya), " +
-                    "a.page-numbers:contains(»), " +
+                "a:contains(Next), " +
+                    "a:contains(Next »), " +
                     "a[href*='page=${page + 1}'], " +
-                    "a[href*='/page/${page + 1}/']"
+                    ".pagination a[href*='page=${page + 1}']"
             ) != null
         )
     }
 
     private fun buildPageUrl(data: String, page: Int): String {
-        val formatted = data.format(page.coerceAtLeast(1))
+        val safePage = page.coerceAtLeast(1)
+
+        if (data == "__home__") {
+            return if (safePage <= 1) mainUrl else "$mainUrl?page=$safePage"
+        }
+
+        val formatted = data.format(safePage)
+
         return when {
             formatted.startsWith("http", true) -> formatted
             formatted.startsWith("/") -> "$mainUrl$formatted"
@@ -123,43 +105,110 @@ class Gomunime : MainAPI() {
         }
     }
 
+    private fun parseAnimeCards(document: Document): List<SearchResponse> {
+        val results = linkedMapOf<String, SearchResponse>()
+
+        document.select(
+            "a[href], " +
+                "article a[href], " +
+                ".grid a[href], " +
+                ".card a[href], " +
+                ".anime-card a[href], " +
+                ".relative a[href]"
+        ).forEach { element ->
+            element.toSearchResult()?.let { item ->
+                results[item.url] = item
+            }
+        }
+
+        return results.values.toList()
+    }
+
     private fun Element.toSearchResult(): SearchResponse? {
-        val anchor = selectFirst(
-            ".bsx > a[href], " +
-                "a.tip[href], " +
-                "a[href*='/anime/'], " +
-                "a[href]"
-        ) ?: return null
+        val anchor = if (this.`is`("a[href]")) {
+            this
+        } else {
+            selectFirst("a[href]") ?: return null
+        }
 
         val href = fixUrlNull(anchor.attr("href")) ?: return null
+        if (!isLikelyAnimeUrl(href)) return null
 
-        if (!href.contains("/anime/", true)) return null
-
-        val title = listOf(
-            selectFirst("div.tt")?.text()?.trim(),
-            selectFirst("div.tt h2")?.text()?.trim(),
-            selectFirst("h2")?.text()?.trim(),
-            selectFirst(".entry-title")?.text()?.trim(),
+        val rawTitle = listOf(
+            anchor.selectFirst("h2")?.text()?.trim(),
+            anchor.selectFirst("h3")?.text()?.trim(),
+            anchor.selectFirst(".title")?.text()?.trim(),
+            anchor.selectFirst(".font-bold")?.text()?.trim(),
             anchor.attr("title").trim(),
-            selectFirst("img[alt]")?.attr("alt")?.trim()
+            anchor.selectFirst("img[alt]")?.attr("alt")?.trim(),
+            anchor.text().trim()
         ).firstOrNull {
             !it.isNullOrBlank() &&
-                !it.equals("View All", true) &&
+                !it.equals("Home", true) &&
+                !it.equals("Ongoing", true) &&
+                !it.equals("Tamat", true) &&
+                !it.equals("Movies", true) &&
+                !it.equals("Top Rated", true) &&
+                !it.equals("Download App", true) &&
+                !it.equals("Genre", true) &&
+                !it.equals("Lihat Semua →", true) &&
                 !it.equals("Next", true) &&
-                !it.equals("Anime", true)
-        }?.cleanTitle() ?: return null
+                !it.equals("Next »", true) &&
+                !it.equals("« Previous", true)
+        } ?: return null
 
-        val poster = fixUrlNull(selectFirst("img")?.getImageAttr())
+        val title = rawTitle.extractAnimeTitle().cleanTitle()
+            .takeIf { it.isNotBlank() }
+            ?: return null
 
-        val type = getTypeFromUrlOrTitle(href, title)
+        if (title.length < 2) return null
+        if (title.equals("Anime", true)) return null
+        if (title.equals("Tonton", true)) return null
+
+        val poster = fixUrlNull(anchor.selectFirst("img")?.getImageAttr())
 
         return newAnimeSearchResponse(
             title,
             href,
-            type
+            getTypeFromUrlOrTitle(href, title)
         ) {
             this.posterUrl = poster
         }
+    }
+
+    private fun isLikelyAnimeUrl(url: String): Boolean {
+        val path = runCatching {
+            URI(url).path.trim('/')
+        }.getOrNull().orEmpty()
+
+        if (path.isBlank()) return false
+
+        val blockedPrefixes = listOf(
+            "status/",
+            "type/",
+            "genre/",
+            "genres/",
+            "koleksi/",
+            "download",
+            "about",
+            "faq",
+            "privacy",
+            "dmca",
+            "schedule",
+            "bookmark",
+            "search",
+            "page/",
+            "tag/",
+            "studio/",
+            "year/"
+        )
+
+        if (blockedPrefixes.any { path.startsWith(it, true) }) return false
+        if (path.equals("anime", true)) return false
+        if (path.equals("home", true)) return false
+        if (path.contains("episode-", true)) return false
+
+        return url.startsWith(mainUrl)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -167,7 +216,7 @@ class Gomunime : MainAPI() {
 
         val endpoints = listOf(
             "$mainUrl/?s=$q",
-            "$mainUrl/anime/?s=$q"
+            "$mainUrl/search/$q"
         )
 
         val results = linkedMapOf<String, SearchResponse>()
@@ -177,15 +226,7 @@ class Gomunime : MainAPI() {
                 app.get(url).document
             }.getOrNull() ?: continue
 
-            document.select(
-                "div.listupd article, " +
-                    "div.listupd div.bs, " +
-                    "div.listupd .bs, " +
-                    "article.bs, " +
-                    ".bsx"
-            ).mapNotNull { element ->
-                element.toSearchResult()
-            }.forEach { item ->
+            parseAnimeCards(document).forEach { item ->
                 results[item.url] = item
             }
 
@@ -199,9 +240,9 @@ class Gomunime : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst(
-            "h1.entry-title, " +
+            "h1, " +
+                "h1.entry-title, " +
                 ".entry-title, " +
-                "h1, " +
                 "meta[property=og:title]"
         )?.let { element ->
             when {
@@ -214,7 +255,8 @@ class Gomunime : MainAPI() {
 
         val poster = fixUrlNull(
             document.selectFirst(
-                "div.thumb img, " +
+                "img[alt='$title'], " +
+                    "div.thumb img, " +
                     ".thumb img, " +
                     ".poster img, " +
                     "img.wp-post-image, " +
@@ -230,11 +272,13 @@ class Gomunime : MainAPI() {
         val infoText = document.selectFirst(
             ".spe, " +
                 ".info-content, " +
-                ".entry-content"
+                ".entry-content, " +
+                "body"
         )?.text().orEmpty()
 
         val tags = document.select(
-            "a[href*='/genres/'], " +
+            "a[href*='/genre/'], " +
+                "a[href*='/genres/'], " +
                 ".genres a, " +
                 ".genre a"
         ).map { it.text().trim() }
@@ -298,18 +342,12 @@ class Gomunime : MainAPI() {
     }
 
     private fun Document.getEpisodes(url: String): List<Episode> {
-        val slug = runCatching {
-            URI(url).path
-                .trim('/')
-                .substringAfter("anime/")
-                .substringBefore("/")
-        }.getOrNull().orEmpty()
-
         val episodes = linkedMapOf<String, Episode>()
 
         select(
-            "a[href*='$slug-episode-'], " +
-                "a[href*='episode-'], " +
+            "a[href*='episode-'], " +
+                "a:contains(Episode), " +
+                "a:contains(Nonton Episode), " +
                 "div.eplister ul li a[href], " +
                 "ul.episodios li a[href], " +
                 ".episodelist a[href], " +
@@ -319,9 +357,9 @@ class Gomunime : MainAPI() {
 
             val epNum = extractEpisodeNumber(a.text(), href) ?: index + 1
 
-            val isValidEpisode = href.contains("-episode-", true) ||
+            val isValidEpisode = href.contains("episode-", true) ||
                 a.text().contains("episode", true) ||
-                a.text().matches(Regex("""\d+"""))
+                a.text().contains("nonton episode", true)
 
             if (!isValidEpisode) return@forEachIndexed
 
@@ -394,7 +432,7 @@ class Gomunime : MainAPI() {
         text: String,
         href: String
     ): Int? {
-        return Regex("""(?:episode|eps?|ep)\s*(\d+)""", RegexOption.IGNORE_CASE)
+        return Regex("""(?:episode|eps?|ep|nonton episode)\s*(\d+)""", RegexOption.IGNORE_CASE)
             .find(text)
             ?.groupValues
             ?.getOrNull(1)
@@ -409,6 +447,41 @@ class Gomunime : MainAPI() {
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.toIntOrNull()
+    }
+
+    private fun String.extractAnimeTitle(): String {
+        var text = this
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        if (text.contains("Tonton ", true)) {
+            text = text.substringAfter("Tonton ", text)
+        }
+
+        val markers = listOf(
+            " TV •",
+            " Movie •",
+            " OVA •",
+            " ONA •",
+            " Special •",
+            " TV ",
+            " Movie ",
+            " OVA ",
+            " ONA ",
+            " Special "
+        )
+
+        for (marker in markers) {
+            if (text.contains(marker, true)) {
+                text = text.substringBefore(marker)
+                break
+            }
+        }
+
+        text = text.replace(Regex("""^★\s*[\d.]+\s*"""), "")
+        text = text.replace(Regex("""^(Ongoing|Completed)\s+""", RegexOption.IGNORE_CASE), "")
+
+        return text.trim()
     }
 
     private fun String.cleanTitle(): String {
