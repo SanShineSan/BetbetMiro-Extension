@@ -14,7 +14,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 class Anoboy : MainAPI() {
-    override var mainUrl = "https://anoboy.be"
+    override var mainUrl = "https://ww1.anoboy.boo"
     override var name = "AnoBoy"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -48,21 +48,48 @@ class Anoboy : MainAPI() {
 
     override val mainPage = mainPageOf(
         "" to "Update Terbaru",
-        "anime/?order=update&status=&type=" to "Anime Terbaru",
-        "anime/?order=add&status=&type=" to "Baru Ditambahkan",
-        "anime/?order=&status=ongoing&type=" to "Sedang Tayang",
-        "anime/?order=&status=completed&type=" to "Tamat",
-        "anime/?order=&status=&type=movie" to "Movie",
-        "anime/?order=&status=&type=ova" to "OVA",
-        "genres/action/" to "Aksi",
-        "genres/adventure/" to "Petualangan",
-        "genres/comedy/" to "Komedi",
-        "genres/fantasy/" to "Fantasi",
-        "genres/isekai/" to "Isekai",
-        "genres/romance/" to "Romantis",
-        "genres/school/" to "Sekolah",
-        "genres/shounen/" to "Shounen",
-        "genres/slice-of-life/" to "Slice of Life"
+        "category/anime/ongoing/" to "Anime Ongoing",
+        "anime-list/" to "Anime List",
+        "category/donghua/" to "Donghua",
+        "category/anime-movie/" to "Movie",
+        "category/tokusatsu/" to "Tokusatsu",
+        "category/live-action-movie/" to "Live Action",
+        "category/studio-ghibli/" to "Studio Ghibli",
+        "category/rekomended/" to "Rekomendasi",
+        "category/action/" to "Action",
+        "category/adventure/" to "Adventure",
+        "category/comedy/" to "Comedy",
+        "category/demons/" to "Demons",
+        "category/drama/" to "Drama",
+        "category/ecchi/" to "Ecchi",
+        "category/fantasy/" to "Fantasy",
+        "category/game/" to "Game",
+        "category/harem/" to "Harem",
+        "category/historical/" to "Historical",
+        "category/horror/" to "Horror",
+        "category/magic/" to "Magic",
+        "category/martial-arts/" to "Martial Arts",
+        "category/mecha/" to "Mecha",
+        "category/military/" to "Military",
+        "category/music/" to "Music",
+        "category/mystery/" to "Mystery",
+        "category/parody/" to "Parody",
+        "category/police/" to "Police",
+        "category/psychological/" to "Psychological",
+        "category/romance/" to "Romance",
+        "category/samurai/" to "Samurai",
+        "category/school/" to "School",
+        "category/shoujo/" to "Shoujo",
+        "category/shounen/" to "Shounen",
+        "category/super-power/" to "Super Power",
+        "category/slice-of-life/" to "Slice of Life",
+        "category/sci-fi/" to "Sci-Fi",
+        "category/seinen/" to "Seinen",
+        "category/space/" to "Space",
+        "category/sports/" to "Sports",
+        "category/supernatural/" to "Supernatural",
+        "category/thriller/" to "Thriller",
+        "category/vampire/" to "Vampire"
     )
 
     private fun buildPageUrl(data: String, page: Int): String {
@@ -94,7 +121,8 @@ class Anoboy : MainAPI() {
                     val href = element.attr("href")
                     val text = element.text()
                     href.contains(mainUrl, true) &&
-                        !href.contains("/genres/", true) &&
+                        !href.contains("/category/", true) &&
+                        !href.contains("/tag/", true) &&
                         !href.contains("/season/", true) &&
                         !href.contains("/studio/", true) &&
                         text.length > 8
@@ -209,26 +237,41 @@ class Anoboy : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title, h2.entry-title")?.text()?.trim().orEmpty()
+        val title = document.selectFirst("h1.entry-title, h1, h2.entry-title, .pagetitle h1")?.text()?.trim().orEmpty()
+            .ifBlank {
+                document.title()
+                    .substringBefore("–")
+                    .substringBefore("- anoBoy")
+                    .trim()
+            }
         val poster = document
-            .selectFirst("div.column-three-fourth > img, div.column-content > img, div.bigcontent img, div.entry-content img, .thumb img, .poster img, .info-content img")
+            .selectFirst(".sisi.entry-content img, .deskripsi img, div.column-three-fourth > img, div.column-content > img, div.bigcontent img, div.entry-content img, .thumb img, .poster img, .info-content img")
             ?.getImageAttr()
             ?.let { fixUrlNull(it) }
 
         val description = (
-            document.selectFirst("div.unduhan:not(:has(table))")
+            document.selectFirst(".contentdeks")
                 ?.text()
                 ?.trim()
                 ?.ifBlank { null }
-                ?: document.select("div.entry-content p").joinToString("\n") { it.text() }
+                ?: document.selectFirst("div.unduhan:not(:has(table))")
+                    ?.text()
+                    ?.trim()
+                    ?.ifBlank { null }
+                ?: document.select("div.entry-content p, .sisi.entry-content p").joinToString("\n") { it.text() }
             )
             .trim()
 
-        val tableRows = document.select("div.unduhan table tr")
+        val tableRows = document.select(".contenttable table tr, div.unduhan table tr, table tr")
         fun getTableValue(label: String): String? {
-            return tableRows.firstOrNull {
-                it.selectFirst("th")?.text()?.contains(label, true) == true
+            return tableRows.firstOrNull { row ->
+                row.selectFirst("th")?.text()?.contains(label, true) == true ||
+                    row.text().substringBefore(":").contains(label, true)
             }?.selectFirst("td")?.text()?.trim()
+                ?.replace(label, "", ignoreCase = true)
+                ?.replace(":", "")
+                ?.trim()
+                ?.ifBlank { null }
         }
 
         val year = Regex("/(20\\d{2})/")
@@ -264,7 +307,7 @@ class Anoboy : MainAPI() {
             ?.replace("Rating", "")
             ?.trim()
             ?.toDoubleOrNull()
-            ?: getTableValue("Score")?.toDoubleOrNull()
+            ?: getTableValue("Score")?.replace(",", ".")?.toDoubleOrNull()
         val trailer = document.selectFirst("div.bixbox.trailer iframe, iframe[src*=\"youtube.com\"], iframe[src*=\"youtu.be\"]")
             ?.attr("src")
         val status = getStatus(getTableValue("Status"))
@@ -458,10 +501,28 @@ class Anoboy : MainAPI() {
             doc: org.jsoup.nodes.Document,
             pageReferer: String = url
         ): List<Episode> {
-            val serverGroups = doc.select("div.satu, div.dua, div.tiga, div.empat, div.lima, div.enam")
+            val serverGroups = doc.select("div.satu, div.dua, div.tiga, div.empat, div.lima, div.enam, #fplay, .vmiror")
             val anchors = serverGroups.flatMap { group -> group.select("a[data-video]") }
-            val fallbackAnchors = if (anchors.isNotEmpty()) anchors else doc.select("a[data-video]")
-            if (fallbackAnchors.isEmpty()) return emptyList()
+            val fallbackAnchors = if (anchors.isNotEmpty()) anchors else doc.select("#fplay a[data-video], a#allmiror[data-video], a[data-video]")
+            val iframePlayers = doc.select("iframe#mediaplayer[src], iframe[src*='/uploads/']")
+            if (fallbackAnchors.isEmpty() && iframePlayers.isEmpty()) return emptyList()
+
+            if (fallbackAnchors.isEmpty() && iframePlayers.isNotEmpty()) {
+                val urls = iframePlayers.mapNotNull { iframe ->
+                    val raw = iframe.getIframeAttr()
+                    if (isValidEpisodeUrl(raw)) fixUrl(raw!!) else null
+                }.distinct()
+                if (urls.isNotEmpty()) {
+                    val episodeNumber = episodeNumberFromUrl ?: 1
+                    val data = if (urls.size == 1) urls.first() else "multi::" + urls.joinToString("||")
+                    return listOf(
+                        newEpisode(encodeEpisodeData(pageReferer, data)) {
+                            name = "Episode $episodeNumber"
+                            episode = episodeNumber
+                        }
+                    )
+                }
+            }
 
             val hasExplicitEpisodeLabels = fallbackAnchors.any { anchor ->
                 val rawTitle = anchor.text().trim()
@@ -797,6 +858,8 @@ class Anoboy : MainAPI() {
                 lower.contains("adsbatch") ||
                 lower.contains("acbatch") ||
                 lower.contains("yupbatch") ||
+                lower.contains("yup/data.php") ||
+                lower.contains("adsbatch720.php") ||
                 lower.contains("embed.php") ||
                 lower.contains("blogger.com/video.g") ||
                 lower.contains("blogger.com/_/bloggervideoplayerui") ||
