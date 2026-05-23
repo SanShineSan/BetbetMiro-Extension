@@ -6,11 +6,8 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import java.net.URI
-import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 import kotlinx.coroutines.runBlocking
@@ -245,326 +242,31 @@ class AutoEmbedProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
-        val emitted = mutableSetOf<String>()
-
-        suspend fun emitWrapped(server: WebsiteServer, link: ExtractorLink) {
-            val key = "${link.name}|${link.url}"
-            if (!emitted.add(key)) return
-
-            callback.invoke(
-                newExtractorLink(
-                    source = server.name,
-                    name = if (link.name.equals(server.name, ignoreCase = true)) {
-                        server.name
-                    } else {
-                        "${server.name} - ${link.name}"
-                    },
-                    url = link.url,
-                    type = link.type
-                ) {
-                    quality = link.quality
-                    headers = link.headers
-                    extractorData = link.extractorData
-                    referer = link.referer
-                }
-            )
-        }
-
         for (server in buildWebsiteServers(linkData)) {
-            val before = emitted.size
-
             runCatching {
                 loadExtractor(server.url, server.referer ?: server.url, subtitleCallback) { link ->
-                    val key = "${server.name}|${link.name}|${link.url}"
-                    if (emitted.add(key)) {
-                        runBlocking {
-                            callback.invoke(
-                                newExtractorLink(
-                                    source = server.name,
-                                    name = if (link.name.equals(server.name, ignoreCase = true)) {
-                                        server.name
-                                    } else {
-                                        "${server.name} - ${link.name}"
-                                    },
-                                    url = link.url,
-                                    type = link.type
-                                ) {
-                                    quality = link.quality
-                                    headers = link.headers
-                                    extractorData = link.extractorData
-                                    referer = link.referer
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (emitted.size == before) {
-                crawlWebsiteServer(
-                    server = server,
-                    subtitleCallback = subtitleCallback
-                ) { link ->
-                    val key = "${server.name}|${link.name}|${link.url}"
-                    if (emitted.add(key)) {
-                        callback.invoke(link)
+                    runBlocking {
+                        callback.invoke(
+                            newExtractorLink(
+                                source = server.name,
+                                name = if (link.name.equals(server.name, ignoreCase = true)) {
+                                    server.name
+                                } else {
+                                    "${server.name} - ${link.name}"
+                                },
+                                url = link.url,
+                                type = link.type
+                            ) {
+                                quality = link.quality
+                                headers = link.headers
+                                extractorData = link.extractorData
+                                referer = link.referer
+                            }
+                        )
                     }
                 }
             }
         }
-    }
-
-    private suspend fun crawlWebsiteServer(
-        server: WebsiteServer,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        val queue = ArrayDeque<Pair<String, String>>()
-        val visited = mutableSetOf<String>()
-        var emitted = false
-
-        fun cleanUrl(raw: String?): String {
-            return raw.orEmpty()
-                .trim()
-                .replace("\\/", "/")
-                .replace("\\u002F", "/")
-                .replace("\\u003A", ":")
-                .replace("\\u0026", "&")
-                .replace("\\u003D", "=")
-                .replace("&amp;", "&")
-                .replace("&#038;", "&")
-                .replace("&quot;", "\"")
-        }
-
-        fun resolve(raw: String?, base: String): String? {
-            val clean = cleanUrl(raw)
-            if (clean.isBlank()) return null
-            if (clean == "#" || clean.equals("none", true) || clean.equals("null", true)) return null
-            if (clean.startsWith("javascript:", true) || clean.startsWith("data:", true) || clean.startsWith("blob:", true)) return null
-
-            return runCatching {
-                when {
-                    clean.startsWith("http://", true) || clean.startsWith("https://", true) -> clean
-                    clean.startsWith("//") -> "https:$clean"
-                    else -> URI(base).resolve(clean).toString()
-                }
-            }.getOrNull()
-        }
-
-        fun isBlocked(raw: String): Boolean {
-            val lower = raw.lowercase()
-            return lower.contains("doubleclick") ||
-                lower.contains("googlesyndication") ||
-                lower.contains("google-analytics") ||
-                lower.contains("googletagmanager") ||
-                lower.contains("cloudflareinsights") ||
-                lower.contains("facebook.com") ||
-                lower.contains("twitter.com") ||
-                lower.contains("x.com/") ||
-                lower.contains("telegram") ||
-                lower.contains("whatsapp") ||
-                lower.endsWith(".css") ||
-                lower.endsWith(".js") ||
-                lower.endsWith(".jpg") ||
-                lower.endsWith(".jpeg") ||
-                lower.endsWith(".png") ||
-                lower.endsWith(".webp") ||
-                lower.endsWith(".gif") ||
-                lower.endsWith(".svg") ||
-                lower.endsWith(".ico")
-        }
-
-        fun isDirectMedia(raw: String): Boolean {
-            val lower = raw.lowercase()
-            return lower.contains(".m3u8") ||
-                lower.contains(".mp4") ||
-                lower.contains(".webm") ||
-                lower.contains("googlevideo.com/videoplayback") ||
-                lower.contains("videoplayback?")
-        }
-
-        fun inferQuality(raw: String): Int {
-            return when {
-                raw.contains("2160", true) || raw.contains("4k", true) -> 2160
-                raw.contains("1440", true) || raw.contains("2k", true) -> 1440
-                raw.contains("1080", true) || raw.contains("1k", true) -> 1080
-                raw.contains("720", true) -> 720
-                raw.contains("480", true) -> 480
-                raw.contains("360", true) -> 360
-                raw.contains("240", true) -> 240
-                else -> 0
-            }
-        }
-
-        fun shouldCrawl(raw: String): Boolean {
-            if (isBlocked(raw) || isDirectMedia(raw)) return false
-
-            val lower = raw.lowercase()
-            return lower.contains("autoembed") ||
-                lower.contains("vidsrc") ||
-                lower.contains("vsrc.su") ||
-                lower.contains("embed.su") ||
-                lower.contains("2embed") ||
-                lower.contains("vidlink") ||
-                lower.contains("rivestream") ||
-                lower.contains("flicky") ||
-                lower.contains("cinemaos") ||
-                lower.contains("vidnest") ||
-                lower.contains("moviesapi") ||
-                lower.contains("multiembed") ||
-                lower.contains("superembed") ||
-                lower.contains("smashystream") ||
-                lower.contains("streamtape") ||
-                lower.contains("dood") ||
-                lower.contains("filemoon") ||
-                lower.contains("vidhide") ||
-                lower.contains("vidguard") ||
-                lower.contains("voe.sx") ||
-                lower.contains("mixdrop") ||
-                lower.contains("mp4upload") ||
-                lower.contains("ok.ru") ||
-                lower.contains("drive.google.com") ||
-                lower.contains("googleusercontent.com")
-        }
-
-        fun queueUrl(raw: String?, base: String) {
-            val resolved = resolve(raw, base) ?: return
-            if (isBlocked(resolved)) return
-            if (visited.contains(resolved)) return
-            queue.add(resolved to base)
-        }
-
-        fun extractCandidatesFromText(text: String, base: String) {
-            val cleaned = cleanUrl(text)
-
-            Regex("""https?://[^"'<>\s\\]+""", RegexOption.IGNORE_CASE)
-                .findAll(cleaned)
-                .forEach { queueUrl(it.value, base) }
-
-            Regex("""//[^"'<>\s\\]+""", RegexOption.IGNORE_CASE)
-                .findAll(cleaned)
-                .forEach { queueUrl("https:${it.value}", base) }
-
-            Regex("""(?:file|src|url|source|video|hls|data-video|data-src|data-url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                .findAll(cleaned)
-                .forEach { queueUrl(it.groupValues[1], base) }
-
-            Regex("""https?%3A%2F%2F[^"'<>\s\\]+""", RegexOption.IGNORE_CASE)
-                .findAll(cleaned)
-                .forEach { match ->
-                    val decoded = runCatching {
-                        URLDecoder.decode(match.value, "UTF-8")
-                    }.getOrDefault(match.value)
-                    queueUrl(decoded, base)
-                }
-        }
-
-        suspend fun emitDirect(raw: String, referer: String): Boolean {
-            if (!isDirectMedia(raw) || isBlocked(raw)) return false
-
-            val mediaType = if (raw.contains(".m3u8", true)) {
-                ExtractorLinkType.M3U8
-            } else {
-                ExtractorLinkType.VIDEO
-            }
-
-            callback.invoke(
-                newExtractorLink(
-                    source = server.name,
-                    name = server.name,
-                    url = raw,
-                    type = mediaType
-                ) {
-                    this.referer = referer
-                    this.quality = inferQuality(raw)
-                    this.headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer,
-                        "Origin" to runCatching {
-                            val uri = URI(referer)
-                            "${uri.scheme}://${uri.host}"
-                        }.getOrDefault(server.referer ?: server.url)
-                    )
-                }
-            )
-
-            return true
-        }
-
-        queueUrl(server.url, server.referer ?: server.url)
-
-        var safety = 0
-        while (queue.isNotEmpty() && safety++ < 55) {
-            val (next, referer) = queue.removeFirst()
-            if (!visited.add(next)) continue
-
-            if (emitDirect(next, referer)) {
-                emitted = true
-                continue
-            }
-
-            if (!shouldCrawl(next)) {
-                runCatching {
-                    loadExtractor(next, referer, subtitleCallback) { link ->
-                        runBlocking {
-                            callback.invoke(
-                                newExtractorLink(
-                                    source = server.name,
-                                    name = if (link.name.equals(server.name, ignoreCase = true)) server.name else "${server.name} - ${link.name}",
-                                    url = link.url,
-                                    type = link.type
-                                ) {
-                                    quality = link.quality
-                                    headers = link.headers
-                                    extractorData = link.extractorData
-                                    this.referer = link.referer
-                                }
-                            )
-                        }
-                        emitted = true
-                    }
-                }
-                continue
-            }
-
-            val response = runCatching {
-                app.get(
-                    next,
-                    referer = referer,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer,
-                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
-                    ),
-                    timeout = 20L
-                )
-            }.getOrNull() ?: continue
-
-            val doc = response.document
-
-            doc.select(
-                "iframe[src], iframe[data-src], iframe[data-litespeed-src], iframe[data-lazy-src], " +
-                    "source[src], video[src], video[data-src], embed[src], object[data], " +
-                    "a[href], [data-video], [data-src], [data-url], [data-iframe], [data-embed], option[value]"
-            ).forEach { element ->
-                queueUrl(element.attr("src"), next)
-                queueUrl(element.attr("data-src"), next)
-                queueUrl(element.attr("data-litespeed-src"), next)
-                queueUrl(element.attr("data-lazy-src"), next)
-                queueUrl(element.attr("data"), next)
-                queueUrl(element.attr("href"), next)
-                queueUrl(element.attr("data-video"), next)
-                queueUrl(element.attr("data-url"), next)
-                queueUrl(element.attr("data-iframe"), next)
-                queueUrl(element.attr("data-embed"), next)
-                queueUrl(element.attr("value"), next)
-            }
-
-            extractCandidatesFromText(response.text, next)
-        }
-
-        return emitted
     }
 
     private fun buildWebsiteServers(linkData: LinkData): List<WebsiteServer> {
@@ -573,82 +275,147 @@ class AutoEmbedProvider : MainAPI() {
         val season = linkData.season
         val episode = linkData.episode
 
-        fun movieUrl(domain: String, path: String) = "https://$domain$path"
-        fun tvUrl(domain: String, path: String) = "https://$domain$path"
+        fun idParamName(id: String): String = if (id.startsWith("tt", ignoreCase = true)) "imdb" else "tmdb"
 
-        return if (season == null || episode == null) {
-            buildList {
-                add(WebsiteServer("AutoEmbed", "https://player.autoembed.cc/embed/movie/$tmdbId"))
-                imdbId?.let { add(WebsiteServer("AutoEmbed IMDB", "https://player.autoembed.cc/embed/movie/$it")) }
-                add(WebsiteServer("AutoEmbed S2", "https://player.autoembed.cc/embed/movie/$tmdbId?server=2"))
-                add(WebsiteServer("AutoEmbed S3", "https://player.autoembed.cc/embed/movie/$tmdbId?server=3"))
-                add(WebsiteServer("AutoEmbed S4", "https://player.autoembed.cc/embed/movie/$tmdbId?server=4"))
+        fun MutableList<WebsiteServer>.addAutoEmbedMovie(id: String, label: String) {
+            add(WebsiteServer("AutoEmbed $label", "https://player.autoembed.cc/embed/movie/$id"))
+            add(WebsiteServer("AutoEmbed $label Server 2", "https://player.autoembed.cc/embed/movie/$id?server=2"))
+            add(WebsiteServer("AutoEmbed $label Server 3", "https://player.autoembed.cc/embed/movie/$id?server=3"))
+            add(WebsiteServer("AutoEmbed $label Server 4", "https://player.autoembed.cc/embed/movie/$id?server=4"))
+            add(WebsiteServer("AutoEmbed Net $label", "https://autoembed.net/embed/movie/$id"))
+        }
 
-                add(WebsiteServer("VidSrc Embed RU", movieUrl("vidsrc-embed.ru", "/embed/movie?tmdb=$tmdbId")))
-                add(WebsiteServer("VidSrc Embed SU", movieUrl("vidsrc-embed.su", "/embed/movie?tmdb=$tmdbId")))
-                add(WebsiteServer("VidSrc ME SU", movieUrl("vidsrcme.su", "/embed/movie?tmdb=$tmdbId")))
-                add(WebsiteServer("VSrc", movieUrl("vsrc.su", "/embed/movie?tmdb=$tmdbId")))
-                imdbId?.let {
-                    add(WebsiteServer("VidSrc Embed RU IMDB", movieUrl("vidsrc-embed.ru", "/embed/movie?imdb=$it")))
-                    add(WebsiteServer("VidSrc Embed SU IMDB", movieUrl("vidsrc-embed.su", "/embed/movie?imdb=$it")))
-                    add(WebsiteServer("VSrc IMDB", movieUrl("vsrc.su", "/embed/movie?imdb=$it")))
-                }
+        fun MutableList<WebsiteServer>.addAutoEmbedTv(id: String, label: String, season: Int, episode: Int) {
+            add(WebsiteServer("AutoEmbed $label", "https://player.autoembed.cc/embed/tv/$id/$season/$episode"))
+            add(WebsiteServer("AutoEmbed $label Server 2", "https://player.autoembed.cc/embed/tv/$id/$season/$episode?server=2"))
+            add(WebsiteServer("AutoEmbed $label Server 3", "https://player.autoembed.cc/embed/tv/$id/$season/$episode?server=3"))
+            add(WebsiteServer("AutoEmbed $label Server 4", "https://player.autoembed.cc/embed/tv/$id/$season/$episode?server=4"))
+            add(WebsiteServer("AutoEmbed Net $label", "https://autoembed.net/embed/tv/$id/$season/$episode"))
+        }
 
-                add(WebsiteServer("Embed SU", "https://embed.su/embed/movie/$tmdbId"))
-                add(WebsiteServer("2Embed", "https://www.2embed.cc/embed/$tmdbId"))
-                add(WebsiteServer("Vidlink", "https://vidlink.pro/movie/$tmdbId"))
-                add(WebsiteServer("RiveStream", "https://rivestream.net/embed?type=movie&id=$tmdbId"))
-                add(WebsiteServer("Flicky", "https://flicky.host/embed/movie/?id=$tmdbId"))
-                add(WebsiteServer("Cinemaos", "https://cinemaos.tech/player/$tmdbId"))
-                add(WebsiteServer("Vidnest", "https://vidnest.fun/movie/$tmdbId"))
-                add(WebsiteServer("Bravo", "https://moviesapi.club/movie/$tmdbId"))
+        fun MutableList<WebsiteServer>.addVidSrcMovie(id: String, label: String) {
+            val key = idParamName(id)
 
-                // Fallback lama: beberapa extractor Cloudstream masih mengenali pola domain ini.
-                add(WebsiteServer("VidSrc TO", "https://vidsrc.to/embed/movie/$tmdbId"))
-                add(WebsiteServer("VidSrc CC", "https://vidsrc.cc/v2/embed/movie/$tmdbId"))
-                add(WebsiteServer("VidSrc RIP", "https://vidsrc.rip/embed/movie/$tmdbId"))
-                imdbId?.let {
-                    add(WebsiteServer("VidSrc TO IMDB", "https://vidsrc.to/embed/movie/$it"))
-                    add(WebsiteServer("DrivePlayer", "https://godriveplayer.com/player.php?imdb=$it"))
-                    add(WebsiteServer("SuperEmbed", "https://multiembed.mov/?video_id=$it"))
-                }
+            // Domains listed as live by VidSrc. Keep both path and query formats because extractors differ.
+            val liveDomains = listOf(
+                "vidsrc-embed.ru",
+                "vidsrc-embed.su",
+                "vidsrcme.ru",
+                "vidsrcme.su",
+                "vidsrc-me.ru",
+                "vidsrc-me.su",
+                "vsrc.su"
+            )
+
+            liveDomains.forEach { domain ->
+                val cleanName = domain
+                    .replace("vidsrc-", "VidSrc ")
+                    .replace("vidsrc", "VidSrc")
+                    .replace("vsrc", "VSrc")
+                    .replace(".", " ")
+                    .replace("-", " ")
+                    .trim()
+
+                add(WebsiteServer("$cleanName $label", "https://$domain/embed/movie/$id"))
+                add(WebsiteServer("$cleanName $label Query", "https://$domain/embed/movie?$key=$id"))
+            }
+
+            // Older domains kept behind the current live domains because some Cloudstream extractors still recognize them.
+            add(WebsiteServer("VidSrc TO $label", "https://vidsrc.to/embed/movie/$id"))
+            add(WebsiteServer("VidSrc TO $label Query", "https://vidsrc.to/embed/movie?$key=$id"))
+            add(WebsiteServer("VidSrc CC $label", "https://vidsrc.cc/v2/embed/movie/$id"))
+            add(WebsiteServer("VidSrc RIP $label", "https://vidsrc.rip/embed/movie/$id"))
+        }
+
+        fun MutableList<WebsiteServer>.addVidSrcTv(id: String, label: String, season: Int, episode: Int) {
+            val key = idParamName(id)
+            val liveDomains = listOf(
+                "vidsrc-embed.ru",
+                "vidsrc-embed.su",
+                "vidsrcme.ru",
+                "vidsrcme.su",
+                "vidsrc-me.ru",
+                "vidsrc-me.su",
+                "vsrc.su"
+            )
+
+            liveDomains.forEach { domain ->
+                val cleanName = domain
+                    .replace("vidsrc-", "VidSrc ")
+                    .replace("vidsrc", "VidSrc")
+                    .replace("vsrc", "VSrc")
+                    .replace(".", " ")
+                    .replace("-", " ")
+                    .trim()
+
+                add(WebsiteServer("$cleanName $label", "https://$domain/embed/tv/$id/$season/$episode"))
+                add(WebsiteServer("$cleanName $label Query", "https://$domain/embed/tv?$key=$id&season=$season&episode=$episode"))
+            }
+
+            add(WebsiteServer("VidSrc TO $label", "https://vidsrc.to/embed/tv/$id/$season/$episode"))
+            add(WebsiteServer("VidSrc TO $label Query", "https://vidsrc.to/embed/tv?$key=$id&season=$season&episode=$episode"))
+            add(WebsiteServer("VidSrc CC $label", "https://vidsrc.cc/v2/embed/tv/$id/$season/$episode"))
+            add(WebsiteServer("VidSrc RIP $label", "https://vidsrc.rip/embed/tv/$id/$season/$episode"))
+        }
+
+        val servers = mutableListOf<WebsiteServer>()
+
+        if (season == null || episode == null) {
+            imdbId?.let {
+                servers.addAutoEmbedMovie(it, "IMDb")
+                servers.addVidSrcMovie(it, "IMDb")
+            }
+
+            servers.addAutoEmbedMovie(tmdbId.toString(), "TMDB")
+            servers.addVidSrcMovie(tmdbId.toString(), "TMDB")
+
+            servers += listOf(
+                WebsiteServer("Embed SU", "https://embed.su/embed/movie/$tmdbId"),
+                WebsiteServer("Embed SU Query", "https://embed.su/embed/movie?tmdb=$tmdbId"),
+                WebsiteServer("2Embed", "https://www.2embed.cc/embed/$tmdbId"),
+                WebsiteServer("2Embed ORG", "https://www.2embed.org/embed/movie?tmdb=$tmdbId"),
+                WebsiteServer("Vidlink", "https://vidlink.pro/movie/$tmdbId"),
+                WebsiteServer("RiveStream", "https://rivestream.net/embed?type=movie&id=$tmdbId"),
+                WebsiteServer("Flicky", "https://flicky.host/embed/movie/?id=$tmdbId"),
+                WebsiteServer("Cinemaos", "https://cinemaos.tech/player/$tmdbId"),
+                WebsiteServer("Vidnest", "https://vidnest.fun/movie/$tmdbId"),
+                WebsiteServer("Bravo", "https://moviesapi.club/movie/$tmdbId")
+            )
+
+            imdbId?.let {
+                servers += listOf(
+                    WebsiteServer("DrivePlayer", "https://godriveplayer.com/player.php?imdb=$it"),
+                    WebsiteServer("SuperEmbed", "https://multiembed.mov/?video_id=$it")
+                )
             }
         } else {
-            buildList {
-                add(WebsiteServer("AutoEmbed", "https://player.autoembed.cc/embed/tv/$tmdbId/$season/$episode"))
-                imdbId?.let { add(WebsiteServer("AutoEmbed IMDB", "https://player.autoembed.cc/embed/tv/$it/$season/$episode")) }
-                add(WebsiteServer("AutoEmbed S2", "https://player.autoembed.cc/embed/tv/$tmdbId/$season/$episode?server=2"))
-                add(WebsiteServer("AutoEmbed S3", "https://player.autoembed.cc/embed/tv/$tmdbId/$season/$episode?server=3"))
-                add(WebsiteServer("AutoEmbed S4", "https://player.autoembed.cc/embed/tv/$tmdbId/$season/$episode?server=4"))
+            imdbId?.let {
+                servers.addAutoEmbedTv(it, "IMDb", season, episode)
+                servers.addVidSrcTv(it, "IMDb", season, episode)
+            }
 
-                add(WebsiteServer("VidSrc Embed RU", tvUrl("vidsrc-embed.ru", "/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")))
-                add(WebsiteServer("VidSrc Embed SU", tvUrl("vidsrc-embed.su", "/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")))
-                add(WebsiteServer("VidSrc ME SU", tvUrl("vidsrcme.su", "/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")))
-                add(WebsiteServer("VSrc", tvUrl("vsrc.su", "/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode")))
-                imdbId?.let {
-                    add(WebsiteServer("VidSrc Embed RU IMDB", tvUrl("vidsrc-embed.ru", "/embed/tv?imdb=$it&season=$season&episode=$episode")))
-                    add(WebsiteServer("VidSrc Embed SU IMDB", tvUrl("vidsrc-embed.su", "/embed/tv?imdb=$it&season=$season&episode=$episode")))
-                    add(WebsiteServer("VSrc IMDB", tvUrl("vsrc.su", "/embed/tv?imdb=$it&season=$season&episode=$episode")))
-                }
+            servers.addAutoEmbedTv(tmdbId.toString(), "TMDB", season, episode)
+            servers.addVidSrcTv(tmdbId.toString(), "TMDB", season, episode)
 
-                add(WebsiteServer("Embed SU", "https://embed.su/embed/tv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("2Embed", "https://www.2embed.cc/embedtv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("Vidlink", "https://vidlink.pro/tv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("RiveStream", "https://rivestream.net/embed?type=tv&id=$tmdbId&season=$season&episode=$episode"))
-                add(WebsiteServer("Flicky", "https://flicky.host/embed/tv/?id=$tmdbId/$season/$episode"))
-                add(WebsiteServer("Cinemaos", "https://cinemaos.tech/player/$tmdbId/$season/$episode"))
-                add(WebsiteServer("Vidnest", "https://vidnest.fun/tv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("Bravo", "https://moviesapi.club/tv/$tmdbId/$season/$episode"))
+            servers += listOf(
+                WebsiteServer("Embed SU", "https://embed.su/embed/tv/$tmdbId/$season/$episode"),
+                WebsiteServer("Embed SU Query", "https://embed.su/embed/tv?tmdb=$tmdbId&season=$season&episode=$episode"),
+                WebsiteServer("2Embed", "https://www.2embed.cc/embedtv/$tmdbId/$season/$episode"),
+                WebsiteServer("2Embed ORG", "https://www.2embed.org/embed/series?tmdb=$tmdbId&s=$season&e=$episode"),
+                WebsiteServer("Vidlink", "https://vidlink.pro/tv/$tmdbId/$season/$episode"),
+                WebsiteServer("RiveStream", "https://rivestream.net/embed?type=tv&id=$tmdbId&season=$season&episode=$episode"),
+                WebsiteServer("Flicky", "https://flicky.host/embed/tv/?id=$tmdbId/$season/$episode"),
+                WebsiteServer("Cinemaos", "https://cinemaos.tech/player/$tmdbId/$season/$episode"),
+                WebsiteServer("Vidnest", "https://vidnest.fun/tv/$tmdbId/$season/$episode"),
+                WebsiteServer("Bravo", "https://moviesapi.club/tv/$tmdbId/$season/$episode")
+            )
 
-                // Fallback lama: beberapa extractor Cloudstream masih mengenali pola domain ini.
-                add(WebsiteServer("VidSrc TO", "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("VidSrc CC", "https://vidsrc.cc/v2/embed/tv/$tmdbId/$season/$episode"))
-                add(WebsiteServer("VidSrc RIP", "https://vidsrc.rip/embed/tv/$tmdbId/$season/$episode"))
-                imdbId?.let {
-                    add(WebsiteServer("SuperEmbed", "https://multiembed.mov/?video_id=$it&s=$season&e=$episode"))
-                }
+            imdbId?.let {
+                servers += WebsiteServer("SuperEmbed", "https://multiembed.mov/?video_id=$it&s=$season&e=$episode")
             }
         }
+
+        return servers.distinctBy { it.url }
     }
 
     private fun buildPagedUrl(url: String, page: Int): String {
