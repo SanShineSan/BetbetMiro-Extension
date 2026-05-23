@@ -21,5 +21,6 @@ cloudstream {
         "AsianDrama"
     )
 
-    iconUrl = "https://www.google.com/s2/favicons?domain=filmapik.fitness&sz=%size%"
+    // %size% diganti menjadi angka pasti (256) agar icon valid dan jernih
+    iconUrl = "https://www.google.com/s2/favicons?domain=filmapik.fitness&sz=256"
 }

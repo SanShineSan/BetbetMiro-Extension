@@ -1,8 +1,8 @@
 version = 3
 
 cloudstream {
-    description = "Gojodesu - Anime Streaming Site"
     language = "id"
+    description = "Streaming anime subtitle Indonesia"
     authors = listOf("BetbetMiro")
 
     /**
@@ -20,5 +20,5 @@ cloudstream {
         "OVA"
     )
 
-    iconUrl = "https://www.google.com/s2/favicons?domain=gojodesu.com&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=gomunime.top&sz=%size%"
 }

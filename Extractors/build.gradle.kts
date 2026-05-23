@@ -15,4 +15,7 @@ cloudstream {
     status = 1
 
     tvTypes = listOf("Others")
+
+    // Menggunakan ikon logo 'G' resmi dari Google dengan resolusi bagus
+    iconUrl = "https://www.google.com/s2/favicons?domain=google.com&sz=256"
 }
