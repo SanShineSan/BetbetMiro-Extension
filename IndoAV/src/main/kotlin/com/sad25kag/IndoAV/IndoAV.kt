@@ -37,6 +37,18 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Calendar
+import java.security.KeyFactory
+import java.security.SecureRandom
+import java.security.spec.MGF1ParameterSpec
+import java.security.spec.X509EncodedKeySpec
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
+import javax.crypto.spec.SecretKeySpec
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 @CloudstreamPlugin
 class IndoAVPlugin : BasePlugin() {
@@ -857,36 +869,70 @@ class IndoAV : MainAPI() {
         }
 
         jobs.forEach { (code, streamName) ->
-            val payload = buildIndoAvPayload(
+            val dpPayload = fetchIndoAvDpPayload(
+                code = code,
+                referer = pageUrl
+            ).orEmpty()
+
+            if (dpPayload.isNotBlank()) {
+                parsePlayerResponse(
+                    text = dpPayload,
+                    baseUrl = pageUrl,
+                    directLinks = directLinks,
+                    embedLinks = embedLinks
+                )
+
+                extractPlayableUrls(dpPayload).forEach { raw ->
+                    addCandidate(
+                        raw = raw,
+                        baseUrl = pageUrl,
+                        directLinks = directLinks,
+                        embedLinks = embedLinks
+                    )
+                }
+
+                extractIndoAvPlayTokens(dpPayload).forEach { playToken ->
+                    decodeIndoAvEncodedJsonUrls(playToken).forEach { url ->
+                        addCandidate(
+                            raw = url,
+                            baseUrl = pageUrl,
+                            directLinks = directLinks,
+                            embedLinks = embedLinks
+                        )
+                    }
+                }
+            }
+
+            // Legacy fallback: kept for older IndoAV layouts that still return the player by /video/v.
+            val legacyPayload = buildIndoAvPayload(
                 code = code,
                 streamName = streamName.ifBlank { "EM" }
             )
 
-            val responseText = runCatching {
+            val legacyText = runCatching {
                 app.post(
-                    "$mainUrl/video/v/$payload/",
+                    "$mainUrl/video/v/$legacyPayload/",
                     data = mapOf(
-                        "video" to payload,
+                        "video" to legacyPayload,
                         "origin" to mainUrl
                     ),
-                    headers = headers + mapOf(
+                    headers = headers + indoAvOfficialHeaders() + mapOf(
                         "Content-Type" to "application/x-www-form-urlencoded",
-                        "X-REQUESTED-WITH" to "official-app",
                         "Origin" to mainUrl,
                         "Accept" to "text/html,application/json,text/plain,*/*"
                     ),
                     referer = pageUrl,
-                    timeout = 15L
+                    timeout = 12L
                 ).text.cleanEscaped()
             }.getOrNull().orEmpty()
 
-            if (responseText.isBlank()) return@forEach
+            if (legacyText.isBlank()) return@forEach
 
-            val decrypted = decryptIndoAvEncoded(responseText)
+            val legacyDecrypted = decryptIndoAvEncoded(legacyText)
                 ?.cleanEscaped()
                 .orEmpty()
 
-            listOf(responseText, decrypted)
+            listOf(legacyText, legacyDecrypted)
                 .filter { it.isNotBlank() }
                 .distinct()
                 .forEach { playerPayload ->
@@ -930,6 +976,305 @@ class IndoAV : MainAPI() {
                     }
                 }
         }
+    }
+
+
+    private suspend fun fetchIndoAvDpPayload(
+        code: String,
+        referer: String
+    ): String? {
+        if (code.isBlank()) return null
+
+        val safeCode = URLEncoder.encode(code, "UTF-8")
+
+        val publicJson = runCatching {
+            postIndoAvJson(
+                url = "$mainUrl/video/$safeCode/gp",
+                jsonBody = "{}",
+                referer = referer
+            )
+        }.getOrNull().orEmpty()
+
+        val hmacJson = runCatching {
+            postIndoAvJson(
+                url = "$mainUrl/video/$safeCode/gh",
+                jsonBody = "{}",
+                referer = referer
+            )
+        }.getOrNull().orEmpty()
+
+        val publicKey = extractJsonString(publicJson, "public_key")
+            ?: return null
+
+        val hmacSecret = extractJsonString(hmacJson, "hmac_secret")
+            ?: return null
+
+        val encryptedRequest = runCatching {
+            buildIndoAvDpEncryptedRequest(
+                payloadJson = """{"slug":"${escapeJson(code)}"}""",
+                publicKey = publicKey,
+                hmacSecretHex = hmacSecret
+            )
+        }.getOrNull() ?: return null
+
+        val dpJson = runCatching {
+            postIndoAvJson(
+                url = "$mainUrl/video/$safeCode/dp",
+                jsonBody = """{"encrypted":true,"payload":"${escapeJson(encryptedRequest.encryptedPayload)}"}""",
+                referer = referer
+            )
+        }.getOrNull().orEmpty()
+
+        val encrypted = extractJsonBoolean(dpJson, "encrypted")
+        val responsePayload = extractJsonString(dpJson, "payload")
+
+        if (encrypted && !responsePayload.isNullOrBlank()) {
+            return runCatching {
+                decryptAesCbcBase64(
+                    encryptedBase64 = responsePayload,
+                    key = encryptedRequest.aesKey,
+                    iv = encryptedRequest.aesIv
+                ).cleanEscaped()
+            }.getOrNull()
+        }
+
+        return dpJson.takeIf { it.isNotBlank() }
+    }
+
+    private suspend fun postIndoAvJson(
+        url: String,
+        jsonBody: String,
+        referer: String
+    ): String {
+        return app.post(
+            url,
+            requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()),
+            headers = headers + indoAvOfficialHeaders() + mapOf(
+                "Content-Type" to "application/json",
+                "Accept" to "application/json,text/plain,*/*",
+                "Origin" to mainUrl
+            ),
+            referer = referer,
+            timeout = 15L
+        ).text.cleanEscaped()
+    }
+
+    private data class IndoAvEncryptedRequest(
+        val encryptedPayload: String,
+        val aesKey: ByteArray,
+        val aesIv: ByteArray
+    )
+
+    private fun buildIndoAvDpEncryptedRequest(
+        payloadJson: String,
+        publicKey: String,
+        hmacSecretHex: String
+    ): IndoAvEncryptedRequest {
+        val random = SecureRandom()
+
+        val aesKey = ByteArray(32)
+        val aesIv = ByteArray(16)
+        random.nextBytes(aesKey)
+        random.nextBytes(aesIv)
+
+        val encryptedPayloadBytes = aesCbcEncrypt(
+            payloadJson.toByteArray(StandardCharsets.UTF_8),
+            aesKey,
+            aesIv
+        )
+        val encryptedPayloadBase64 = base64Encode(encryptedPayloadBytes)
+
+        val timestamp = (System.currentTimeMillis() / 1000L).toString()
+        val nonce = randomHex(32)
+        val hmacInput = encryptedPayloadBase64 + timestamp + nonce
+
+        val hmacBytes = hmacSha256(
+            data = hmacInput.toByteArray(StandardCharsets.UTF_8),
+            key = hexToBytes(hmacSecretHex)
+        )
+        val hmacBase64 = base64Encode(hmacBytes)
+
+        val keyAndIv = ByteArray(48)
+        System.arraycopy(aesKey, 0, keyAndIv, 0, 32)
+        System.arraycopy(aesIv, 0, keyAndIv, 32, 16)
+
+        val encryptedKeyBase64 = base64Encode(
+            rsaOaepSha1Encrypt(
+                data = keyAndIv,
+                publicKey = publicKey
+            )
+        )
+
+        val finalPayload = listOf(
+            encryptedKeyBase64,
+            encryptedPayloadBase64,
+            timestamp,
+            nonce,
+            hmacBase64
+        ).joinToString("|")
+
+        return IndoAvEncryptedRequest(
+            encryptedPayload = base64Encode(finalPayload.toByteArray(StandardCharsets.ISO_8859_1)),
+            aesKey = aesKey,
+            aesIv = aesIv
+        )
+    }
+
+    private fun aesCbcEncrypt(
+        data: ByteArray,
+        key: ByteArray,
+        iv: ByteArray
+    ): ByteArray {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(key, "AES"),
+            IvParameterSpec(iv)
+        )
+        return cipher.doFinal(data)
+    }
+
+    private fun decryptAesCbcBase64(
+        encryptedBase64: String,
+        key: ByteArray,
+        iv: ByteArray
+    ): String {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(key, "AES"),
+            IvParameterSpec(iv)
+        )
+
+        return String(
+            cipher.doFinal(Base64.getDecoder().decode(encryptedBase64.trim())),
+            StandardCharsets.UTF_8
+        ).trim('\u0000', ' ', '\n', '\r', '\t')
+    }
+
+    private fun rsaOaepSha1Encrypt(
+        data: ByteArray,
+        publicKey: String
+    ): ByteArray {
+        val cleanKey = publicKey
+            .replace("-----BEGIN PUBLIC KEY-----", "")
+            .replace("-----END PUBLIC KEY-----", "")
+            .replace(Regex("""\s+"""), "")
+
+        val keySpec = X509EncodedKeySpec(Base64.getDecoder().decode(cleanKey))
+        val key = KeyFactory.getInstance("RSA").generatePublic(keySpec)
+
+        val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-1AndMGF1Padding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            key,
+            OAEPParameterSpec(
+                "SHA-1",
+                "MGF1",
+                MGF1ParameterSpec.SHA1,
+                PSource.PSpecified.DEFAULT
+            )
+        )
+
+        return cipher.doFinal(data)
+    }
+
+    private fun hmacSha256(
+        data: ByteArray,
+        key: ByteArray
+    ): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(key, "HmacSHA256"))
+        return mac.doFinal(data)
+    }
+
+    private fun hexToBytes(value: String): ByteArray {
+        val clean = value.trim()
+        require(clean.length % 2 == 0)
+
+        return ByteArray(clean.length / 2) { index ->
+            clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+    }
+
+    private fun randomHex(length: Int): String {
+        val bytes = ByteArray(length)
+        SecureRandom().nextBytes(bytes)
+        return bytes.joinToString("") {
+            it.toInt().and(0xff).toString(16).padStart(2, '0')
+        }
+    }
+
+    private fun base64Encode(data: ByteArray): String {
+        return Base64.getEncoder().encodeToString(data)
+    }
+
+    private fun extractIndoAvPlayTokens(text: String): List<String> {
+        val results = linkedSetOf<String>()
+
+        Regex(
+            """"play_token"\s*:\s*"([^"]+)"""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text).forEach {
+            results.add(it.groupValues[1].cleanEscaped())
+        }
+
+        Regex(
+            """play_token\s*[:=]\s*["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text).forEach {
+            results.add(it.groupValues[1].cleanEscaped())
+        }
+
+        return results.toList()
+    }
+
+    private fun extractJsonString(
+        json: String,
+        key: String
+    ): String? {
+        return Regex(
+            """"${Regex.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"""",
+            RegexOption.IGNORE_CASE
+        ).find(json)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\/", "/")
+            ?.replace("\\n", "\n")
+            ?.replace("\\r", "\r")
+            ?.replace("\\t", "\t")
+            ?.replace("\\\"", "\"")
+            ?.replace("\\\\", "\\")
+    }
+
+    private fun extractJsonBoolean(
+        json: String,
+        key: String
+    ): Boolean {
+        return Regex(
+            """"${Regex.escape(key)}"\s*:\s*(true|false)""",
+            RegexOption.IGNORE_CASE
+        ).find(json)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.equals("true", true)
+            ?: false
+    }
+
+    private fun escapeJson(value: String): String {
+        return value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    private fun indoAvOfficialHeaders(): Map<String, String> {
+        return mapOf(
+            "X-REQUESTED-WITH" to "official-app",
+            "rDI+DM+9e14OWvBCsFHFEL46KzSF+oVe" to "mUNVMvy8c3gFW8lju1zWEw=="
+        )
     }
 
     private fun extractIndoAvCodeAndStream(url: String): Pair<String, String> {
@@ -1661,7 +2006,8 @@ class IndoAV : MainAPI() {
             value.contains("www.indoav.com/video/load") -> 1
             value.contains("www.indoav.com/video/img") -> 2
             value.contains("www.indoav.com/video/embed") -> 3
-            value.contains("embedan") -> 4
+            value.contains("pasrahh.com") -> 4
+            value.contains("embedan") -> 5
             value.contains("majorplay") -> 5
             value.contains("jeniusplay") -> 6
             value.contains("hglink") -> 7
@@ -1691,6 +2037,7 @@ class IndoAV : MainAPI() {
             "www.indoav.com/video/load",
             "www.indoav.com/video/img",
             "www.indoav.com/video/embed",
+            "pasrahh.com",
             "embedan",
             "embed",
             "player",
