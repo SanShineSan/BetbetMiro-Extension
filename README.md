@@ -142,8 +142,6 @@ Repository ini dibuat untuk tujuan pembelajaran, pengembangan, dan penggunaan ex
 
 Semua konten, metadata, gambar, video, maupun source streaming berasal dari pihak ketiga atau sumber publik di internet. Repository ini tidak menyimpan, meng-host, atau mengunggah konten video apa pun.
 
-Pengguna bertanggung jawab penuh atas penggunaan mereka dan wajib mematuhi hukum yang berlaku
-
 Gunakan dengan bijak dan patuhi aturan yang berlaku di wilayah masing-masing.
 
 Jika Anda meyakini bahwa ada konten yang melanggar hukum hak cipta, silakan hubungi **pihak penyedia host file yang bersangkutan**, **bukan** pengembang dari repositori ini ataupun aplikasi Cloudstream 3.
