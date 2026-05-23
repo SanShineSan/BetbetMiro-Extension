@@ -1,9 +1,9 @@
-version = 6
+version = 7
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "IndoAV provider for indoav.com with dynamic feed parsing, categories, genres, search, detail parsing, corrected encrypted IndoAV /video/load playback support, iframe fallback, and public HLS/MP4 extraction."
+    description = "IndoAV provider for indoav.com with dynamic feed parsing, categories, genres, search, detail parsing, corrected encrypted IndoAV /video/v playback support, iframe fallback, and public HLS/MP4 extraction."
 
     /**
      * Status int as the following:
