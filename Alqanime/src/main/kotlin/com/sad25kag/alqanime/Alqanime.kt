@@ -56,7 +56,6 @@ class Alqanime : MainAPI() {
         "$mainUrl/tag/drama/page/%d/" to "Drama",
         "$mainUrl/tag/ecchi/page/%d/" to "Ecchi",
         "$mainUrl/tag/fantasy/page/%d/" to "Fantasy",
-        "$mainUrl/tag/game/page/%d/" to "Game",
         "$mainUrl/tag/harem/page/%d/" to "Harem",
         "$mainUrl/tag/historical/page/%d/" to "Historical",
         "$mainUrl/tag/horror/page/%d/" to "Horror",
