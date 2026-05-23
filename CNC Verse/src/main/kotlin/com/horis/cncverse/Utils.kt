@@ -1,4 +1,4 @@
-package com.sad25kag.cncverse
+package com.horis.cncverse
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*

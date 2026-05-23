@@ -1,4 +1,4 @@
-package com.sad25kag.cncverse.entities
+package com.horis.cncverse.entities
 
 data class EpisodesData(
     val episodes: List<Episode>?,

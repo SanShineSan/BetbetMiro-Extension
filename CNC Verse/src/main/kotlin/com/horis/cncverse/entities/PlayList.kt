@@ -1,3 +1,3 @@
-package com.sad25kag.cncverse.entities
+package com.horis.cncverse.entities
 
 class PlayList : ArrayList<PlayListItem>()

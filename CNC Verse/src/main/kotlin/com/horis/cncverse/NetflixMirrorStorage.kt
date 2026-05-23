@@ -1,4 +1,4 @@
-package com.sad25kag.cncverse
+package com.horis.cncverse
 
 import android.content.Context
 import android.content.SharedPreferences

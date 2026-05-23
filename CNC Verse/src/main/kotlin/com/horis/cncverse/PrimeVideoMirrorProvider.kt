@@ -1,9 +1,9 @@
-package com.sad25kag.cncverse
+package com.horis.cncverse
 
 import android.content.Context
-import com.sad25kag.cncverse.entities.EpisodesData
-import com.sad25kag.cncverse.entities.PostData
-import com.sad25kag.cncverse.entities.SearchData
+import com.horis.cncverse.entities.EpisodesData
+import com.horis.cncverse.entities.PostData
+import com.horis.cncverse.entities.SearchData
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -14,7 +14,7 @@ import okhttp3.Response
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.APIHolder.unixTime
 
-class HotStarMirrorProvider : MainAPI() {
+class PrimeVideoMirrorProvider : MainAPI() {
     companion object {
         var context: Context? = null
     }
@@ -28,7 +28,7 @@ class HotStarMirrorProvider : MainAPI() {
     override var lang = "id"
 
     override var mainUrl = "https://net52.cc"
-    override var name = "Hotstar"
+    override var name = "Prime Video"
 
     override val hasMainPage = true
     private var cookie_value = ""
@@ -56,7 +56,7 @@ class HotStarMirrorProvider : MainAPI() {
         cookie_value = if(cookie_value.isEmpty()) bypass(mainUrl) else cookie_value
         val cookies = mapOf(
             "t_hash_t" to cookie_value,
-            "ott" to "hs",
+            "ott" to "pv",
             "hd" to "on"
         )
         val document = app.get(
@@ -85,7 +85,7 @@ class HotStarMirrorProvider : MainAPI() {
         //     fixUrlNull(selectFirst(".card-img-container img, .top10-img img")?.attr("data-src"))
 
         return newAnimeSearchResponse("", Id(id).toJson()) {
-            this.posterUrl = "https://imgcdn.kim/hs/v/$id.jpg"
+            this.posterUrl = "https://imgcdn.kim/pv/v/$id.jpg"
             posterHeaders = mapOf("Referer" to "$mainUrl/home")
         }
     }
@@ -95,14 +95,14 @@ class HotStarMirrorProvider : MainAPI() {
         val cookies = mapOf(
             "t_hash_t" to cookie_value,
             "hd" to "on",
-            "ott" to "hs"
+            "ott" to "pv"
         )
-        val url = "$mainUrl/mobile/hs/search.php?s=$query&t=${APIHolder.unixTime}"
+        val url = "$mainUrl/mobile/pv/search.php?s=$query&t=${APIHolder.unixTime}"
         val data = app.get(url, referer = "$mainUrl/home", cookies = cookies).parsed<SearchData>()
 
         return data.searchResult.map {
             newAnimeSearchResponse(it.t, Id(it.id).toJson()) {
-                posterUrl = "https://imgcdn.kim/hs/v/${it.id}.jpg"
+                posterUrl = "https://imgcdn.kim/pv/v/${it.id}.jpg"
                 posterHeaders = mapOf("Referer" to "$mainUrl/home")
             }
         }
@@ -114,10 +114,10 @@ class HotStarMirrorProvider : MainAPI() {
         val cookies = mapOf(
             "t_hash_t" to cookie_value,
             "hd" to "on",
-            "ott" to "hs"
+            "ott" to "pv"
         )
         val data = app.get(
-            "$mainUrl/mobile/hs/post.php?id=$id&t=${APIHolder.unixTime}",
+            "$mainUrl/mobile/pv/post.php?id=$id&t=${APIHolder.unixTime}",
             headers,
             referer = "$mainUrl/home",
             cookies = cookies
@@ -141,7 +141,7 @@ class HotStarMirrorProvider : MainAPI() {
 
         val suggest = data.suggest?.map {
             newAnimeSearchResponse("", Id(it.id).toJson()) {
-                this.posterUrl = "https://imgcdn.kim/hs/v/${it.id}.jpg"
+                this.posterUrl = "https://imgcdn.kim/pv/v/${it.id}.jpg"
                 posterHeaders = mapOf("Referer" to "$mainUrl/home")
             }
         }
@@ -156,7 +156,7 @@ class HotStarMirrorProvider : MainAPI() {
                     this.name = it.t
                     this.episode = it.ep.replace("E", "").toIntOrNull()
                     this.season = it.s.replace("S", "").toIntOrNull()
-                    this.posterUrl = "https://imgcdn.kim/hsepimg/150/${it.id}.jpg"
+                    this.posterUrl = "https://imgcdn.kim/pvepimg/${it.id}.jpg"
                     this.runTime = it.time.replace("m", "").toIntOrNull()
                 }
             }
@@ -173,8 +173,8 @@ class HotStarMirrorProvider : MainAPI() {
         val type = if (data.episodes.first() == null) TvType.Movie else TvType.TvSeries
 
         return newTvSeriesLoadResponse(title, url, type, episodes) {
-            posterUrl = "https://imgcdn.kim/hs/v/$id.jpg"
-            backgroundPosterUrl = "https://imgcdn.kim/hs/h/$id.jpg"
+            posterUrl = "https://imgcdn.kim/pv/v/$id.jpg"
+            backgroundPosterUrl = "https://imgcdn.kim/pv/h/$id.jpg"
             posterHeaders = mapOf("Referer" to "$mainUrl/home")
             plot = data.desc
             year = data.year.toIntOrNull()
@@ -194,12 +194,12 @@ class HotStarMirrorProvider : MainAPI() {
         val cookies = mapOf(
             "t_hash_t" to cookie_value,
             "hd" to "on",
-            "ott" to "hs"
+            "ott" to "pv"
         )
         var pg = page
         while (true) {
             val data = app.get(
-                "$mainUrl/mobile/hs/episodes.php?s=$sid&series=$eid&t=${APIHolder.unixTime}&page=$pg",
+                "$mainUrl/mobile/pv/episodes.php?s=$sid&series=$eid&t=${APIHolder.unixTime}&page=$pg",
                 headers,
                 referer = "$mainUrl/home",
                 cookies = cookies
@@ -209,7 +209,7 @@ class HotStarMirrorProvider : MainAPI() {
                     name = it.t
                     episode = it.ep.replace("E", "").toIntOrNull()
                     season = it.s.replace("S", "").toIntOrNull()
-                    this.posterUrl = "https://imgcdn.kim/hsepimg/${it.id}.jpg"
+                    this.posterUrl = "https://imgcdn.kim/pvepimg/${it.id}.jpg"
                     this.runTime = it.time.replace("m", "").toIntOrNull()
                 }
             }
@@ -229,7 +229,7 @@ class HotStarMirrorProvider : MainAPI() {
         val id = parseJson<LoadData>(data).id
         val response = app.get(
             "$apiBase/newtv/player.php?id=$id",
-            headers = buildNewTvHeaders("hs", mapOf("Usertoken" to ""))
+            headers = buildNewTvHeaders("pv", mapOf("Usertoken" to ""))
         ).parsed<NewTvPlayerResponse>()
 
         if (response.status != "ok" || response.video_link.isNullOrBlank()) return false

@@ -1,4 +1,4 @@
-package com.sad25kag.cncverse.entities
+package com.horis.cncverse.entities
 
 data class PostData(
     val desc: String?,

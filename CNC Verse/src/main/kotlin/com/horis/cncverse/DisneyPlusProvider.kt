@@ -1,3 +1,3 @@
-package com.sad25kag.cncverse
+package com.horis.cncverse
 
 class DisneyPlusProvider : DisneyStudioProvider("disney", "Disney")
