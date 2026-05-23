@@ -76,7 +76,9 @@ class Indo18 : MainAPI() {
         "category/ngintip/" to "Ngintip",
         "category/pembantu/" to "Pembantu",
         "category/pns/" to "PNS",
-        "category/scandal/" to "Scandal"
+        "category/scandal/" to "Scandal",
+        "category/tante/" to "Tante",
+        "category/video-indonesia/" to "Video Indonesia"
     )
 
     private val headers = mapOf(
@@ -427,10 +429,13 @@ class Indo18 : MainAPI() {
         val embedLinks = linkedSetOf<String>()
 
         document.select(
-            "video[src], " +
+            "meta[itemprop=embedURL], " +
+                "meta[property=og:video], " +
+                "meta[property=og:video:url], " +
+                "meta[property=og:video:secure_url], " +
+                "video[src], " +
                 "video[data-src], " +
                 "video[data-video], " +
-                "video[poster], " +
                 "video source[src], " +
                 "source[src], " +
                 "source[data-src], " +
@@ -450,7 +455,8 @@ class Indo18 : MainAPI() {
                 "[data-iframe]"
         ).forEach { element ->
             val href = element.attr("href")
-            val raw = element.attr("data-litespeed-src")
+            val raw = element.attr("content")
+                .ifBlank { element.attr("data-litespeed-src") }
                 .ifBlank { element.attr("data-lazy-src") }
                 .ifBlank { element.attr("data-original") }
                 .ifBlank { element.attr("data-video") }
@@ -474,7 +480,6 @@ class Indo18 : MainAPI() {
                 raw.contains("telegram", true) ||
                 raw.contains("whatsapp", true) ||
                 raw.contains("mailto:", true) ||
-                raw.contains("jomblo.org", true) ||
                 label.contains("content removal") ||
                 label.contains("share") ||
                 label.contains("copy the link") ||
@@ -484,6 +489,7 @@ class Indo18 : MainAPI() {
             }
 
             if (
+                element.tagName().equals("meta", true) ||
                 element.tagName().equals("video", true) ||
                 element.tagName().equals("source", true) ||
                 element.tagName().equals("iframe", true) ||
@@ -538,7 +544,7 @@ class Indo18 : MainAPI() {
         if (directLinks.isNotEmpty()) return true
 
         prioritizeEmbeds(embedLinks)
-            .take(10)
+            .take(12)
             .forEach { embed ->
                 val success = loadExtractor(
                     embed,
@@ -577,6 +583,38 @@ class Indo18 : MainAPI() {
                             )
 
                             if (nestedSuccess) return true
+
+                            resolveNestedLinks(fixed, embed).forEach { deep ->
+                                val deepFixed = normalizeUrl(deep, fixed)
+                                    .replace(".txt", ".m3u8")
+
+                                when {
+                                    isAdUrl(deepFixed) -> Unit
+
+                                    isHlsLike(deepFixed) ||
+                                        deepFixed.contains(".mp4", true) ||
+                                        deepFixed.contains(".webm", true) -> {
+                                        emitDirectLink(
+                                            link = deepFixed,
+                                            referer = fixed,
+                                            callback = callback
+                                        )
+                                        return true
+                                    }
+
+                                    deepFixed.startsWith("http", true) &&
+                                        !shouldSkipUrl(deepFixed) -> {
+                                        val deepSuccess = loadExtractor(
+                                            deepFixed,
+                                            fixed,
+                                            subtitleCallback,
+                                            callback
+                                        )
+
+                                        if (deepSuccess) return true
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -591,27 +629,89 @@ class Indo18 : MainAPI() {
     ): List<String> {
         if (shouldSkipUrl(url)) return emptyList()
 
-        val text = runCatching {
+        val response = runCatching {
             app.get(
                 url,
-                headers = headers,
+                headers = headers + mapOf(
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Origin" to mainUrl
+                ),
                 referer = referer,
-                timeout = 12L
-            ).text.cleanEscaped()
-        }.getOrNull().orEmpty()
+                timeout = 15L
+            )
+        }.getOrNull() ?: return emptyList()
 
+        val text = response.text.cleanEscaped()
         if (text.isBlank()) return emptyList()
+
+        val results = linkedSetOf<String>()
+
+        response.document.select(
+            "meta[itemprop=embedURL], " +
+                "meta[property=og:video], " +
+                "meta[property=og:video:url], " +
+                "meta[property=og:video:secure_url], " +
+                "iframe[src], " +
+                "iframe[data-src], " +
+                "iframe[data-litespeed-src], " +
+                "iframe[data-lazy-src], " +
+                "video[src], " +
+                "video[data-src], " +
+                "source[src], " +
+                "embed[src], " +
+                "object[data], " +
+                "a[href], " +
+                "[data-src], " +
+                "[data-video], " +
+                "[data-file], " +
+                "[data-url], " +
+                "[data-embed], " +
+                "[data-iframe]"
+        ).forEach { element ->
+            val raw = element.attr("content")
+                .ifBlank { element.attr("data-litespeed-src") }
+                .ifBlank { element.attr("data-lazy-src") }
+                .ifBlank { element.attr("data-video") }
+                .ifBlank { element.attr("data-file") }
+                .ifBlank { element.attr("data-url") }
+                .ifBlank { element.attr("data-embed") }
+                .ifBlank { element.attr("data-iframe") }
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("data") }
+                .ifBlank { element.attr("src") }
+                .ifBlank { element.attr("href") }
+                .trim()
+
+            if (raw.isNotBlank()) {
+                val fixed = normalizeUrl(raw, url)
+                if (!isAdUrl(fixed) && !shouldSkipUrl(fixed)) {
+                    results.add(fixed)
+                }
+            }
+        }
+
+        results.addAll(extractPlayableUrls(text))
 
         val unpacked = runCatching {
             if (!getPacked(text).isNullOrEmpty()) getAndUnpack(text) else null
         }.getOrNull()
 
-        return buildList {
-            addAll(extractPlayableUrls(text))
-            if (!unpacked.isNullOrBlank()) {
-                addAll(extractPlayableUrls(unpacked.cleanEscaped()))
-            }
+        if (!unpacked.isNullOrBlank()) {
+            results.addAll(extractPlayableUrls(unpacked.cleanEscaped()))
         }
+
+        val decodedOnce = runCatching {
+            URLDecoder.decode(text, "UTF-8")
+        }.getOrDefault(text)
+
+        if (decodedOnce != text) {
+            results.addAll(extractPlayableUrls(decodedOnce.cleanEscaped()))
+        }
+
+        return results
+            .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
+            .distinct()
     }
 
     private fun addCandidate(
@@ -641,6 +741,12 @@ class Indo18 : MainAPI() {
 
             fixed.startsWith("http", true) &&
                 fixed.contains("player", true) -> embedLinks.add(fixed)
+
+            fixed.startsWith("http", true) &&
+                fixed.contains("/e/", true) -> embedLinks.add(fixed)
+
+            fixed.startsWith("http", true) &&
+                fixed.contains("/file/", true) -> embedLinks.add(fixed)
         }
     }
 
@@ -729,7 +835,7 @@ class Indo18 : MainAPI() {
             .forEach { urls.add(it) }
 
         Regex(
-            """(?:data-file|data-video|data-url|data-src|data-embed|data-iframe)=["']([^"']+)["']""",
+            """(?:data-file|data-video|data-url|data-src|data-embed|data-iframe|content)=["']([^"']+)["']""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
@@ -745,7 +851,7 @@ class Indo18 : MainAPI() {
             .forEach { urls.add(it) }
 
         Regex(
-            """https?://[^"'\\\s<>]+?(?:embed|player|stream|filemoon|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|lulu|hglink|hgcloud|majorplay|jeniusplay|pornhub|xvideos|xhamster|redtube|spankbang)[^"'\\\s<>]*""",
+            """https?://[^"'\\\s<>]+?(?:embed|player|stream|jomblo|playmogo|filemoon|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|lulu|hglink|hgcloud|majorplay|jeniusplay|pornhub|xvideos|xhamster|redtube|spankbang)[^"'\\\s<>]*""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { it.value.cleanEscaped() }
@@ -771,20 +877,22 @@ class Indo18 : MainAPI() {
         val value = url.lowercase()
 
         return when {
-            value.contains("majorplay") -> 0
-            value.contains("jeniusplay") -> 1
-            value.contains("hglink") -> 2
-            value.contains("hgcloud") -> 3
-            value.contains("lulustream") || value.contains("luluvdoo") || value.contains("lulu") -> 4
-            value.contains("streamwish") || value.contains("wishfast") -> 5
-            value.contains("filemoon") -> 6
-            value.contains("vidhide") -> 7
-            value.contains("vidguard") -> 8
-            value.contains("voe") -> 9
-            value.contains("mixdrop") -> 10
-            value.contains("mp4upload") -> 11
-            value.contains("streamtape") -> 12
-            value.contains("dood") -> 13
+            value.contains("jomblo.org") -> 0
+            value.contains("playmogo.com") -> 1
+            value.contains("majorplay") -> 2
+            value.contains("jeniusplay") -> 3
+            value.contains("hglink") -> 4
+            value.contains("hgcloud") -> 5
+            value.contains("lulustream") || value.contains("luluvdoo") || value.contains("lulu") -> 6
+            value.contains("streamwish") || value.contains("wishfast") -> 7
+            value.contains("filemoon") -> 8
+            value.contains("vidhide") -> 9
+            value.contains("vidguard") -> 10
+            value.contains("voe") -> 11
+            value.contains("mixdrop") -> 12
+            value.contains("mp4upload") -> 13
+            value.contains("streamtape") -> 14
+            value.contains("dood") -> 15
             value.contains("embed") -> 30
             value.contains("player") -> 31
             value.contains("stream") -> 32
@@ -796,6 +904,8 @@ class Indo18 : MainAPI() {
         val value = url.lowercase()
 
         return listOf(
+            "jomblo.org",
+            "playmogo.com",
             "embed",
             "player",
             "stream",
@@ -854,7 +964,6 @@ class Indo18 : MainAPI() {
             value.contains("content-removal") ||
             value.contains("privacy") ||
             value.contains("dmca") ||
-            value.contains("jomblo.org") ||
             value.contains("copy") ||
             value.contains("share")
     }
@@ -989,13 +1098,14 @@ class Indo18 : MainAPI() {
             value.contains("googlesyndication") ||
             value.contains("ads") ||
             value.contains("banner") ||
-            value.contains("jomblo.org") ||
             value.contains("content-removal") ||
             value.contains("popads") ||
             value.contains("onclick") ||
             value.contains("adsterra") ||
             value.contains("tracking") ||
-            value.contains("analytics")
+            value.contains("analytics") ||
+            value.contains("histats") ||
+            value.contains("cloudflareinsights")
     }
 
     private fun qualityFromUrl(url: String): Int {

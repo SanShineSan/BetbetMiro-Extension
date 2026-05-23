@@ -1,9 +1,9 @@
-version = 2
+version = 3
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Indo18 provider for indo18.com with safe adult categories, search, detail parsing, related videos, direct playback, packed script extraction, iframe fallback, nested host resolving, and faster playable HLS/MP4 detection."
+    description = "Indo18 provider for indo18.com with safe adult categories, search, detail parsing, related videos, jomblo/playmogo wrapper support, direct playback, packed script extraction, iframe fallback, nested host resolving, and public HLS/MP4 detection."
 
     /**
      * Status int as the following:
