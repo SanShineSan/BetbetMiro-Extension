@@ -1,12 +1,12 @@
-package com.sad25kag.deepgoretube
+package com.sad25kag.NetShort
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 
 @CloudstreamPlugin
-class DeepGoreTubePlugin: Plugin() {
+class NetShortPlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(DeepGoreTube())
+        registerMainAPI(NetShort())
     }
 }
