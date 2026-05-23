@@ -142,7 +142,25 @@ Repository ini dibuat untuk tujuan pembelajaran, pengembangan, dan penggunaan ex
 
 Semua konten, metadata, gambar, video, maupun source streaming berasal dari pihak ketiga atau sumber publik di internet. Repository ini tidak menyimpan, meng-host, atau mengunggah konten video apa pun.
 
+Pengguna bertanggung jawab penuh atas penggunaan mereka dan wajib mematuhi hukum yang berlaku
+
 Gunakan dengan bijak dan patuhi aturan yang berlaku di wilayah masing-masing.
+
+Jika Anda meyakini bahwa ada konten yang melanggar hukum hak cipta, silakan hubungi **pihak penyedia host file yang bersangkutan**, **bukan** pengembang dari repositori ini ataupun aplikasi Cloudstream 3.
+
+---
+
+---
+
+## 🔞 Peringatan Konten Dewasa (NSFW)
+
+Harap diperhatikan bahwa beberapa ekstensi di dalam repositori ini dapat mengakses konten bernuansa dewasa (NSFW). 
+
+- Penggunaan ekstensi ini ditujukan secara tegas **hanya untuk pengguna berusia 18 tahun ke atas** (atau sesuai dengan batas usia kedewasaan legal di yurisdiksi/negara Anda).
+- Jika Anda belum memenuhi syarat usia atau berada di lingkungan yang tidak mengizinkan konten semacam ini, harap segera tinggalkan halaman ini.
+- Pengembang repositori ini tidak bertanggung jawab atas akses yang dilakukan oleh anak di bawah umur.
+
+Dengan mengunduh, menginstal, atau menggunakan ekstensi dari repositori ini, Anda secara sadar mengonfirmasi bahwa Anda telah memenuhi kriteria usia legal dan membebaskan pengembang dari segala tuntutan.
 
 ---
 
