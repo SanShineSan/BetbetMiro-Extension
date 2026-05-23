@@ -1,5 +1,4 @@
-// ! Bu araç @Kraptor123 tarafından | @Cs-GizliKeyif için yazılmıştır.
-version = 7
+version = 8
 
 cloudstream {
     authors     = listOf("BetbetMiro")

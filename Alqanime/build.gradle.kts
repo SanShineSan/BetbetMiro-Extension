@@ -1,5 +1,5 @@
 android {
-    namespace = "com.alqanime"
+    namespace = "com.BetbetMiro.alqanime"
 }
 
 version = 7
