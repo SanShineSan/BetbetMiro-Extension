@@ -188,7 +188,7 @@ class Majorplay : ExtractorApi() {
     }
 }
 
-private fun emitExtractorStream(
+private suspend fun emitExtractorStream(
     source: String,
     streamUrl: String,
     referer: String,
@@ -201,8 +201,7 @@ private fun emitExtractorStream(
         generateM3u8(
             source = source,
             streamUrl = fixedStream,
-            referer = referer,
-            headers = headers
+            referer = referer
         ).forEach(callback)
     } else {
         callback(

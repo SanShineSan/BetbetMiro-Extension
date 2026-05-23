@@ -666,7 +666,7 @@ class Nonton01 : MainAPI() {
         directLinks: MutableSet<String>,
         embedLinks: MutableSet<String>
     ) {
-        extractVideoUrls(text).forEach { raw ->
+        extractStreamUrls(text).forEach { raw ->
             addCandidate(raw, baseUrl, directLinks, embedLinks)
         }
 
@@ -742,7 +742,7 @@ class Nonton01 : MainAPI() {
         }
     }
 
-    private fun emitDirectLinks(
+    private suspend fun emitDirectLinks(
         links: Collection<String>,
         referer: String,
         callback: (ExtractorLink) -> Unit
@@ -757,13 +757,7 @@ class Nonton01 : MainAPI() {
                 generateM3u8(
                     source = name,
                     streamUrl = link,
-                    referer = referer,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer,
-                        "Origin" to getOrigin(referer),
-                        "Accept" to "*/*"
-                    )
+                    referer = referer
                 ).forEach(callback)
                 emitted = true
             } else {
