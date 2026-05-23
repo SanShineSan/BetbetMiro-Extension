@@ -24,6 +24,8 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -92,7 +94,7 @@ class Indo18 : MainAPI() {
         val document = app.get(
             url,
             headers = headers,
-            timeout = 30L
+            timeout = 25L
         ).document
 
         val items = parseCards(document)
@@ -309,7 +311,7 @@ class Indo18 : MainAPI() {
                 app.get(
                     url,
                     headers = headers,
-                    timeout = 30L
+                    timeout = 25L
                 ).document
             }.getOrNull() ?: continue
 
@@ -341,7 +343,7 @@ class Indo18 : MainAPI() {
         val document = app.get(
             url,
             headers = headers,
-            timeout = 30L
+            timeout = 25L
         ).document
 
         val title = document.selectFirst("h1, h1.entry-title")
@@ -355,7 +357,7 @@ class Indo18 : MainAPI() {
         val poster = getPoster(document)
         val text = document.text()
 
-        val views = Regex("""(?i)([\d.,kmb]+)\s*$""")
+        val views = Regex("""(?i)(?:views?|ditonton)\s*:?\s*([\d.,kmb]+)""")
             .find(text)
             ?.groupValues
             ?.getOrNull(1)
@@ -415,7 +417,7 @@ class Indo18 : MainAPI() {
             data,
             headers = headers,
             referer = mainUrl,
-            timeout = 30L
+            timeout = 20L
         )
 
         val document = response.document
@@ -426,17 +428,38 @@ class Indo18 : MainAPI() {
 
         document.select(
             "video[src], " +
+                "video[data-src], " +
+                "video[data-video], " +
+                "video[poster], " +
                 "video source[src], " +
                 "source[src], " +
+                "source[data-src], " +
                 "iframe[src], " +
                 "iframe[data-src], " +
                 "iframe[data-litespeed-src], " +
+                "iframe[data-lazy-src], " +
+                "iframe[data-original], " +
                 "embed[src], " +
-                "a[href]"
+                "object[data], " +
+                "a[href], " +
+                "[data-src], " +
+                "[data-video], " +
+                "[data-file], " +
+                "[data-url], " +
+                "[data-embed], " +
+                "[data-iframe]"
         ).forEach { element ->
             val href = element.attr("href")
             val raw = element.attr("data-litespeed-src")
+                .ifBlank { element.attr("data-lazy-src") }
+                .ifBlank { element.attr("data-original") }
+                .ifBlank { element.attr("data-video") }
+                .ifBlank { element.attr("data-file") }
+                .ifBlank { element.attr("data-url") }
+                .ifBlank { element.attr("data-embed") }
+                .ifBlank { element.attr("data-iframe") }
                 .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("data") }
                 .ifBlank { element.attr("src") }
                 .ifBlank { href }
                 .trim()
@@ -464,6 +487,8 @@ class Indo18 : MainAPI() {
                 element.tagName().equals("video", true) ||
                 element.tagName().equals("source", true) ||
                 element.tagName().equals("iframe", true) ||
+                element.tagName().equals("embed", true) ||
+                element.tagName().equals("object", true) ||
                 isLikelyPlayable(raw) ||
                 isLikelyPlayableText(label)
             ) {
@@ -475,28 +500,55 @@ class Indo18 : MainAPI() {
             addCandidate(raw, data, directLinks, embedLinks)
         }
 
-        var found = false
+        val unpacked = runCatching {
+            if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
+        }.getOrNull()
 
-        directLinks.distinct().forEach { link ->
-            emitDirectLink(
-                link = link,
-                referer = data,
-                callback = callback
-            )
-            found = true
+        if (!unpacked.isNullOrBlank()) {
+            extractPlayableUrls(unpacked.cleanEscaped()).forEach { raw ->
+                addCandidate(raw, data, directLinks, embedLinks)
+            }
         }
 
-        embedLinks.distinct().forEach { embed ->
-            val success = loadExtractor(
-                embed,
-                data,
-                subtitleCallback,
-                callback
-            )
+        val decodedOnce = runCatching {
+            URLDecoder.decode(html, "UTF-8")
+        }.getOrDefault(html)
 
-            if (success) {
-                found = true
-            } else {
+        if (decodedOnce != html) {
+            extractPlayableUrls(decodedOnce.cleanEscaped()).forEach { raw ->
+                addCandidate(raw, data, directLinks, embedLinks)
+            }
+        }
+
+        directLinks
+            .filterNot { isAdUrl(it) }
+            .distinct()
+            .sortedWith(
+                compareBy<String> { if (isHlsLike(it)) 0 else 1 }
+                    .thenBy { hostPriority(it) }
+            )
+            .forEach { link ->
+                emitDirectLink(
+                    link = link,
+                    referer = data,
+                    callback = callback
+                )
+            }
+
+        if (directLinks.isNotEmpty()) return true
+
+        prioritizeEmbeds(embedLinks)
+            .take(10)
+            .forEach { embed ->
+                val success = loadExtractor(
+                    embed,
+                    data,
+                    subtitleCallback,
+                    callback
+                )
+
+                if (success) return true
+
                 resolveNestedLinks(embed, data).forEach { nested ->
                     val fixed = normalizeUrl(nested, embed)
                         .replace(".txt", ".m3u8")
@@ -512,10 +564,11 @@ class Indo18 : MainAPI() {
                                 referer = embed,
                                 callback = callback
                             )
-                            found = true
+                            return true
                         }
 
-                        fixed.startsWith("http", true) -> {
+                        fixed.startsWith("http", true) &&
+                            !shouldSkipUrl(fixed) -> {
                             val nestedSuccess = loadExtractor(
                                 fixed,
                                 embed,
@@ -523,32 +576,42 @@ class Indo18 : MainAPI() {
                                 callback
                             )
 
-                            if (nestedSuccess) found = true
+                            if (nestedSuccess) return true
                         }
                     }
                 }
             }
-        }
 
-        return found
+        return false
     }
 
     private suspend fun resolveNestedLinks(
         url: String,
         referer: String
     ): List<String> {
+        if (shouldSkipUrl(url)) return emptyList()
+
         val text = runCatching {
             app.get(
                 url,
                 headers = headers,
                 referer = referer,
-                timeout = 30L
+                timeout = 12L
             ).text.cleanEscaped()
         }.getOrNull().orEmpty()
 
         if (text.isBlank()) return emptyList()
 
-        return extractPlayableUrls(text)
+        val unpacked = runCatching {
+            if (!getPacked(text).isNullOrEmpty()) getAndUnpack(text) else null
+        }.getOrNull()
+
+        return buildList {
+            addAll(extractPlayableUrls(text))
+            if (!unpacked.isNullOrBlank()) {
+                addAll(extractPlayableUrls(unpacked.cleanEscaped()))
+            }
+        }
     }
 
     private fun addCandidate(
@@ -561,15 +624,23 @@ class Indo18 : MainAPI() {
 
         val fixed = normalizeUrl(raw.cleanEscaped(), baseUrl)
             .replace(".txt", ".m3u8")
+            .trim()
 
-        if (fixed.isBlank() || isAdUrl(fixed)) return
+        if (fixed.isBlank() || isAdUrl(fixed) || shouldSkipUrl(fixed)) return
 
         when {
             isHlsLike(fixed) ||
                 fixed.contains(".mp4", true) ||
                 fixed.contains(".webm", true) -> directLinks.add(fixed)
 
-            fixed.startsWith("http", true) -> embedLinks.add(fixed)
+            fixed.startsWith("http", true) &&
+                isKnownHost(fixed) -> embedLinks.add(fixed)
+
+            fixed.startsWith("http", true) &&
+                fixed.contains("embed", true) -> embedLinks.add(fixed)
+
+            fixed.startsWith("http", true) &&
+                fixed.contains("player", true) -> embedLinks.add(fixed)
         }
     }
 
@@ -595,6 +666,12 @@ class Indo18 : MainAPI() {
                 this.quality = getQualityFromName(link).takeIf {
                     it != Qualities.Unknown.value
                 } ?: qualityFromUrl(link)
+                this.headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to referer,
+                    "Origin" to mainUrl,
+                    "Accept" to "*/*"
+                )
             }
         )
     }
@@ -609,6 +686,16 @@ class Indo18 : MainAPI() {
         ).findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
             .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
+            .forEach { urls.add(it) }
+
+        Regex(
+            """//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean)
+            .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
+            .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
@@ -622,10 +709,11 @@ class Indo18 : MainAPI() {
             }
             .map { it.cleanEscaped().replace(".txt", ".m3u8") }
             .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
-            """(?:file|src|source|url|videoSource|videoUrl|embedUrl|embed_url|contentUrl)\s*[:=]\s*["']([^"']+)["']""",
+            """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|embedUrl|embed_url|contentUrl)\s*[:=]\s*["']([^"']+)["']""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
@@ -637,6 +725,23 @@ class Indo18 : MainAPI() {
                     isKnownHost(it)
             }
             .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
+            .forEach { urls.add(it) }
+
+        Regex(
+            """(?:data-file|data-video|data-url|data-src|data-embed|data-iframe)=["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .map { it.cleanEscaped().replace(".txt", ".m3u8") }
+            .filter {
+                it.contains(".m3u8", true) ||
+                    it.contains(".mp4", true) ||
+                    it.contains(".webm", true) ||
+                    isKnownHost(it)
+            }
+            .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
@@ -645,9 +750,46 @@ class Indo18 : MainAPI() {
         ).findAll(clean)
             .map { it.value.cleanEscaped() }
             .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
             .forEach { urls.add(it) }
 
         return urls.toList()
+    }
+
+    private fun prioritizeEmbeds(links: Collection<String>): List<String> {
+        return links
+            .filterNot { isAdUrl(it) }
+            .filterNot { shouldSkipUrl(it) }
+            .distinct()
+            .sortedWith(
+                compareBy<String> { hostPriority(it) }
+                    .thenBy { it.length }
+            )
+    }
+
+    private fun hostPriority(url: String): Int {
+        val value = url.lowercase()
+
+        return when {
+            value.contains("majorplay") -> 0
+            value.contains("jeniusplay") -> 1
+            value.contains("hglink") -> 2
+            value.contains("hgcloud") -> 3
+            value.contains("lulustream") || value.contains("luluvdoo") || value.contains("lulu") -> 4
+            value.contains("streamwish") || value.contains("wishfast") -> 5
+            value.contains("filemoon") -> 6
+            value.contains("vidhide") -> 7
+            value.contains("vidguard") -> 8
+            value.contains("voe") -> 9
+            value.contains("mixdrop") -> 10
+            value.contains("mp4upload") -> 11
+            value.contains("streamtape") -> 12
+            value.contains("dood") -> 13
+            value.contains("embed") -> 30
+            value.contains("player") -> 31
+            value.contains("stream") -> 32
+            else -> 50
+        }
     }
 
     private fun isKnownHost(url: String): Boolean {
@@ -668,6 +810,8 @@ class Indo18 : MainAPI() {
             "mixdrop",
             "mp4upload",
             "lulustream",
+            "luluvdoo",
+            "lulu",
             "hglink",
             "hgcloud",
             "majorplay",
@@ -684,6 +828,7 @@ class Indo18 : MainAPI() {
         return url.contains(".m3u8", true) ||
             url.contains(".mp4", true) ||
             url.contains(".webm", true) ||
+            url.contains(".txt", true) ||
             isKnownHost(url)
     }
 
@@ -696,6 +841,22 @@ class Indo18 : MainAPI() {
             text.contains("mp4") ||
             text.contains("720p") ||
             text.contains("1080p")
+    }
+
+    private fun shouldSkipUrl(url: String): Boolean {
+        val value = url.lowercase()
+
+        return value.contains("facebook.com") ||
+            value.contains("twitter.com") ||
+            value.contains("telegram") ||
+            value.contains("whatsapp") ||
+            value.contains("mailto:") ||
+            value.contains("content-removal") ||
+            value.contains("privacy") ||
+            value.contains("dmca") ||
+            value.contains("jomblo.org") ||
+            value.contains("copy") ||
+            value.contains("share")
     }
 
     private fun normalizeUrl(
@@ -829,12 +990,18 @@ class Indo18 : MainAPI() {
             value.contains("ads") ||
             value.contains("banner") ||
             value.contains("jomblo.org") ||
-            value.contains("content-removal")
+            value.contains("content-removal") ||
+            value.contains("popads") ||
+            value.contains("onclick") ||
+            value.contains("adsterra") ||
+            value.contains("tracking") ||
+            value.contains("analytics")
     }
 
     private fun qualityFromUrl(url: String): Int {
         return when {
             url.contains("2160", true) || url.contains("4k", true) -> Qualities.P2160.value
+            url.contains("1440", true) -> Qualities.P1440.value
             url.contains("1080", true) -> Qualities.P1080.value
             url.contains("720", true) -> Qualities.P720.value
             url.contains("540", true) -> Qualities.P480.value
@@ -847,8 +1014,17 @@ class Indo18 : MainAPI() {
     private fun String.cleanEscaped(): String {
         return this
             .replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("\\u003A", ":")
             .replace("\\u0026", "&")
+            .replace("\\u003D", "=")
+            .replace("\\u003F", "?")
+            .replace("\\u002D", "-")
+            .replace("\\u005C", "\\")
             .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("\\\"", "\"")
             .trim()
     }
 
