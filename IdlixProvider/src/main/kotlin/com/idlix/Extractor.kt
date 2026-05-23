@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getPacked
@@ -109,9 +108,19 @@ class Jeniusplay : ExtractorApi() {
     )
 }
 
-class Majorplay : ExtractorApi() {
+class Majorplay : MajorplayBase() {
+    override var name = "Majorplay"
+    override var mainUrl = "https://e2e.majorplay.net"
+}
+
+class MajorplayNet : MajorplayBase() {
     override var name = "Majorplay"
     override var mainUrl = "https://majorplay.net"
+}
+
+open class MajorplayBase : ExtractorApi() {
+    override var name = "Majorplay"
+    override var mainUrl = "https://e2e.majorplay.net"
     override val requiresReferer = true
 
     override suspend fun getUrl(
@@ -120,13 +129,14 @@ class Majorplay : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val fixedUrl = url.replace(" ", "%20")
         val domain = runCatching {
-            "https://${URI(url).host}"
+            "https://${URI(fixedUrl).host}"
         }.getOrDefault(mainUrl)
 
         val response = runCatching {
             app.get(
-                url,
+                fixedUrl,
                 referer = referer ?: domain,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
@@ -142,7 +152,7 @@ class Majorplay : ExtractorApi() {
         if (body.trimStart().startsWith("#EXTM3U")) {
             emitVideo(
                 source = name,
-                streamUrl = url,
+                streamUrl = fixedUrl,
                 referer = referer ?: domain,
                 callback = callback
             )
@@ -158,17 +168,17 @@ class Majorplay : ExtractorApi() {
                 .trim()
 
             if (src.isNotBlank()) {
-                streams.add(normalizeUrl(src, url))
+                streams.add(normalizeUrl(src, fixedUrl))
             }
         }
 
         extractStreamUrls(body).forEach {
-            streams.add(normalizeUrl(it, url))
+            streams.add(normalizeUrl(it, fixedUrl))
         }
 
         extractMajorplayConfigUrls(body).forEach { configUrl ->
             resolveMajorplayConfig(
-                configUrl = normalizeUrl(configUrl, url),
+                configUrl = normalizeUrl(configUrl, fixedUrl),
                 referer = referer ?: domain,
                 callback = callback
             )
@@ -180,12 +190,12 @@ class Majorplay : ExtractorApi() {
 
         if (!unpacked.isNullOrBlank()) {
             extractStreamUrls(unpacked.cleanEscaped()).forEach {
-                streams.add(normalizeUrl(it, url))
+                streams.add(normalizeUrl(it, fixedUrl))
             }
 
             extractMajorplayConfigUrls(unpacked.cleanEscaped()).forEach { configUrl ->
                 resolveMajorplayConfig(
-                    configUrl = normalizeUrl(configUrl, url),
+                    configUrl = normalizeUrl(configUrl, fixedUrl),
                     referer = referer ?: domain,
                     callback = callback
                 )
@@ -203,24 +213,10 @@ class Majorplay : ExtractorApi() {
                 )
             }
 
+        extractSubtitles(body, domain, subtitleCallback)
+
         val scripts = document.selectFirst("script:containsData(subtitles)")?.data().orEmpty()
-        val subRegex = Regex("""\\"label\\":\\"([^\\"]*?)\\"[^}]*?\\"path\\":\\"([^\\"]*?)\\\"""")
-
-        subRegex.findAll(scripts).forEach { match ->
-            val label = match.groupValues[1]
-            var vttUrl = match.groupValues[2].cleanEscaped()
-
-            if (!vttUrl.startsWith("http")) {
-                vttUrl = domain.trimEnd('/') + "/" + vttUrl.trimStart('/')
-            }
-
-            subtitleCallback(
-                newSubtitleFile(
-                    label,
-                    vttUrl
-                )
-            )
-        }
+        extractSubtitles(scripts, domain, subtitleCallback)
     }
 
     private suspend fun resolveMajorplayConfig(
@@ -245,29 +241,76 @@ class Majorplay : ExtractorApi() {
 
         val text = response.text.cleanEscaped()
 
-        when {
-            text.trimStart().startsWith("#EXTM3U") -> {
+        if (text.trimStart().startsWith("#EXTM3U")) {
+            emitVideo(
+                source = name,
+                streamUrl = configUrl,
+                referer = referer,
+                callback = callback
+            )
+            return
+        }
+
+        extractStreamUrls(text)
+            .map { normalizeUrl(it, configUrl) }
+            .filterNot { isAdUrl(it) }
+            .forEach { stream ->
                 emitVideo(
                     source = name,
-                    streamUrl = configUrl,
-                    referer = referer,
+                    streamUrl = stream,
+                    referer = configUrl,
                     callback = callback
                 )
             }
+    }
 
-            else -> {
-                extractStreamUrls(text)
-                    .map { normalizeUrl(it, configUrl) }
-                    .filterNot { isAdUrl(it) }
-                    .forEach { stream ->
-                        emitVideo(
-                            source = name,
-                            streamUrl = stream,
-                            referer = configUrl,
-                            callback = callback
-                        )
-                    }
+    private fun extractSubtitles(
+        text: String,
+        domain: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val clean = text.cleanEscaped()
+
+        Regex(
+            """"(?:lang|label)"\s*:\s*"([^"]+)"[^}]*?"(?:path|url|file)"\s*:\s*"([^"]+)"""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean).forEach { match ->
+            val label = match.groupValues[1].ifBlank { "Subtitle" }
+            val rawUrl = match.groupValues[2].cleanEscaped()
+
+            val subUrl = when {
+                rawUrl.startsWith("http", true) -> rawUrl
+                rawUrl.startsWith("//") -> "https:$rawUrl"
+                else -> domain.trimEnd('/') + "/" + rawUrl.trimStart('/')
             }
+
+            subtitleCallback(
+                newSubtitleFile(
+                    label,
+                    subUrl
+                )
+            )
+        }
+
+        Regex(
+            """\\"(?:lang|label)\\":\\"([^\\"]+)\\"[^}]*?\\"(?:path|url|file)\\":\\"([^\\"]+)\\"""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean).forEach { match ->
+            val label = match.groupValues[1].ifBlank { "Subtitle" }
+            val rawUrl = match.groupValues[2].cleanEscaped()
+
+            val subUrl = when {
+                rawUrl.startsWith("http", true) -> rawUrl
+                rawUrl.startsWith("//") -> "https:$rawUrl"
+                else -> domain.trimEnd('/') + "/" + rawUrl.trimStart('/')
+            }
+
+            subtitleCallback(
+                newSubtitleFile(
+                    label,
+                    subUrl
+                )
+            )
         }
     }
 }
@@ -278,31 +321,32 @@ private suspend fun emitVideo(
     referer: String,
     callback: (ExtractorLink) -> Unit
 ) {
-    val fixedStream = streamUrl.cleanEscaped().replace(".txt", ".m3u8")
+    val fixedStream = streamUrl
+        .cleanEscaped()
+        .replace(".txt", ".m3u8")
 
     if (isAdUrl(fixedStream)) return
 
-    if (fixedStream.contains(".m3u8", true) || fixedStream.contains(".json", true)) {
-        generateM3u8(
+    val isHlsLike = fixedStream.contains(".m3u8", true) ||
+        isMajorplayConfig(fixedStream)
+
+    callback(
+        newExtractorLink(
             source = source,
-            streamUrl = fixedStream,
-            referer = referer
-        ).forEach(callback)
-    } else {
-        callback(
-            newExtractorLink(
-                source = source,
-                name = source,
-                url = fixedStream,
-                type = ExtractorLinkType.VIDEO
-            ) {
-                this.referer = referer
-                this.quality = getQualityFromName(fixedStream).takeIf {
-                    it != Qualities.Unknown.value
-                } ?: qualityFromUrl(fixedStream)
+            name = source,
+            url = fixedStream,
+            type = if (isHlsLike) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
             }
-        )
-    }
+        ) {
+            this.referer = referer
+            this.quality = getQualityFromName(fixedStream).takeIf {
+                it != Qualities.Unknown.value
+            } ?: qualityFromUrl(fixedStream)
+        }
+    )
 }
 
 private fun extractStreamUrls(text: String): List<String> {
@@ -399,6 +443,12 @@ private fun normalizeUrl(
             }
         }
     }
+}
+
+private fun isMajorplayConfig(url: String): Boolean {
+    return url.contains("majorplay", true) &&
+        url.contains("config", true) &&
+        url.contains(".json", true)
 }
 
 private fun isAdUrl(url: String): Boolean {

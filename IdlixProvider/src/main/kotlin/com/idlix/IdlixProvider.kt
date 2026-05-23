@@ -32,7 +32,6 @@ import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -100,7 +99,10 @@ class IdlixProvider : MainAPI() {
         val url = request.data.format(page.coerceAtLeast(1))
 
         val response = runCatching {
-            app.get(url, timeout = 10000L).parsedSafe<ApiResponse>()
+            app.get(
+                url,
+                timeout = 10000L
+            ).parsedSafe<ApiResponse>()
         }.getOrNull()
 
         val home = response?.data.orEmpty()
@@ -126,7 +128,10 @@ class IdlixProvider : MainAPI() {
         val url = "$mainUrl/api/search?q=$encoded&page=${page.coerceAtLeast(1)}&limit=12"
 
         val response = runCatching {
-            app.get(url, timeout = 10000L).parsedSafe<SearchApiResponse>()
+            app.get(
+                url,
+                timeout = 10000L
+            ).parsedSafe<SearchApiResponse>()
         }.getOrNull()
 
         val results = response?.results.orEmpty()
@@ -151,14 +156,22 @@ class IdlixProvider : MainAPI() {
                 }
 
                 if (link.contains("/api/movies/")) {
-                    newMovieSearchResponse(title, link, TvType.Movie) {
+                    newMovieSearchResponse(
+                        title,
+                        link,
+                        TvType.Movie
+                    ) {
                         this.posterUrl = poster
                         this.year = year
                         this.quality = getSearchQuality(item.quality)
                         this.score = Score.from10(item.voteAverage)
                     }
                 } else {
-                    newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                    newTvSeriesSearchResponse(
+                        title,
+                        link,
+                        TvType.TvSeries
+                    ) {
                         this.posterUrl = poster
                         this.year = year
                         this.quality = getSearchQuality(item.quality)
@@ -172,7 +185,10 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val data = app.get(url, timeout = 10000L).parsedSafe<DetailResponse>()
+        val data = app.get(
+            url,
+            timeout = 10000L
+        ).parsedSafe<DetailResponse>()
             ?: throw ErrorLoadingException("Invalid JSON")
 
         val title = data.title ?: data.name ?: "Unknown"
@@ -259,8 +275,11 @@ class IdlixProvider : MainAPI() {
         }
 
         return runCatching {
-            app.get(relatedUrl, referer = mainUrl, timeout = 10000L)
-                .parsedSafe<ApiResponse>()
+            app.get(
+                relatedUrl,
+                referer = mainUrl,
+                timeout = 10000L
+            ).parsedSafe<ApiResponse>()
                 ?.data
                 ?.mapNotNull { it.toSearchResponse() }
                 ?.distinctBy { it.url }
@@ -293,8 +312,11 @@ class IdlixProvider : MainAPI() {
             val seasonUrl = "$mainUrl/api/series/$slug/season/$seasonNum"
 
             val seasonData = runCatching {
-                app.get(seasonUrl, referer = mainUrl, timeout = 10000L)
-                    .parsedSafe<SeasonWrapper>()
+                app.get(
+                    seasonUrl,
+                    referer = mainUrl,
+                    timeout = 10000L
+                ).parsedSafe<SeasonWrapper>()
                     ?.season
             }.getOrNull()
 
@@ -463,10 +485,13 @@ class IdlixProvider : MainAPI() {
                 found = true
             } else {
                 resolveNestedLinks(embed).forEach { nested ->
-                    val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
+                    val fixed = normalizeUrl(nested, embed)
+                        .replace(".txt", ".m3u8")
 
                     when {
-                        fixed.contains(".m3u8", true) || fixed.contains(".mp4", true) -> {
+                        fixed.contains(".m3u8", true) ||
+                            fixed.contains(".mp4", true) ||
+                            isMajorplayConfig(fixed) -> {
                             emitDirectLink(
                                 link = fixed,
                                 referer = embed,
@@ -580,11 +605,17 @@ class IdlixProvider : MainAPI() {
             iframe?.streamUrlFinal
                 ?.takeIf { it.isNotBlank() }
                 ?.let { stream ->
-                    val fixed = normalizeUrl(stream, redeemUrl).replace(".txt", ".m3u8")
+                    val fixed = normalizeUrl(stream, redeemUrl)
+                        .replace(".txt", ".m3u8")
 
                     when {
-                        fixed.contains(".m3u8", true) || fixed.contains(".mp4", true) -> directLinks.add(fixed)
-                        fixed.startsWith("http", true) && !isAdUrl(fixed) -> embedLinks.add(fixed)
+                        isAdUrl(fixed) -> Unit
+
+                        isMajorplayConfig(fixed) ||
+                            fixed.contains(".m3u8", true) ||
+                            fixed.contains(".mp4", true) -> directLinks.add(fixed)
+
+                        fixed.startsWith("http", true) -> embedLinks.add(fixed)
                     }
                 }
 
@@ -629,15 +660,18 @@ class IdlixProvider : MainAPI() {
         embedLinks: MutableSet<String>
     ) {
         extractPlayableUrls(text).forEach { raw ->
-            val fixed = normalizeUrl(raw, baseUrl).replace(".txt", ".m3u8")
+            val fixed = normalizeUrl(raw, baseUrl)
+                .replace(".txt", ".m3u8")
 
             if (isAdUrl(fixed)) return@forEach
 
             when {
-                fixed.contains(".m3u8", true) || fixed.contains(".mp4", true) -> directLinks.add(fixed)
+                isMajorplayConfig(fixed) -> directLinks.add(fixed)
 
-                isMajorplayConfig(fixed) ||
-                    fixed.contains("jeniusplay", true) ||
+                fixed.contains(".m3u8", true) ||
+                    fixed.contains(".mp4", true) -> directLinks.add(fixed)
+
+                fixed.contains("jeniusplay", true) ||
                     fixed.contains("majorplay", true) ||
                     fixed.contains("embed", true) ||
                     fixed.contains("player", true) ||
@@ -655,27 +689,26 @@ class IdlixProvider : MainAPI() {
     ) {
         if (isAdUrl(link)) return
 
-        if (link.contains(".m3u8", true)) {
-            generateM3u8(
+        val isHlsLike = link.contains(".m3u8", true) ||
+            isMajorplayConfig(link)
+
+        callback(
+            newExtractorLink(
                 source = name,
-                streamUrl = link,
-                referer = referer
-            ).forEach(callback)
-        } else {
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = name,
-                    url = link,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    this.referer = referer
-                    this.quality = getQualityFromName(link).takeIf {
-                        it != Qualities.Unknown.value
-                    } ?: qualityFromUrl(link)
+                name = name,
+                url = link,
+                type = if (isHlsLike) {
+                    ExtractorLinkType.M3U8
+                } else {
+                    ExtractorLinkType.VIDEO
                 }
-            )
-        }
+            ) {
+                this.referer = referer
+                this.quality = getQualityFromName(link).takeIf {
+                    it != Qualities.Unknown.value
+                } ?: qualityFromUrl(link)
+            }
+        )
     }
 
     private fun extractPlayableUrls(text: String): List<String> {
@@ -746,8 +779,8 @@ class IdlixProvider : MainAPI() {
 
     private fun isMajorplayConfig(url: String): Boolean {
         return url.contains("majorplay", true) &&
-            url.contains(".json", true) &&
-            url.contains("config", true)
+            url.contains("config", true) &&
+            url.contains(".json", true)
     }
 
     private fun isAdUrl(url: String): Boolean {
@@ -775,6 +808,7 @@ class IdlixProvider : MainAPI() {
                     ?: mainUrl
                 "$origin$clean"
             }
+
             else -> runCatching {
                 URI(baseUrl).resolve(clean).toString()
             }.getOrDefault(clean)
