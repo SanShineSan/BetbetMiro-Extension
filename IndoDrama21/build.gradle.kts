@@ -1,9 +1,9 @@
-version = 1
+version = 2
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "IndoDrama21 rebuilt from scratch using active Dramaindo source with compact provider, categories, search, detail, episodes, and extractor fallback."
+    description = "IndoDrama21 Pro rebuilt for the active Dramaindo source with grouped homepage rows, safer episode mapping, and stronger playback fallback."
 
     /**
      * Status int as the following:

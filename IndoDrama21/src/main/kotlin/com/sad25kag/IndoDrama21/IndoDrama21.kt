@@ -25,6 +25,8 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -37,6 +39,11 @@ import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+
+data class IndoDramaLoadData(
+    val url: String,
+    val episode: Int? = null
+)
 
 @CloudstreamPlugin
 class IndoDrama21Plugin : BasePlugin() {
@@ -63,32 +70,24 @@ class IndoDrama21 : MainAPI() {
         "" to "Drama Baru",
         "dramaindo/ongoing/" to "Ongoing",
         "dramaindo/complete/" to "Complete",
-        "drama-list/" to "Drama List",
+        "series/type/tv-show/" to "TV Show",
+        "series/type/movie/" to "Movie",
 
-        "series/genre/action/" to "Action",
-        "series/genre/adventure/" to "Adventure",
-        "series/genre/business/" to "Business",
-        "series/genre/comedy/" to "Comedy",
-        "series/genre/crime/" to "Crime",
-        "series/genre/drama/" to "Drama",
-        "series/genre/family/" to "Family",
-        "series/genre/fantasy/" to "Fantasy",
-        "series/genre/friendship/" to "Friendship",
+        "series/country/south-korea/" to "Drakor",
+        "series/country/china/" to "Drachin",
+        "series/country/japan/" to "Dorama",
+        "series/country/thailand/" to "Drama Thai",
+
+        "group:series/genre/action/|series/genre/adventure/|series/genre/martial-arts/|series/genre/wuxia/" to "Action & Adventure",
+        "group:series/genre/comedy/|series/genre/family/|series/genre/sitcom/|series/genre/food/" to "Comedy & Family",
+        "group:series/genre/drama/|series/genre/life/|series/genre/melodrama/|series/genre/friendship/" to "Drama & Life",
+        "group:series/genre/romance/|series/genre/youth/|series/genre/school/" to "Romance & Youth",
+        "group:series/genre/fantasy/|series/genre/supernatural/|series/genre/magic/|series/genre/vampire/" to "Fantasy & Supernatural",
+        "group:series/genre/mystery/|series/genre/thriller/|series/genre/suspense/|series/genre/detective/|series/genre/investigation/" to "Mystery & Thriller",
+        "group:series/genre/crime/|series/genre/law/|series/genre/police/|series/genre/political/" to "Crime & Law",
+        "group:series/genre/medical/|series/genre/business/|series/genre/music/" to "Career & Medical",
         "series/genre/historical/" to "Historical",
-        "series/genre/horror/" to "Horror",
-        "series/genre/law/" to "Law",
-        "series/genre/life/" to "Life",
-        "series/genre/medical/" to "Medical",
-        "series/genre/military/" to "Military",
-        "series/genre/mystery/" to "Mystery",
-        "series/genre/psychological/" to "Psychological",
-        "series/genre/romance/" to "Romance",
-        "series/genre/sci-fi/" to "Sci-Fi",
-        "series/genre/school/" to "School",
-        "series/genre/supernatural/" to "Supernatural",
-        "series/genre/suspense/" to "Suspense",
-        "series/genre/thriller/" to "Thriller",
-        "series/genre/wuxia/" to "Wuxia"
+        "series/type/ost/" to "OST"
     )
 
     private val headers = mapOf(
@@ -101,22 +100,43 @@ class IndoDrama21 : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = buildPageUrl(request.data, page)
+        val paths = groupPaths(request.data)
+        val items = linkedMapOf<String, SearchResponse>()
+        var hasNext = false
 
-        val document = app.get(
-            url,
-            headers = headers,
-            timeout = 30L
-        ).document
+        paths.forEach { path ->
+            val url = buildPageUrl(path, page)
+            val document = runCatching {
+                app.get(
+                    url,
+                    headers = headers,
+                    timeout = 30L
+                ).document
+            }.getOrNull() ?: return@forEach
 
-        val items = parseCards(document)
-            .distinctBy { it.url }
+            parseCards(document).forEach { item ->
+                items[item.url] = item
+            }
+
+            hasNext = hasNext || hasNextPage(document, page)
+        }
 
         return newHomePageResponse(
             request.name,
-            items,
-            hasNext = hasNextPage(document, page)
+            items.values.toList(),
+            hasNext = hasNext
         )
+    }
+
+    private fun groupPaths(data: String): List<String> {
+        return if (data.startsWith("group:")) {
+            data.removePrefix("group:")
+                .split("|")
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+        } else {
+            listOf(data)
+        }
     }
 
     private fun buildPageUrl(
@@ -466,151 +486,168 @@ class IndoDrama21 : MainAPI() {
         currentUrl: String,
         poster: String?
     ): List<Episode> {
-        val links = linkedMapOf<String, Episode>()
+        val episodes = linkedMapOf<Int, Episode>()
 
-        document.select(
-            "a[href*='episode'], " +
-                "a[href*='eps'], " +
-                "a[href*='download'], " +
-                ".episodios a[href], " +
-                ".episodes a[href], " +
-                ".eplister a[href], " +
-                ".les-content a[href], " +
-                ".download a[href], " +
-                ".entry-content a[href]"
-        ).forEachIndexed { index, element ->
-            val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
-
-            if (!href.startsWith(mainUrl)) return@forEachIndexed
-            if (isBlockedUrl(href)) return@forEachIndexed
-
+        document.select("h2, h3, h4, h5, strong, b").forEach { element ->
             val text = element.text().trim()
-            val epNumber = extractEpisodeNumber(text, href) ?: index + 1
+            val epNumber = extractEpisodeNumber(text, currentUrl)
 
-            links[href] = newEpisode(href) {
-                name = text.ifBlank { "Episode $epNumber" }.cleanTitle()
-                episode = epNumber
-                posterUrl = poster
+            if (
+                epNumber != null &&
+                text.contains("episode", true) &&
+                !text.contains("download", true)
+            ) {
+                episodes[epNumber] = newEpisode(
+                    IndoDramaLoadData(currentUrl, epNumber).toJson()
+                ) {
+                    name = "Episode $epNumber"
+                    episode = epNumber
+                    posterUrl = poster
+                }
             }
         }
 
-        if (links.isEmpty()) {
-            links[currentUrl] = newEpisode(currentUrl) {
+        val metadataCount = parseMetadata(document)["Episode"]
+            ?.replace(Regex("""\D+"""), "")
+            ?.toIntOrNull()
+            ?: 0
+
+        if (episodes.isEmpty() && metadataCount > 1) {
+            for (episodeNumber in 1..metadataCount) {
+                episodes[episodeNumber] = newEpisode(
+                    IndoDramaLoadData(currentUrl, episodeNumber).toJson()
+                ) {
+                    name = "Episode $episodeNumber"
+                    episode = episodeNumber
+                    posterUrl = poster
+                }
+            }
+        }
+
+        if (episodes.isEmpty()) {
+            episodes[1] = newEpisode(
+                IndoDramaLoadData(currentUrl, null).toJson()
+            ) {
                 name = "Movie"
                 episode = 1
                 posterUrl = poster
             }
         }
 
-        return links.values.sortedBy { it.episode ?: 1 }
+        return episodes.values.sortedBy { it.episode ?: 1 }
     }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val loadData = runCatching {
+            parseJson<IndoDramaLoadData>(data)
+        }.getOrNull()
+
+        val pageUrl = loadData?.url ?: data
+        val selectedEpisode = loadData?.episode
+
         val response = app.get(
-            data,
+            pageUrl,
             headers = headers,
             referer = mainUrl,
             timeout = 30L
         )
 
-        val document = response.document
         val html = response.text.cleanEscaped()
+        val scopedHtml = selectedEpisode
+            ?.let { extractEpisodeScopeHtml(html, it) }
+            ?.takeIf { it.isNotBlank() }
+            ?: html
+
+        val document = Jsoup.parse(scopedHtml, pageUrl)
 
         val directLinks = linkedSetOf<String>()
         val embedLinks = linkedSetOf<String>()
 
-        document.select(
-            "iframe[src], " +
-                "iframe[data-src], " +
-                "iframe[data-litespeed-src], " +
-                "embed[src], " +
-                "source[src], " +
-                "video[src], " +
-                "video source[src]"
-        ).forEach { element ->
-            val raw = element.attr("data-litespeed-src")
-                .ifBlank { element.attr("data-src") }
-                .ifBlank { element.attr("src") }
-                .trim()
-
-            addCandidate(raw, data, directLinks, embedLinks)
-        }
-
-        document.select("a[href]").forEach { element ->
-            val href = element.attr("href").trim()
-            val text = element.text().lowercase()
-
-            if (
-                href.startsWith("#") ||
-                href.startsWith("javascript", true) ||
-                text.contains("trailer") ||
-                href.contains("youtube.com", true) ||
-                href.contains("youtu.be", true)
-            ) {
-                return@forEach
-            }
-
-            if (isLikelyPlayable(href) || isLikelyDownloadText(text)) {
-                addCandidate(href, data, directLinks, embedLinks)
-            }
-        }
-
-        extractPlayableUrls(html).forEach { url ->
-            addCandidate(url, data, directLinks, embedLinks)
-        }
+        collectPlayableCandidates(
+            document = document,
+            html = scopedHtml,
+            baseUrl = pageUrl,
+            directLinks = directLinks,
+            embedLinks = embedLinks
+        )
 
         var found = false
 
-        directLinks.distinct().forEach { link ->
-            emitDirectLink(
-                link = link,
-                referer = data,
-                callback = callback
-            )
-            found = true
-        }
+        directLinks
+            .filterNot { isAdUrl(it) }
+            .distinct()
+            .sortedWith(compareBy<String> { if (isHlsLike(it)) 0 else 1 }.thenBy { hostPriority(it) })
+            .forEach { link ->
+                emitDirectLink(
+                    link = link,
+                    referer = pageUrl,
+                    callback = callback
+                )
+                found = true
+            }
 
-        embedLinks.distinct().forEach { embed ->
+        for (embed in embedLinks.distinct().sortedBy { hostPriority(it) }.take(24)) {
             val success = loadExtractor(
                 embed,
-                data,
+                pageUrl,
                 subtitleCallback,
                 callback
             )
 
             if (success) {
                 found = true
-            } else {
-                resolveNestedLinks(embed, data).forEach { nested ->
-                    val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
+                continue
+            }
 
-                    when {
-                        isAdUrl(fixed) -> Unit
+            if (isGoogleDrive(embed)) {
+                emitGoogleDriveFallback(
+                    url = embed,
+                    referer = pageUrl,
+                    callback = callback
+                )
+                found = true
+                continue
+            }
 
-                        isHlsLike(fixed) || fixed.contains(".mp4", true) -> {
-                            emitDirectLink(
-                                link = fixed,
-                                referer = embed,
-                                callback = callback
-                            )
-                            found = true
-                        }
+            resolveNestedLinks(embed, pageUrl).forEach { nested ->
+                val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
 
-                        fixed.startsWith("http", true) -> {
-                            val nestedSuccess = loadExtractor(
-                                fixed,
-                                embed,
-                                subtitleCallback,
-                                callback
-                            )
+                when {
+                    isAdUrl(fixed) -> Unit
 
-                            if (nestedSuccess) found = true
-                        }
+                    isHlsLike(fixed) ||
+                        fixed.contains(".mp4", true) ||
+                        fixed.contains(".webm", true) -> {
+                        emitDirectLink(
+                            link = fixed,
+                            referer = embed,
+                            callback = callback
+                        )
+                        found = true
+                    }
+
+                    isGoogleDrive(fixed) -> {
+                        emitGoogleDriveFallback(
+                            url = fixed,
+                            referer = embed,
+                            callback = callback
+                        )
+                        found = true
+                    }
+
+                    fixed.startsWith("http", true) -> {
+                        val nestedSuccess = loadExtractor(
+                            fixed,
+                            embed,
+                            subtitleCallback,
+                            callback
+                        )
+
+                        if (nestedSuccess) found = true
                     }
                 }
             }
@@ -619,6 +656,72 @@ class IndoDrama21 : MainAPI() {
         return found
     }
 
+    private fun collectPlayableCandidates(
+        document: Document,
+        html: String,
+        baseUrl: String,
+        directLinks: MutableSet<String>,
+        embedLinks: MutableSet<String>
+    ) {
+        document.select(
+            "iframe[src], " +
+                "iframe[data-src], " +
+                "iframe[data-litespeed-src], " +
+                "embed[src], " +
+                "source[src], " +
+                "video[src], " +
+                "video source[src], " +
+                "a[href]"
+        ).forEach { element ->
+            val raw = element.attr("data-litespeed-src")
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("src") }
+                .ifBlank { element.attr("href") }
+                .trim()
+
+            val label = element.parent()?.text()?.lowercase().orEmpty() + " " + element.text().lowercase()
+
+            if (
+                raw.isNotBlank() &&
+                !raw.startsWith("#") &&
+                !raw.startsWith("javascript", true) &&
+                !label.contains("trailer") &&
+                !raw.contains("youtube.com", true) &&
+                !raw.contains("youtu.be", true) &&
+                (isLikelyPlayable(raw) || isLikelyDownloadText(label))
+            ) {
+                addCandidate(raw, baseUrl, directLinks, embedLinks)
+            }
+        }
+
+        extractPlayableUrls(html).forEach { url ->
+            addCandidate(url, baseUrl, directLinks, embedLinks)
+        }
+
+        val decodedOnce = runCatching {
+            URLDecoder.decode(html, "UTF-8")
+        }.getOrDefault(html)
+
+        if (decodedOnce != html) {
+            extractPlayableUrls(decodedOnce).forEach { url ->
+                addCandidate(url, baseUrl, directLinks, embedLinks)
+            }
+        }
+    }
+
+    private fun extractEpisodeScopeHtml(
+        html: String,
+        episode: Int
+    ): String {
+        val regex = Regex(
+            """(?is)<h[1-6][^>]*>\s*(?:<[^>]+>\s*)*Episode\s*$episode(?:\D[^<]*)?</h[1-6]>(.*?)(?=<h[1-6][^>]*>\s*(?:<[^>]+>\s*)*Episode\s*\d+|<h[1-6][^>]*>\s*Popular Post|$)"""
+        )
+
+        return regex.find(html)
+            ?.value
+            ?.takeIf { it.contains("href=", true) || it.contains("iframe", true) }
+            ?: ""
+    }
     private suspend fun resolveNestedLinks(
         url: String,
         referer: String
@@ -651,8 +754,12 @@ class IndoDrama21 : MainAPI() {
         if (fixed.isBlank() || isAdUrl(fixed)) return
 
         when {
-            isHlsLike(fixed) || fixed.contains(".mp4", true) -> directLinks.add(fixed)
-            fixed.startsWith("http", true) -> embedLinks.add(fixed)
+            isHlsLike(fixed) ||
+                fixed.contains(".mp4", true) ||
+                fixed.contains(".webm", true) -> directLinks.add(fixed)
+
+            fixed.startsWith("http", true) &&
+                (isKnownHost(fixed) || fixed.contains("embed", true) || fixed.contains("player", true)) -> embedLinks.add(fixed)
         }
     }
 
@@ -682,12 +789,78 @@ class IndoDrama21 : MainAPI() {
         )
     }
 
+    private suspend fun emitGoogleDriveFallback(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val id = googleDriveId(url) ?: return
+        val links = listOf(
+            "https://drive.usercontent.google.com/download?id=$id&export=download&confirm=t",
+            "https://drive.google.com/uc?export=download&id=$id"
+        )
+
+        links.forEachIndexed { index, directUrl ->
+            callback(
+                newExtractorLink(
+                    source = "$name GDrive",
+                    name = if (index == 0) "$name GDrive" else "$name GDrive UC",
+                    url = directUrl,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = referer
+                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to referer,
+                        "Accept" to "*/*"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun isGoogleDrive(url: String): Boolean {
+        return url.contains("drive.google.com", true) ||
+            url.contains("docs.google.com", true)
+    }
+
+    private fun googleDriveId(url: String): String? {
+        return Regex("""/file/d/([^/?#]+)""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: Regex("""[?&]id=([^&#]+)""")
+                .find(url)
+                ?.groupValues
+                ?.getOrNull(1)
+    }
+
+    private fun hostPriority(url: String): Int {
+        val value = url.lowercase()
+
+        return when {
+            value.contains("drive.google") || value.contains("docs.google") -> 0
+            value.contains("gsharer") -> 1
+            value.contains("hxfile") -> 2
+            value.contains("terabox") -> 3
+            value.contains("filemoon") -> 4
+            value.contains("streamwish") || value.contains("wishfast") -> 5
+            value.contains("vidhide") -> 6
+            value.contains("mp4upload") -> 7
+            value.contains("dood") -> 8
+            value.contains("streamtape") -> 9
+            value.contains("mixdrop") -> 10
+            else -> 50
+        }
+    }
+
     private fun extractPlayableUrls(text: String): List<String> {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
         Regex(
-            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|txt)(?:\?[^"'\\\s<>]*)?""",
+            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
@@ -716,6 +889,7 @@ class IndoDrama21 : MainAPI() {
             .filter {
                 it.contains(".m3u8", true) ||
                     it.contains(".mp4", true) ||
+                    it.contains(".webm", true) ||
                     isKnownHost(it)
             }
             .filterNot { isAdUrl(it) }
@@ -739,6 +913,10 @@ class IndoDrama21 : MainAPI() {
             "drive.google",
             "gd",
             "gdrive",
+            "gsharer",
+            "gdtot",
+            "hubdrive",
+            "gdflix",
             "hxfile",
             "uptobox",
             "acefile",
@@ -764,6 +942,7 @@ class IndoDrama21 : MainAPI() {
     private fun isLikelyPlayable(url: String): Boolean {
         return url.contains(".m3u8", true) ||
             url.contains(".mp4", true) ||
+            url.contains(".webm", true) ||
             isKnownHost(url)
     }
 
