@@ -253,7 +253,8 @@ class BioskopKeren : MainAPI() {
         }
 
         return if (type == TvType.Movie && episodes.size <= 1) {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
+            val playerSources = extractPlayerSources(document, url)
+            newMovieLoadResponse(title, url, TvType.Movie, buildPlaybackData(url, playerSources)) {
                 posterUrl = poster
                 this.year = year
                 this.plot = plot
@@ -267,7 +268,8 @@ class BioskopKeren : MainAPI() {
             }
         } else {
             newTvSeriesLoadResponse(title, url, type, episodes.ifEmpty {
-                listOf(newEpisode(url) {
+                val playerSources = extractPlayerSources(document, url)
+                listOf(newEpisode(buildPlaybackData(url, playerSources)) {
                     name = title
                     episode = 1
                     posterUrl = poster
@@ -310,12 +312,73 @@ class BioskopKeren : MainAPI() {
         return links.values.sortedWith(compareBy<Episode> { it.season ?: 1 }.thenBy { it.episode ?: 1 })
     }
 
+    private fun buildPlaybackData(referer: String, sources: List<String>): String {
+        val validSources = sources
+            .map { normalizeUrl(it, referer) }
+            .filter { it.isNotBlank() && !isAdUrl(it) && !isBadPlayableUrl(it) && isLikelyPlayable(it) }
+            .distinct()
+
+        if (validSources.isEmpty()) return referer
+        return "bkref::$referer:::" + validSources.joinToString("||")
+    }
+
+    private fun decodePlaybackData(data: String): Pair<String, List<String>> {
+        if (!data.startsWith("bkref::")) return data to emptyList()
+        val payload = data.removePrefix("bkref::")
+        val parts = payload.split(":::", limit = 2)
+        val referer = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: mainUrl
+        val sources = parts.getOrNull(1)
+            ?.split("||")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        return referer to sources
+    }
+
+    private fun extractPlayerSources(document: Document, pageUrl: String): List<String> {
+        val sources = linkedSetOf<String>()
+
+        document.select(
+            "iframe#player[src], " +
+                "iframe[src*='streaming.kebioskop21.pro'], " +
+                "iframe[src*='apidrive.php'], " +
+                "iframe[src*='short.icu'], " +
+                "iframe[src*='abyss'], " +
+                "a[href*='streaming.kebioskop21.pro'], " +
+                "a[href*='apidrive.php'], " +
+                "[data-video], [data-url], [data-src], [data-file], [data-iframe], [data-embed]"
+        ).forEach { element ->
+            if (element.isNoiseElement()) return@forEach
+            val label = element.text().lowercase()
+            if (label.contains("trailer") || label.contains("advert") || label.contains("iklan")) return@forEach
+
+            listOf("src", "href", "data-video", "data-url", "data-src", "data-file", "data-iframe", "data-embed").forEach { attr ->
+                val raw = element.attr(attr).trim()
+                if (raw.isBlank()) return@forEach
+                val fixed = normalizeUrl(raw, pageUrl)
+                if (fixed.isNotBlank() && !isAdUrl(fixed) && !isBadPlayableUrl(fixed) && isLikelyPlayable(fixed)) {
+                    sources.add(fixed)
+                }
+            }
+        }
+
+        extractPlayableUrls(document.html()).forEach { raw ->
+            val fixed = normalizeUrl(raw, pageUrl)
+            if (fixed.isNotBlank() && !isAdUrl(fixed) && !isBadPlayableUrl(fixed) && isLikelyPlayable(fixed)) sources.add(fixed)
+        }
+
+        return sources.toList()
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val decoded = decodePlaybackData(data)
+        val startReferer = decoded.first
+        val explicitSources = decoded.second
         val visited = mutableSetOf<String>()
         val directLinks = linkedSetOf<Pair<String, String>>()
         val embedQueue = ArrayDeque<Pair<String, String>>()
@@ -359,7 +422,11 @@ class BioskopKeren : MainAPI() {
             return html
         }
 
-        parsePage(data, mainUrl)
+        if (explicitSources.isNotEmpty()) {
+            explicitSources.forEach { raw -> queue(raw, startReferer, startReferer) }
+        } else {
+            parsePage(startReferer, mainUrl)
+        }
 
         var safety = 0
         while (embedQueue.isNotEmpty() && safety++ < 90) {
@@ -372,8 +439,15 @@ class BioskopKeren : MainAPI() {
             }
 
             if (isKnownExtractorHost(embed)) {
-                val success = runCatching { loadExtractor(embed, referer, subtitleCallback, callback) }.getOrDefault(false)
-                if (success) found = true
+                var delivered = false
+                val safeCallback: (ExtractorLink) -> Unit = { link ->
+                    if (!isAdUrl(link.url) && !isBadPlayableUrl(link.url)) {
+                        delivered = true
+                        callback(link)
+                    }
+                }
+                val success = runCatching { loadExtractor(embed, referer, subtitleCallback, safeCallback) }.getOrDefault(false)
+                if (success || delivered) found = true
             }
 
             val nested = when {

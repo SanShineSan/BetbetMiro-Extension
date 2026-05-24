@@ -1,4 +1,4 @@
-version = 6
+version = 7
 
 cloudstream {
     description = "BioskopKeren / keBioskop21 — Nonton Film dan Series Subtitle Indonesia"
