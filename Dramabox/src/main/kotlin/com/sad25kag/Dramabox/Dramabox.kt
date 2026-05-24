@@ -209,38 +209,47 @@ class Dramabox : MainAPI() {
         val chapterId = parsed.chapterId?.trim()?.takeIf { it.isNotBlank() }
         val officialVideoUrl = parsed.webUrl?.trim()?.takeIf { it.isNotBlank() }
 
-        // Jangan percaya stream yang tersimpan di episode sebagai sumber utama.
-        // Link DramaBox biasanya signed/temporary; kalau dipakai ulang bisa memicu
-        // ExoPlayer ERROR_CODE_IO_BAD_HTTP_STATUS (2004). Karena itu kita selalu
-        // refresh saat tombol play ditekan, lalu stream embedded hanya jadi fallback.
+        // Stream DramaBox biasanya signed/temporary, jadi refresh saat tombol play ditekan.
+        // Cached stream dari episode hanya dipakai sebagai fallback terakhir.
         val freshStreams = fetchChapterForEpisode(dramaId, episodeNo, chapterId)
             ?.streamUrl
             .orEmpty()
             .mapNotNull { it.normalizedOrNull() }
+            .filterPlayableStreams()
+            .distinctBy { it.url }
+            .sortPlaybackStreams()
 
-        val officialStreams = if (!officialVideoUrl.isNullOrBlank()) {
+        val officialPageStreams = if (freshStreams.isEmpty() && !officialVideoUrl.isNullOrBlank()) {
             fetchOfficialVideoStreams(officialVideoUrl)
                 .mapNotNull { it.normalizedOrNull() }
+                .filterPlayableStreams()
+                .distinctBy { it.url }
+                .sortPlaybackStreams()
         } else {
             emptyList()
         }
 
-        val embeddedFallbackStreams = parsed.streams.orEmpty()
-            .mapNotNull { it.normalizedOrNull() }
+        val cachedStreams = if (freshStreams.isEmpty() && officialPageStreams.isEmpty()) {
+            parsed.streams.orEmpty()
+                .mapNotNull { it.normalizedOrNull() }
+                .filterPlayableStreams()
+                .distinctBy { it.url }
+                .sortPlaybackStreams()
+        } else {
+            emptyList()
+        }
 
-        val streams = (freshStreams + officialStreams + embeddedFallbackStreams)
-            .filter { it.url?.isPlayableStreamUrl() == true }
-            .distinctBy { it.url }
-            .sortedWith(
-                compareByDescending<StreamItem> { it.url?.streamPriority() ?: 0 }
-                    .thenByDescending { it.quality ?: 0 }
-            )
+        val streams = when {
+            freshStreams.isNotEmpty() -> freshStreams
+            officialPageStreams.isNotEmpty() -> officialPageStreams
+            else -> cachedStreams
+        }
 
         if (streams.isEmpty()) {
             if (!officialVideoUrl.isNullOrBlank()) {
                 return loadExtractorWithFallback(
                     officialVideoUrl,
-                    "https://www.dramabox.com/",
+                    "$mainUrl/",
                     subtitleCallback,
                     callback
                 )
@@ -248,11 +257,15 @@ class Dramabox : MainAPI() {
             return false
         }
 
-        val playbackReferer = "https://www.dramabox.com/"
-        var emitted = false
+        // Kalau ada HLS/MP4, jangan paksa DASH. MPD lebih sering kena IO_BAD_HTTP_STATUS
+        // kalau manifest/CDN butuh header/DRM yang tidak lengkap.
+        val safeStreams = streams.filter { stream ->
+            val url = stream.url.orEmpty()
+            url.contains(".m3u8", true) || url.contains(".mp4", true)
+        }.ifEmpty { streams }
 
-        streams.forEach { stream ->
-            val streamUrl = stream.url?.cleanStreamText()?.takeIf { it.isPlayableStreamUrl() } ?: return@forEach
+        safeStreams.forEach { stream ->
+            val streamUrl = stream.url ?: return@forEach
             val qualityLabel = stream.quality?.let { "${it}p" } ?: "Auto"
             val linkType = when {
                 streamUrl.contains(".m3u8", true) -> ExtractorLinkType.M3U8
@@ -267,46 +280,65 @@ class Dramabox : MainAPI() {
                     streamUrl,
                     linkType
                 ) {
-                    this.quality = qualityFromNumber(stream.quality ?: streamUrl.detectQuality())
-                    this.referer = playbackReferer
-                    this.headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to playbackReferer,
-                        "Origin" to "https://www.dramabox.com",
-                        "Accept" to "*/*"
-                    )
+                    this.quality = qualityFromNumber(stream.quality)
+                    this.referer = "$mainUrl/"
+                    this.headers = playbackHeaders()
                 }
             )
-            emitted = true
         }
 
-        return emitted
+        return true
     }
 
-    private fun String.isPlayableStreamUrl(): Boolean {
-        val lower = cleanStreamText().lowercase()
-        if (!lower.startsWith("http")) return false
-        if (lower.contains("/api/")) return false
-        if (lower.contains("/drama/")) return false
-        if (lower.contains("/browse")) return false
-        if (lower.contains(".jpg") || lower.contains(".jpeg") || lower.contains(".png") || lower.contains(".webp")) return false
-        if (lower.contains(".js") || lower.contains(".css") || lower.contains("analytics") || lower.contains("tracker")) return false
-        return lower.contains(".m3u8") ||
-            lower.contains(".mp4") ||
-            lower.contains(".mpd") ||
-            lower.contains("video") ||
-            lower.contains("stream") ||
-            lower.contains("play")
-    }
-
-    private fun String.streamPriority(): Int {
-        val lower = lowercase()
-        return when {
-            lower.contains(".m3u8") -> 30
-            lower.contains(".mp4") -> 20
-            lower.contains(".mpd") -> 10
-            else -> 0
+    private fun List<StreamItem>.filterPlayableStreams(): List<StreamItem> {
+        return filter { item ->
+            val url = item.url.orEmpty().lowercase()
+            url.startsWith("http") &&
+                !url.contains("/api/") &&
+                !url.contains("/drama/") &&
+                !url.contains("/browse") &&
+                !url.contains(".jpg") &&
+                !url.contains(".jpeg") &&
+                !url.contains(".png") &&
+                !url.contains(".webp") &&
+                !url.contains(".gif") &&
+                !url.contains(".svg") &&
+                !url.contains(".css") &&
+                !url.contains(".js") &&
+                !url.contains("google-analytics") &&
+                !url.contains("googletagmanager") &&
+                !url.contains("doubleclick") &&
+                !url.contains("adsbygoogle") &&
+                (
+                    url.contains(".m3u8") ||
+                        url.contains(".mp4") ||
+                        url.contains(".mpd") ||
+                        url.contains("m3u8") ||
+                        url.contains("video")
+                )
         }
+    }
+
+    private fun List<StreamItem>.sortPlaybackStreams(): List<StreamItem> {
+        return sortedWith(
+            compareByDescending<StreamItem> { item ->
+                val url = item.url.orEmpty().lowercase()
+                when {
+                    url.contains(".m3u8") -> 3
+                    url.contains(".mp4") -> 2
+                    url.contains(".mpd") -> 1
+                    else -> 0
+                }
+            }.thenByDescending { it.quality ?: 0 }
+        )
+    }
+
+    private fun playbackHeaders(): Map<String, String> {
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to "$mainUrl/",
+            "Accept" to "*/*"
+        )
     }
 
     private fun cleanTitle(raw: String): String =
