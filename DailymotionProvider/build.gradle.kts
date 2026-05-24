@@ -1,23 +1,28 @@
-version = 2
+version = 8
 
 cloudstream {
-    description = "AnoBoy — Streaming Anime Subtitle Indonesia"
-    language = "id"
+    description = "Dailymotion public video catalog with fixed populated category rows for anime, drama, movie, country, WWE, RAW, and SmackDown."
     authors = listOf("BetbetMiro")
 
     /**
-     * Status int as the following:
+     * Status int:
      * 0: Down
      * 1: Ok
      * 2: Slow
-     * 3: Beta only
-     * */
+     * 3: Beta-only
+     */
     status = 1
+
     tvTypes = listOf(
-        "AnimeMovie",
-        "OVA",
+        "Movie",
+        "TvSeries",
+        "AsianDrama",
         "Anime",
+        "AnimeMovie",
+        "Cartoon",
+        "Others"
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://ww1.anoboy.boo&size=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=www.dailymotion.com&sz=%size%"
+    isCrossPlatform = true
 }

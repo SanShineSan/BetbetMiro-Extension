@@ -94,25 +94,19 @@ class DailymotionProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val category = parseCategoryData(request.data)
-        val apiUrl = buildVideoListUrl(
-            query = category.apiQuery,
-            page = page,
-            limit = 36
-        )
+        val videos = fetchVideoPage(category.apiQuery, page, 36)
+        val rawList = videos?.list.orEmpty()
+            .takeIf { it.isNotEmpty() }
+            ?: fetchFallbackRows(category.apiQuery, page)
 
-        val videos = app.get(apiUrl, headers = apiHeaders)
-            .text
-            .let { tryParseJson<VideoSearchResponse>(it) }
-
-        val home = videos?.list
-            .orEmpty()
+        val home = rawList
             .mapNotNull { it.toSearchResponse(category.type) }
             .distinctBy { it.url }
 
         return newHomePageResponse(
             request.name,
             home,
-            hasNext = videos?.hasMore == true
+            hasNext = videos?.hasMore == true && home.isNotEmpty()
         )
     }
 
@@ -206,11 +200,12 @@ class DailymotionProvider : MainAPI() {
     ): String {
         val parts = mutableListOf(
             "search=${query.urlEncoded()}",
-            "sort=$sort",
-            "availability=true",
-            "no_live=true"
+            "sort=$sort"
         )
 
+        // Jangan pakai filter availability/no_live di main row.
+        // Di beberapa query Dailymotion, filter itu membuat respons kosong sehingga Cloudstream
+        // cuma menampilkan judul kategori sebagai tulisan tanpa kartu video.
         if (longerThan != null && longerThan > 0) {
             parts += "longer_than=$longerThan"
         }
@@ -223,6 +218,64 @@ class DailymotionProvider : MainAPI() {
         val joiner = if (safeQuery.isBlank()) "" else "&$safeQuery"
         return "$apiBase/videos?fields=$videoFields&limit=$limit&page=$page$joiner"
     }
+
+    private suspend fun fetchVideoPage(query: String, page: Int, limit: Int): VideoSearchResponse? {
+        val apiUrl = buildVideoListUrl(
+            query = query,
+            page = page,
+            limit = limit
+        )
+
+        return app.get(apiUrl, headers = apiHeaders)
+            .text
+            .let { tryParseJson<VideoSearchResponse>(it) }
+    }
+
+    private suspend fun fetchFallbackRows(query: String, page: Int): List<VideoItem> {
+        val relaxed = buildRelaxedQueries(query)
+        for (candidate in relaxed) {
+            val result = fetchVideoPage(candidate, page, 36)
+                ?.list
+                .orEmpty()
+            if (result.isNotEmpty()) return result
+        }
+        return emptyList()
+    }
+
+    private fun buildRelaxedQueries(query: String): List<String> {
+        val params = query.split("&")
+            .mapNotNull { item ->
+                val key = item.substringBefore("=", "").trim()
+                val value = item.substringAfter("=", "").trim()
+                if (key.isBlank()) null else key to value
+            }
+            .toMap()
+
+        val search = params["search"]?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val decoded = runCatching {
+            java.net.URLDecoder.decode(search, "UTF-8")
+        }.getOrDefault(search.replace("+", " "))
+            .replace("+", " ")
+            .trim()
+
+        val words = decoded
+            .replace("sub indo", "", ignoreCase = true)
+            .replace("subtitle indonesia", "", ignoreCase = true)
+            .replace("full movie", "movie", ignoreCase = true)
+            .replace("full episode", "episode", ignoreCase = true)
+            .replace("full show", "show", ignoreCase = true)
+            .replace("highlights", "highlight", ignoreCase = true)
+            .replace("\\s+".toRegex(), " ")
+            .trim()
+
+        return listOf(
+            "search=${decoded.urlEncoded()}&sort=recent",
+            "search=${decoded.urlEncoded()}&sort=visited-week",
+            "search=${words.urlEncoded()}&sort=relevance",
+            "search=${words.urlEncoded()}&sort=recent"
+        ).distinct()
+    }
+
 
     private fun VideoItem.toSearchResponse(type: TvType): SearchResponse? {
         val videoId = id?.takeIf { it.isNotBlank() } ?: return null
