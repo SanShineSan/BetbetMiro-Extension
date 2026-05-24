@@ -28,18 +28,22 @@ class Kotakajaib : ExtractorApi() {
             headers = mapOf("User-Agent" to USER_AGENT),
         ).document
 
-        var emitted = false
+        var delivered = false
+        val trackedCallback: (ExtractorLink) -> Unit = { link ->
+            delivered = true
+            callback(link)
+        }
 
         document.select("button.server-item[data-frame], [data-frame]").forEach { button ->
             val decoded = button.attr("data-frame").decodeBase64Url() ?: return@forEach
             val iframeUrl = httpsify(URLDecoder.decode(decoded, "UTF-8"))
             val ok = runCatching {
-                loadExtractor(iframeUrl, embedUrl, subtitleCallback, callback)
+                loadExtractor(iframeUrl, embedUrl, subtitleCallback, trackedCallback)
             }.getOrDefault(false)
-            if (ok) emitted = true
+            if (ok) delivered = true
         }
 
-        if (!emitted) {
+        if (!delivered) {
             document.select("iframe[src], iframe[data-src], iframe[data-litespeed-src]").forEach { iframe ->
                 val raw = iframe.attr("data-litespeed-src")
                     .ifBlank { iframe.attr("data-src") }
@@ -52,7 +56,7 @@ class Kotakajaib : ExtractorApi() {
                     raw.startsWith("/") -> "$mainUrl$raw"
                     else -> "$mainUrl/$raw"
                 }
-                runCatching { loadExtractor(fixed, embedUrl, subtitleCallback, callback) }
+                runCatching { loadExtractor(fixed, embedUrl, subtitleCallback, trackedCallback) }
             }
         }
     }
