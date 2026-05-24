@@ -100,19 +100,7 @@ class HidoristreamProvider : MainAPI() {
         "anime/?order=rating" to "Top Rating",
 
         "anime/?type=movie" to "Movie",
-        "group:anime/?type=ova|anime/?type=special" to "OVA & Special",
         "anime/?type=bd" to "BD / Batch",
-
-        "group:anime/?genre=action|anime/?genre=adventure" to "Action & Adventure",
-        "group:anime/?genre=comedy|anime/?genre=slice-of-life" to "Comedy & Slice of Life",
-        "group:anime/?genre=drama|anime/?genre=romance" to "Drama & Romance",
-        "group:anime/?genre=fantasy|anime/?genre=isekai" to "Fantasy & Isekai",
-        "group:anime/?genre=school|anime/?genre=kids" to "School & Kids",
-        "group:anime/?genre=mystery|anime/?genre=thriller|anime/?genre=suspense" to "Mystery & Thriller",
-        "group:anime/?genre=horror|anime/?genre=supernatural" to "Horror & Supernatural",
-        "group:anime/?genre=sci-fi|anime/?genre=mecha|anime/?genre=space" to "Sci-Fi & Mecha",
-        "group:anime/?genre=sports|anime/?genre=team-sports|anime/?genre=combat-sports" to "Sports",
-        "group:anime/?genre=shounen|anime/?genre=seinen|anime/?genre=shoujo|anime/?genre=josei" to "Demographic"
     )
 
     private val headers = mapOf(
