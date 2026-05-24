@@ -501,7 +501,7 @@ class Gerakin21 : MainAPI() {
                 if (optionValue.isNotBlank()) {
                     queueUrl(optionValue, base)
                     runCatching {
-                        val decoded = com.lagradost.cloudstream3.utils.base64Decode(optionValue)
+                        val decoded = String(android.util.Base64.decode(optionValue, android.util.Base64.DEFAULT), Charsets.UTF_8)
                         extractFromText(decoded, base)
                     }
                 }
