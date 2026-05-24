@@ -294,7 +294,7 @@ private fun addCandidate(
     }
 }
 
-private fun emitCollected(
+private suspend fun emitCollected(
     hlsLinks: MutableMap<String, HlsSource>,
     directVideos: MutableMap<String, DirectSource>,
     callback: (ExtractorLink) -> Unit
