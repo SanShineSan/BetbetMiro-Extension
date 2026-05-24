@@ -43,15 +43,9 @@ class HentaiCityProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "" to "Beranda",
-        "new-releases" to "New Releases",
-        "videos" to "Videos",
-        "popular" to "Popular",
-        "latest-updates" to "Latest Updates",
-
         "search/video/uncensored" to "Uncensored",
         "search/video/japanese" to "Japanese",
         "search/video/english-dubbed" to "English Dubbed",
-        "search/video/subbed" to "Subbed",
         "search/video/hd" to "HD",
         "search/video/full" to "Full Videos",
         "search/video/series" to "Series",
