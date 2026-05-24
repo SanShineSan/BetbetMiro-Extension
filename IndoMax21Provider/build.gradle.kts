@@ -1,6 +1,5 @@
 // use an integer for version numbers
-version = 3
-
+version = 4
 
 cloudstream {
     language = "id"
@@ -19,7 +18,5 @@ cloudstream {
     status = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")
 
-
     iconUrl = "https://homecookingrocks.com/wp-content/uploads/2024/10/cropped-indomax21-favicon-color-1.png"
-
 }

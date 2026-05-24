@@ -1,4 +1,4 @@
-package com.indomax21
+package com.sad25kag.indomax21
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin

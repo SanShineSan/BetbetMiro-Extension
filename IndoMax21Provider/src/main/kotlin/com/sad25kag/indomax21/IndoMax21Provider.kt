@@ -1,4 +1,4 @@
-package com.indomax21
+package com.sad25kag.indomax21
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -19,6 +19,12 @@ class IndoMax21Provider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW, TvType.Movie, TvType.TvSeries, TvType.Anime)
     
     override val mainPage = mainPageOf(
+        "$mainUrl/" to "Update Terbaru",
+        "$mainUrl/category/box-office/" to "Box Office",
+        "$mainUrl/category/movie/" to "Movie",
+        "$mainUrl/category/serial-tv/" to "Serial TV",
+        "$mainUrl/category/animation/" to "Animasi",
+
         "$mainUrl/category/anime/" to "Anime",
         "$mainUrl/category/donghua/" to "Donghua",
         "$mainUrl/category/hentai/" to "Hentai",
