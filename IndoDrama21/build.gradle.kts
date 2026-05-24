@@ -1,9 +1,9 @@
-version = 2
+version = 3
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "IndoDrama21 Pro rebuilt for the active Dramaindo source with grouped homepage rows, safer episode mapping, and stronger playback fallback."
+    description = "IndoDrama21 rebuilt for the active IP source with clean grouped categories, resilient listing parser, episode mapping, Dooplay AJAX support, and hardened playback extraction."
 
     /**
      * Status int as the following:
@@ -21,5 +21,5 @@ cloudstream {
     )
 
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=id.indodrama.net&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=89.124.111.64&sz=%size%"
 }
