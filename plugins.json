@@ -110,26 +110,6 @@
     "name": "Areajav"
   },
     {
-        "url": "https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/Betbet/Javx.cs3",
-        "status": 3,
-        "version": 1,
-        "name": "Javx",
-        "internalName": "Javx",
-        "authors": [
-            "BetbetMiro"
-        ],
-        "description": "",
-        "fileSize": 10179,
-        "repositoryUrl": "https://github.com/sad25kag/BetbetMiro-Extension",
-        "language": "id",
-        "tvTypes": [
-            "NSFW"
-        ],
-        "iconUrl": "https://www.google.com/s2/favicons?domain=jav.guru&sz=%size%",
-        "apiVersion": 1,
-        "fileHash": "sha256-2ef817d9f83596a097e75b5f728f6cad63877f9899ed1092b31012a0226bf2f5"
-    },
-    {
         "iconUrl": "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://v1.samehadaku.how&size=%size%",
         "fileHash": "sha256-dec343b37b48db94944adc412b47c2e79e1b715806b053249470a7e7ae33c381",
         "apiVersion": 1,
