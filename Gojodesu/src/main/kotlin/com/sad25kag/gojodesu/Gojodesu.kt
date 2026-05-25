@@ -13,7 +13,7 @@ import java.net.URLEncoder
 
 class Gojodesu : MainAPI() {
     override var mainUrl = "https://gojodesu.com"
-    override var name = "Gojodesu🤖"
+    override var name = "Gojodesu"
     override var lang = "id"
     override val hasMainPage = true
     override val hasQuickSearch = true
