@@ -21,7 +21,7 @@ class Kawanfilm : MainAPI() {
     }
     override var mainUrl = "https://tv2.kawanfilm21.co"
     private var directUrl: String? = null
-    override var name = "Kawanfilm🎨"
+    override var name = "Kawanfilm"
     override val hasMainPage = true
     override var lang = "id"
     override val supportedTypes =
@@ -35,6 +35,26 @@ class Kawanfilm : MainAPI() {
                     "/page/%d/?s=&search=advanced&post_type=&index=&orderby=&genre=drama&movieyear=&country=korea&quality=" to "Drama Korea",
                     "country/usa/page/%d/" to "Hollywood",
                     "country/india/page/%d/" to "Bollywood",
+
+                    "category/action/page/%d/" to "Action",
+                    "category/horror/page/%d/" to "Horror",
+                    "category/drama/page/%d/" to "Drama",
+                    "category/mystery/page/%d/" to "Mystery",
+                    "category/romance/page/%d/" to "Romance",
+                    "category/animation/page/%d/" to "Animation",
+                    "category/thriller/page/%d/" to "Thriller",
+                    "category/war/page/%d/" to "War",
+                    "category/western/page/%d/" to "Western",
+                    "category/biography/page/%d/" to "Biography",
+                    "category/comedy/page/%d/" to "Comedy",
+                    "category/crime/page/%d/" to "Crime",
+                    "category/documentary/page/%d/" to "Documentary",
+                    "category/sport/page/%d/" to "Sport",
+                    "category/adventure/page/%d/" to "Adventure",
+                    "category/family/page/%d/" to "Family",
+                    "category/fantasy/page/%d/" to "Fantasy",
+                    "category/history/page/%d/" to "History",
+                    "category/science-fiction-2/page/%d/" to "Science Fiction",
             )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {

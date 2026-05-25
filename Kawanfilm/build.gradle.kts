@@ -1,23 +1,28 @@
-version = 5
+// use an integer for version numbers
+version = 6
+
 
 cloudstream {
-    description = "Kawanfilm"
-    language = "id"
-    authors = listOf("BetbetMiro")
+    // All of these properties are optional, you can safely remove them
+
+    description = ""
+    authors = listOf("Jav")
 
     /**
-     * Status int as the following:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     * */
-    status = 1 // will be 3 if unspecified
-    tvTypes = listOf(
-        "AsianDrama",
-        "TvSeries",
-        "Movie",
-    )
+    * Status int as the following:
+    * 0: Down
+    * 1: Ok
+    * 2: Slow
+    * 3: Beta only
+    * */
+    status = 3 // will be 3 if unspecified
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://tv2.kawanfilm21.co&size=%size%"
+    // List of video source types. Users are able to filter for extensions in a given category.
+    // You can find a list of avaliable types here:
+    // https://recloudstream.github.io/cloudstream/html/app/com.lagradost.cloudstream3/-tv-type/index.html
+    tvTypes = listOf("NSFW")
+
+    iconUrl = "https://www.google.com/s2/favicons?domain=jav.guru&sz=%size%"
+
+    language = "en"
 }
