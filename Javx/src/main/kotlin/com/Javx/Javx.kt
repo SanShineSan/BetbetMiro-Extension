@@ -28,7 +28,7 @@ import java.net.URLEncoder
 class Javx : MainAPI() {
     override var name = "Javx"
     override var mainUrl = "https://javx.org"
-    override var lang = "en"
+    override var lang = "id"
     override val supportedTypes = setOf(TvType.NSFW)
     override val hasDownloadSupport = true
     override val hasMainPage = true
