@@ -1,12 +1,18 @@
-version = 7
+version = 8
 
 cloudstream {
-    description = "KRX18 provider"
-    language = "id"
-    authors = listOf("sad25kag")
+    authors     = listOf("BetbetMiro")
+    language    = "id"
+    description = "18+ Asian"
 
-    status = 1
+    /**
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+    **/
+    status  = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")
-
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://krx18.com&size=%size%"
+    iconUrl = "https://krx18.com/wp-content/uploads/2022/10/krx18B.png"
 }
