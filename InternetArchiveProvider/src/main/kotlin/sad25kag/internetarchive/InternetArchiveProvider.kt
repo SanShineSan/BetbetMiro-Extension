@@ -37,7 +37,7 @@ import kotlin.math.roundToInt
 class InternetArchiveProvider : MainAPI() {
     override var mainUrl = "https://archive.org"
     override var name = "Internet Archive"
-    override var lang = "en"
+    override var lang = "id"
     override val hasMainPage = true
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
