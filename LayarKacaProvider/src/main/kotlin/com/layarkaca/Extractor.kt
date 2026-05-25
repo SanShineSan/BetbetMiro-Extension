@@ -376,7 +376,7 @@ private fun extractExtractorUrls(text: String): List<String> {
     return urls.toList()
 }
 
-private fun extractSubtitles(
+private suspend fun extractSubtitles(
     text: String,
     baseUrl: String
 ): List<SubtitleFile> {
