@@ -40,8 +40,27 @@ class KRX18 : MainAPI() {
         "genre/japan" to "Japan",
         "genre/thailand" to "Thailand",
         "genre/philippines" to "Philippines",
-
-        )
+        
+        // Tambahan kategori baru sesuai screenshot
+        "genre/australia" to "Australia",
+        "genre/belgium" to "Belgium",
+        "genre/canada" to "Canada",
+        "genre/denmark" to "Denmark",
+        "genre/france" to "France",
+        "genre/germany" to "Germany",
+        "genre/india" to "India",
+        "genre/indonesia" to "Indonesia",
+        "genre/italy" to "Italy",
+        "genre/netherlands" to "Netherlands",
+        "genre/poland" to "Poland",
+        "genre/russia" to "Russia",
+        "genre/singapore" to "Singapore",
+        "genre/spain" to "Spain",
+        "genre/switzerland" to "Switzerland",
+        "genre/taiwan" to "Taiwan",
+        "genre/uk" to "UK",
+        "genre/usa" to "USA"
+    )
 
     override suspend fun getMainPage(
         page: Int,
