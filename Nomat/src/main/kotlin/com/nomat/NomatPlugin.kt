@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class NomatPlugin : Plugin() {
     override fun load(context: Context) {
-
         Nomat.context = context
         registerMainAPI(Nomat())
         registerExtractorAPI(Hydrax())
