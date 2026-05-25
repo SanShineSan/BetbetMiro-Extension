@@ -29,6 +29,11 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.base64Decode
+import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.getPacked
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
@@ -466,8 +471,10 @@ class Movieon21 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val pageUrl = normalizeUrl(data, mainUrl)
+
         val response = app.get(
-            data,
+            pageUrl,
             headers = headers,
             referer = mainUrl,
             timeout = 30L
@@ -479,76 +486,83 @@ class Movieon21 : MainAPI() {
         val directLinks = linkedSetOf<String>()
         val embedLinks = linkedSetOf<String>()
 
-        document.select(
-            "iframe[src], " +
-                "iframe[data-src], " +
-                "iframe[data-litespeed-src], " +
-                "embed[src], " +
-                "source[src], " +
-                "video[src], " +
-                "video source[src]"
-        ).forEach { element ->
-            val raw = element.attr("data-litespeed-src")
-                .ifBlank { element.attr("data-src") }
-                .ifBlank { element.attr("src") }
-                .trim()
+        collectCandidatesFromDocument(
+            document = document,
+            baseUrl = pageUrl,
+            directLinks = directLinks,
+            embedLinks = embedLinks
+        )
 
-            addCandidate(raw, data, directLinks, embedLinks)
-        }
-
-        document.select("a[href]").forEach { element ->
-            val href = element.attr("href").trim()
-            val label = element.text().lowercase()
-
-            if (
-                href.startsWith("#") ||
-                href.startsWith("javascript", true) ||
-                href.contains("youtube.com", true) ||
-                href.contains("youtu.be", true) ||
-                label.contains("trailer")
-            ) {
-                return@forEach
-            }
-
-            if (isLikelyPlayable(href) || isLikelyPlayableText(label)) {
-                addCandidate(href, data, directLinks, embedLinks)
-            }
-        }
+        collectDooplayAjaxLinks(
+            document = document,
+            pageUrl = pageUrl,
+            directLinks = directLinks,
+            embedLinks = embedLinks
+        )
 
         extractPlayableUrls(html).forEach { raw ->
-            addCandidate(raw, data, directLinks, embedLinks)
+            addCandidate(raw, pageUrl, directLinks, embedLinks)
+        }
+
+        runCatching {
+            if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
+        }.getOrNull()
+            ?.cleanEscaped()
+            ?.let { unpacked ->
+                extractPlayableUrls(unpacked).forEach { raw ->
+                    addCandidate(raw, pageUrl, directLinks, embedLinks)
+                }
+            }
+
+        extractBase64Payloads(html).forEach { decoded ->
+            parsePlayerResponse(
+                text = decoded,
+                baseUrl = pageUrl,
+                directLinks = directLinks,
+                embedLinks = embedLinks
+            )
         }
 
         var found = false
 
-        directLinks.distinct().forEach { link ->
-            emitDirectLink(
-                link = link,
-                referer = data,
-                callback = callback
-            )
-            found = true
-        }
-
-        embedLinks.distinct().forEach { embed ->
-            val success = loadExtractor(
-                embed,
-                data,
-                subtitleCallback,
-                callback
-            )
-
-            if (success) {
+        directLinks
+            .filterNot { isAdUrl(it) }
+            .distinct()
+            .forEach { link ->
+                emitDirectLink(
+                    link = link,
+                    referer = pageUrl,
+                    callback = callback
+                )
                 found = true
-            } else {
-                resolveNestedLinks(embed, data).forEach { nested ->
-                    val fixed = normalizeUrl(nested, embed)
-                        .replace(".txt", ".m3u8")
+            }
+
+        if (found) return true
+
+        prioritizeEmbeds(embedLinks)
+            .take(12)
+            .forEach { embed ->
+                val success = loadExtractor(
+                    embed,
+                    pageUrl,
+                    subtitleCallback,
+                    callback
+                )
+
+                if (success) {
+                    found = true
+                    return@forEach
+                }
+
+                resolveNestedLinks(embed, pageUrl).forEach { nested ->
+                    val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
 
                     when {
                         isAdUrl(fixed) -> Unit
 
-                        isHlsLike(fixed) || fixed.contains(".mp4", true) -> {
+                        isHlsLike(fixed) ||
+                            fixed.contains(".mp4", true) ||
+                            fixed.contains(".webm", true) -> {
                             emitDirectLink(
                                 link = fixed,
                                 referer = embed,
@@ -570,9 +584,266 @@ class Movieon21 : MainAPI() {
                     }
                 }
             }
-        }
 
         return found
+    }
+
+
+
+    private fun collectCandidatesFromDocument(
+        document: Document,
+        baseUrl: String,
+        directLinks: MutableSet<String>,
+        embedLinks: MutableSet<String>
+    ) {
+        document.select(
+            "meta[property=og:video], " +
+                "meta[property=og:video:url], " +
+                "meta[property=og:video:secure_url], " +
+                "meta[name=twitter:player], " +
+                "iframe[src], " +
+                "iframe[data-src], " +
+                "iframe[data-litespeed-src], " +
+                "embed[src], " +
+                "object[data], " +
+                "source[src], " +
+                "video[src], " +
+                "video source[src], " +
+                "a[href], " +
+                "[data-src], " +
+                "[data-video], " +
+                "[data-file], " +
+                "[data-url], " +
+                "[data-embed], " +
+                "[data-iframe]"
+        ).forEach { element ->
+            val raw = element.attr("content")
+                .ifBlank { element.attr("data-litespeed-src") }
+                .ifBlank { element.attr("data-video") }
+                .ifBlank { element.attr("data-file") }
+                .ifBlank { element.attr("data-url") }
+                .ifBlank { element.attr("data-embed") }
+                .ifBlank { element.attr("data-iframe") }
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("data") }
+                .ifBlank { element.attr("src") }
+                .ifBlank { element.attr("href") }
+                .trim()
+
+            val label = element.text().lowercase()
+
+            if (
+                raw.startsWith("#") ||
+                raw.startsWith("javascript", true) ||
+                raw.contains("youtube.com", true) ||
+                raw.contains("youtu.be", true) ||
+                label.contains("trailer")
+            ) {
+                return@forEach
+            }
+
+            if (
+                element.tagName().equals("meta", true) ||
+                element.tagName().equals("iframe", true) ||
+                element.tagName().equals("embed", true) ||
+                element.tagName().equals("object", true) ||
+                element.tagName().equals("video", true) ||
+                element.tagName().equals("source", true) ||
+                isLikelyPlayable(raw) ||
+                isLikelyPlayableText(label)
+            ) {
+                addCandidate(raw, baseUrl, directLinks, embedLinks)
+            }
+        }
+    }
+
+    private suspend fun collectDooplayAjaxLinks(
+        document: Document,
+        pageUrl: String,
+        directLinks: MutableSet<String>,
+        embedLinks: MutableSet<String>
+    ) {
+        val options = document.select(
+            "ul#playeroptionsul li[data-post][data-nume][data-type], " +
+                ".dooplay_player_option[data-post][data-nume][data-type], " +
+                ".player-option[data-post][data-nume][data-type], " +
+                "li[data-post][data-nume][data-type], " +
+                "div[data-post][data-nume][data-type], " +
+                "span[data-post][data-nume][data-type]"
+        ).distinctBy {
+            "${it.attr("data-post")}|${it.attr("data-nume")}|${it.attr("data-type")}"
+        }
+
+        if (options.isEmpty()) return
+
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+
+        options.forEach { option ->
+            val post = option.attr("data-post").trim()
+            val nume = option.attr("data-nume").trim()
+            val type = option.attr("data-type").trim()
+
+            if (post.isBlank() || nume.isBlank() || type.isBlank()) return@forEach
+            if (nume.contains("trailer", true) || type.contains("trailer", true)) return@forEach
+
+            val ajaxText = runCatching {
+                app.post(
+                    ajaxUrl,
+                    data = mapOf(
+                        "action" to "doo_player_ajax",
+                        "post" to post,
+                        "nume" to nume,
+                        "type" to type
+                    ),
+                    headers = headers + mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                        "Origin" to mainUrl,
+                        "Referer" to pageUrl
+                    ),
+                    referer = pageUrl,
+                    timeout = 20L
+                ).text.cleanEscaped()
+            }.getOrNull().orEmpty()
+
+            if (ajaxText.isBlank()) return@forEach
+
+            parsePlayerResponse(
+                text = ajaxText,
+                baseUrl = pageUrl,
+                directLinks = directLinks,
+                embedLinks = embedLinks
+            )
+        }
+    }
+
+    private fun parsePlayerResponse(
+        text: String,
+        baseUrl: String,
+        directLinks: MutableSet<String>,
+        embedLinks: MutableSet<String>
+    ) {
+        if (text.isBlank()) return
+
+        val candidates = linkedSetOf<String>()
+
+        extractPlayableUrls(text).forEach { candidates.add(it) }
+
+        Regex(
+            """"(?:embed_url|embedUrl|url|iframe|src|file)"\s*:\s*"((?:\\.|[^"\\])*)"""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text).forEach { match ->
+            candidates.add(
+                match.groupValues[1]
+                    .replace("\\/", "/")
+                    .replace("\\\"", "\"")
+                    .cleanEscaped()
+            )
+        }
+
+        val decoded = runCatching {
+            URLDecoder.decode(text, "UTF-8")
+        }.getOrDefault(text)
+
+        if (decoded != text) {
+            extractPlayableUrls(decoded).forEach { candidates.add(it) }
+        }
+
+        extractBase64Payloads(text).forEach { payload ->
+            extractPlayableUrls(payload).forEach { candidates.add(it) }
+            Jsoup.parse(payload).select(
+                "iframe[src], iframe[data-src], source[src], video[src], embed[src], object[data], a[href]"
+            ).forEach { element ->
+                candidates.add(
+                    element.attr("data-src")
+                        .ifBlank { element.attr("src") }
+                        .ifBlank { element.attr("data") }
+                        .ifBlank { element.attr("href") }
+                        .trim()
+                )
+            }
+        }
+
+        Jsoup.parse(text).select(
+            "iframe[src], iframe[data-src], source[src], video[src], embed[src], object[data], a[href], [data-src], [data-video], [data-file], [data-url]"
+        ).forEach { element ->
+            candidates.add(
+                element.attr("data-video")
+                    .ifBlank { element.attr("data-file") }
+                    .ifBlank { element.attr("data-url") }
+                    .ifBlank { element.attr("data-src") }
+                    .ifBlank { element.attr("data") }
+                    .ifBlank { element.attr("src") }
+                    .ifBlank { element.attr("href") }
+                    .trim()
+            )
+        }
+
+        candidates.forEach { raw ->
+            addCandidate(raw, baseUrl, directLinks, embedLinks)
+        }
+    }
+
+    private fun extractBase64Payloads(text: String): List<String> {
+        val results = linkedSetOf<String>()
+
+        Regex(
+            """(?:atob|base64Decode|Base64\.decode)\(\s*["']([A-Za-z0-9+/=]{24,})["']\s*\)""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text).forEach { match ->
+            runCatching {
+                base64Decode(match.groupValues[1])
+            }.getOrNull()
+                ?.cleanEscaped()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { results.add(it) }
+        }
+
+        Regex(
+            """"(?:data|embed|embed_url|iframe|source|payload)"\s*:\s*"([A-Za-z0-9+/=]{32,})"""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text).forEach { match ->
+            runCatching {
+                base64Decode(match.groupValues[1])
+            }.getOrNull()
+                ?.cleanEscaped()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { results.add(it) }
+        }
+
+        return results.toList()
+    }
+
+    private fun prioritizeEmbeds(links: Collection<String>): List<String> {
+        return links
+            .filterNot { isAdUrl(it) }
+            .distinct()
+            .sortedWith(
+                compareBy<String> { hostPriority(it) }
+                    .thenBy { it.length }
+            )
+    }
+
+    private fun hostPriority(url: String): Int {
+        val value = url.lowercase()
+
+        return when {
+            value.contains("player") -> 0
+            value.contains("embed") -> 1
+            value.contains("streamwish") || value.contains("wishfast") -> 2
+            value.contains("filemoon") -> 3
+            value.contains("dood") -> 4
+            value.contains("streamtape") -> 5
+            value.contains("vidhide") -> 6
+            value.contains("vidguard") -> 7
+            value.contains("voe") -> 8
+            value.contains("mixdrop") -> 9
+            value.contains("mp4upload") -> 10
+            value.contains("hglink") || value.contains("hgcloud") -> 11
+            value.contains("drive.google") || value.contains("gdrive") -> 12
+            value.contains("terabox") -> 13
+            else -> 50
+        }
     }
 
     private suspend fun resolveNestedLinks(
@@ -607,7 +878,7 @@ class Movieon21 : MainAPI() {
         if (fixed.isBlank() || isAdUrl(fixed)) return
 
         when {
-            isHlsLike(fixed) || fixed.contains(".mp4", true) -> directLinks.add(fixed)
+            isHlsLike(fixed) || fixed.contains(".mp4", true) || fixed.contains(".webm", true) -> directLinks.add(fixed)
             fixed.startsWith("http", true) -> embedLinks.add(fixed)
         }
     }
@@ -617,33 +888,40 @@ class Movieon21 : MainAPI() {
         referer: String,
         callback: (ExtractorLink) -> Unit
     ) {
-        if (isAdUrl(link)) return
+        val fixed = link.cleanEscaped().replace(".txt", ".m3u8")
+        if (fixed.isBlank() || isAdUrl(fixed)) return
+
+        if (isHlsLike(fixed)) {
+            generateM3u8(
+                source = name,
+                streamUrl = fixed,
+                referer = referer
+            ).forEach(callback)
+            return
+        }
 
         callback(
             newExtractorLink(
                 source = name,
                 name = name,
-                url = link,
-                type = if (isHlsLike(link)) {
-                    ExtractorLinkType.M3U8
-                } else {
-                    ExtractorLinkType.VIDEO
-                }
+                url = fixed,
+                type = ExtractorLinkType.VIDEO
             ) {
                 this.referer = referer
-                this.quality = getQualityFromName(link).takeIf {
+                this.quality = getQualityFromName(fixed).takeIf {
                     it != Qualities.Unknown.value
-                } ?: qualityFromUrl(link)
+                } ?: qualityFromUrl(fixed)
             }
         )
     }
+
 
     private fun extractPlayableUrls(text: String): List<String> {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
         Regex(
-            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|txt)(?:\?[^"'\\\s<>]*)?""",
+            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
@@ -651,7 +929,15 @@ class Movieon21 : MainAPI() {
             .forEach { urls.add(it) }
 
         Regex(
-            """https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.txt)[^"'\\\s<>]*""",
+            """//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean)
+            .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
+            .filterNot { isAdUrl(it) }
+            .forEach { urls.add(it) }
+
+        Regex(
+            """https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.txt)[^"'\\\s<>]*""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map {
@@ -664,7 +950,7 @@ class Movieon21 : MainAPI() {
             .forEach { urls.add(it) }
 
         Regex(
-            """(?:file|src|source|url|videoSource|videoUrl|embedUrl|embed_url)\s*[:=]\s*["']([^"']+)["']""",
+            """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|embedUrl|embed_url|contentUrl|stream|streamUrl|stream_url)\s*[:=]\s*["']([^"']+)["']""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
@@ -672,13 +958,29 @@ class Movieon21 : MainAPI() {
             .filter {
                 it.contains(".m3u8", true) ||
                     it.contains(".mp4", true) ||
+                    it.contains(".webm", true) ||
                     isKnownHost(it)
             }
             .filterNot { isAdUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
-            """https?://[^"'\\\s<>]+?(?:embed|player|stream|filemoon|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|lulu|hglink|hgcloud|acefile|krakenfiles|gdrive|drive\.google|ok\.ru|odnoklassniki|terabox|mega)[^"'\\\s<>]*""",
+            """(?:data-file|data-video|data-url|data-src|data-embed|data-iframe|content)=["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .map { it.cleanEscaped().replace(".txt", ".m3u8") }
+            .filter {
+                it.contains(".m3u8", true) ||
+                    it.contains(".mp4", true) ||
+                    it.contains(".webm", true) ||
+                    isKnownHost(it)
+            }
+            .filterNot { isAdUrl(it) }
+            .forEach { urls.add(it) }
+
+        Regex(
+            """https?://[^"'\\\s<>]+?(?:embed|player|stream|filemoon|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|lulu|hglink|hgcloud|acefile|krakenfiles|gdrive|drive\.google|ok\.ru|odnoklassniki|terabox|mega|sbembed|streamruby|turbovid)[^"'\\\s<>]*""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { it.value.cleanEscaped() }
@@ -687,6 +989,7 @@ class Movieon21 : MainAPI() {
 
         return urls.toList()
     }
+
 
     private fun isKnownHost(url: String): Boolean {
         val value = url.lowercase()
@@ -715,13 +1018,17 @@ class Movieon21 : MainAPI() {
             "ok.ru",
             "odnoklassniki",
             "terabox",
-            "mega.nz"
+            "mega.nz",
+            "sbembed",
+            "streamruby",
+            "turbovid"
         ).any { value.contains(it) }
     }
 
     private fun isLikelyPlayable(url: String): Boolean {
         return url.contains(".m3u8", true) ||
             url.contains(".mp4", true) ||
+            url.contains(".webm", true) ||
             isKnownHost(url)
     }
 

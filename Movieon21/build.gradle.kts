@@ -1,9 +1,13 @@
-version = 1
+// use an integer for version numbers
+version = 2
+
 
 cloudstream {
     language = "id"
-    authors = listOf("BetbetMiro")
-    description = "Movieon21 provider for tv.movieon21.mov with homepage categories, search, metadata, direct playback, iframe fallback, and download-host extraction."
+    // All of these properties are optional, you can safely remove them
+
+    // description = "Lorem Ipsum"
+     authors = listOf("Duro92")
 
     /**
      * Status int as the following:
@@ -11,13 +15,14 @@ cloudstream {
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-     */
-    status = 1
-
+     * */
+    status = 1 // will be 3 if unspecified
     tvTypes = listOf(
-        "Movie"
+        "TvSeries",
+        "Movie",
+        "Anime",
+        "AsianDrama",
     )
-
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=tv.movieon21.mov&sz=%size%"
+    iconUrl = "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://ssstik.tv&size=16"
 }
