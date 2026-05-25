@@ -20,7 +20,7 @@ import org.jsoup.Jsoup
 
 class Kissasian : MainAPI() {
     override var mainUrl = "https://kissasian.cam"
-    override var name = "Kissasian🥯"
+    override var name = "Kissasian"
     override val hasMainPage = true
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
