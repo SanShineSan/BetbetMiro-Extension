@@ -1,15 +1,18 @@
-// use an integer for version numbers
-version = 3
+version = 4
 
 cloudstream {
-    description = "😶 Melolo - Platform streaming Drama Asia (Short-form) dengan subtitle Indonesia!"
-    language = "id"
-    authors = listOf("BetbetMiro")
+    authors     = listOf("BetbetMiro")
+    language    = "id"
+    description = "18+ Asian"
 
-    status = 1
-
-    tvTypes = listOf("TvSeries", "AsianDrama")
-    iconUrl = "https://www.google.com/s2/favicons?domain=tmthreader.com&sz=%size"
-
-    isCrossPlatform = false
+    /**
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+    **/
+    status  = 1 // will be 3 if unspecified
+    tvTypes = listOf("NSFW")
+    iconUrl = "https://krx18.com/wp-content/uploads/2022/10/krx18B.png"
 }
