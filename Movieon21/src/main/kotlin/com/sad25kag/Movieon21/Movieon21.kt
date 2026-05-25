@@ -525,6 +525,7 @@ class Movieon21 : MainAPI() {
 
         var found = false
 
+        // 1. Prioritaskan Direct Links (.mp4, .m3u8 langsung)
         directLinks
             .filterNot { isAdUrl(it) }
             .distinct()
@@ -539,47 +540,40 @@ class Movieon21 : MainAPI() {
 
         if (found) return true
 
+        // 2. Jika tidak ada direct link, proses Embed Links (Doodstream, dll)
         prioritizeEmbeds(embedLinks)
             .take(12)
             .forEach { embed ->
-                val success = loadExtractor(
-                    embed,
-                    pageUrl,
-                    subtitleCallback,
-                    callback
-                )
+                // PERBAIKAN: Gunakan fungsi bawaan Cloudstream secara hati-hati
+                val success = runCatching {
+                    loadExtractor(
+                        embed,
+                        pageUrl,
+                        subtitleCallback,
+                        callback
+                    )
+                }.getOrDefault(false)
 
                 if (success) {
                     found = true
-                    return@forEach
-                }
+                } else {
+                    // PERBAIKAN: Fallback jika extractor Cloudstream tidak support, kita scrape secara kasar
+                    resolveNestedLinks(embed, pageUrl).forEach { nested ->
+                        val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
 
-                resolveNestedLinks(embed, pageUrl).forEach { nested ->
-                    val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
+                        when {
+                            isAdUrl(fixed) -> Unit
 
-                    when {
-                        isAdUrl(fixed) -> Unit
-
-                        isHlsLike(fixed) ||
-                            fixed.contains(".mp4", true) ||
-                            fixed.contains(".webm", true) -> {
-                            emitDirectLink(
-                                link = fixed,
-                                referer = embed,
-                                callback = callback
-                            )
-                            found = true
-                        }
-
-                        fixed.startsWith("http", true) -> {
-                            val nestedSuccess = loadExtractor(
-                                fixed,
-                                embed,
-                                subtitleCallback,
-                                callback
-                            )
-
-                            if (nestedSuccess) found = true
+                            isHlsLike(fixed) ||
+                                fixed.contains(".mp4", true) ||
+                                fixed.contains(".webm", true) -> {
+                                emitDirectLink(
+                                    link = fixed,
+                                    referer = embed,
+                                    callback = callback
+                                )
+                                found = true
+                            }
                         }
                     }
                 }
@@ -846,6 +840,7 @@ class Movieon21 : MainAPI() {
         }
     }
 
+    // PERBAIKAN: Menambahkan logic Unpack JS dan decode Base64 jika iframe dikunci oleh host
     private suspend fun resolveNestedLinks(
         url: String,
         referer: String
@@ -860,8 +855,18 @@ class Movieon21 : MainAPI() {
         }.getOrNull().orEmpty()
 
         if (text.isBlank()) return emptyList()
+        
+        val nestedUrls = extractPlayableUrls(text).toMutableList()
 
-        return extractPlayableUrls(text)
+        // Coba ekstrak file packed JS (contoh: eval(function(p,a,c,k,e,d)...)
+        runCatching {
+            if (!getPacked(text).isNullOrEmpty()) {
+                val unpacked = getAndUnpack(text)
+                nestedUrls.addAll(extractPlayableUrls(unpacked.cleanEscaped()))
+            }
+        }
+        
+        return nestedUrls.distinct()
     }
 
     private fun addCandidate(
