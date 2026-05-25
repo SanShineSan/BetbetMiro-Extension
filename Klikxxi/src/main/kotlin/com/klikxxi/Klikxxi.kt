@@ -20,7 +20,7 @@ class Klikxxi : MainAPI() {
         var context: android.content.Context? = null
     }
     override var mainUrl = "https://klikxxi.me"
-    override var name = "Klikxxi🎭"
+    override var name = "Klikxxi"
     override val hasMainPage = true
     override var lang = "id"
 
