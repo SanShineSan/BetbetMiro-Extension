@@ -1,73 +1,16 @@
 package com.melongmovie
 
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.extractors.StreamWishExtractor
+import com.lagradost.cloudstream3.extractors.VidStack
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.USER_AGENT
-import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.extractors.VidStack
-import com.lagradost.cloudstream3.extractors.StreamWishExtractor
+import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.getPacked
 import java.net.URI
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.mozilla.javascript.Context
-
-
-
-open class Dingtezuni : ExtractorApi() {
-    override val name = "Earnvids"
-    override val mainUrl = "https://dingtezuni.com"
-    override val requiresReferer = true
-
- override suspend fun getUrl(
-        url: String,
-        referer: String?,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val headers = mapOf(
-            "Sec-Fetch-Dest" to "empty",
-            "Sec-Fetch-Mode" to "cors",
-            "Sec-Fetch-Site" to "cross-site",
-            "Origin" to mainUrl,
-	        "User-Agent" to USER_AGENT,
-        )
-        
-        val response = app.get(getEmbedUrl(url), referer = referer)
-        val script = if (!getPacked(response.text).isNullOrEmpty()) {
-            var result = getAndUnpack(response.text)
-            if(result.contains("var links")){
-                result = result.substringAfter("var links")
-            }
-            result
-        } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
-        } ?: return
-
-        // m3u8 urls could be prefixed by 'file:', 'hls2:' or 'hls4:', so we just match ':'
-        Regex(":\\s*\"(.*?m3u8.*?)\"").findAll(script).forEach { m3u8Match ->
-            generateM3u8(
-                name,
-                fixUrl(m3u8Match.groupValues[1]),
-                referer = "$mainUrl/",
-                headers = headers
-            ).forEach(callback)
-        }
-    }
-
-    private fun getEmbedUrl(url: String): String {
-		return when {
-			url.contains("/d/") -> url.replace("/d/", "/v/")
-			url.contains("/download/") -> url.replace("/download/", "/v/")
-			url.contains("/file/") -> url.replace("/file/", "/v/")
-			else -> url.replace("/f/", "/v/")
-		}
-	}
-
-}
 
 class Melongfilmstrp2p : VidStack() {
     override var name = "Melongfilmstrp2p"
@@ -86,56 +29,135 @@ class Hglink : StreamWishExtractor() {
     override val mainUrl = "https://hglink.to"
 }
 
-open class Dintezuvio : ExtractorApi() {
+open class Dingtezuni : EarnvidsLike() {
+    override val name = "Earnvids"
+    override val mainUrl = "https://dingtezuni.com"
+}
+
+open class Dintezuvio : EarnvidsLike() {
     override val name = "Earnvids"
     override val mainUrl = "https://dintezuvio.com"
+}
+
+open class EarnvidsLike : ExtractorApi() {
+    override val name = "Earnvids"
+    override val mainUrl = "https://dingtezuni.com"
     override val requiresReferer = true
 
- override suspend fun getUrl(
+    override suspend fun getUrl(
         url: String,
         referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val embedUrl = toEmbedUrl(url)
         val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Origin" to mainUrl,
             "Sec-Fetch-Dest" to "empty",
             "Sec-Fetch-Mode" to "cors",
             "Sec-Fetch-Site" to "cross-site",
-            "Origin" to mainUrl,
-	        "User-Agent" to USER_AGENT,
         )
-        
-        val response = app.get(getEmbedUrl(url), referer = referer)
-        val script = if (!getPacked(response.text).isNullOrEmpty()) {
-            var result = getAndUnpack(response.text)
-            if(result.contains("var links")){
-                result = result.substringAfter("var links")
-            }
-            result
-        } else {
-            response.document.selectFirst("script:containsData(sources:)")?.data()
-        } ?: return
 
-        // m3u8 urls could be prefixed by 'file:', 'hls2:' or 'hls4:', so we just match ':'
-        Regex(":\\s*\"(.*?m3u8.*?)\"").findAll(script).forEach { m3u8Match ->
-            generateM3u8(
-                name,
-                fixUrl(m3u8Match.groupValues[1]),
-                referer = "$mainUrl/",
-                headers = headers
-            ).forEach(callback)
+        val response = runCatching {
+            app.get(
+                embedUrl,
+                referer = referer ?: "$mainUrl/",
+                headers = headers,
+                timeout = 20L
+            )
+        }.getOrNull() ?: return
+
+        val candidates = linkedSetOf<String>()
+        val body = response.text.cleanEscaped()
+
+        extractM3u8(body).forEach { candidates.add(normalizeExtractorUrl(it, embedUrl)) }
+
+        val unpacked = runCatching {
+            if (!getPacked(body).isNullOrEmpty()) getAndUnpack(body) else null
+        }.getOrNull()
+
+        if (!unpacked.isNullOrBlank()) {
+            extractM3u8(unpacked.cleanEscaped()).forEach {
+                candidates.add(normalizeExtractorUrl(it, embedUrl))
+            }
+        }
+
+        response.document.selectFirst("script:containsData(sources:)")
+            ?.data()
+            ?.cleanEscaped()
+            ?.let { script ->
+                extractM3u8(script).forEach {
+                    candidates.add(normalizeExtractorUrl(it, embedUrl))
+                }
+            }
+
+        candidates
+            .filter { it.contains(".m3u8", true) }
+            .forEach { stream ->
+                generateM3u8(
+                    source = name,
+                    streamUrl = stream,
+                    referer = "$mainUrl/",
+                    headers = headers
+                ).forEach(callback)
+            }
+    }
+
+    private fun toEmbedUrl(url: String): String {
+        return when {
+            url.contains("/d/") -> url.replace("/d/", "/v/")
+            url.contains("/download/") -> url.replace("/download/", "/v/")
+            url.contains("/file/") -> url.replace("/file/", "/v/")
+            url.contains("/f/") -> url.replace("/f/", "/v/")
+            else -> url
         }
     }
 
-    private fun getEmbedUrl(url: String): String {
-		return when {
-			url.contains("/d/") -> url.replace("/d/", "/v/")
-			url.contains("/download/") -> url.replace("/download/", "/v/")
-			url.contains("/file/") -> url.replace("/file/", "/v/")
-			else -> url.replace("/f/", "/v/")
-		}
-	}
+    private fun extractM3u8(text: String): List<String> {
+        val urls = linkedSetOf<String>()
 
+        Regex("""https?://[^"'\\\s<>]+?\.m3u8(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .map { it.value.cleanEscaped() }
+            .forEach { urls.add(it) }
+
+        Regex(""":\s*["']([^"']*\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .map { it.cleanEscaped() }
+            .forEach { urls.add(it) }
+
+        Regex("""["']([^"']*\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .map { it.cleanEscaped() }
+            .forEach { urls.add(it) }
+
+        return urls.toList()
+    }
 }
 
+private fun normalizeExtractorUrl(url: String, baseUrl: String): String {
+    val clean = url.cleanEscaped()
 
+    return when {
+        clean.startsWith("http", true) -> clean
+        clean.startsWith("//") -> "https:$clean"
+        clean.startsWith("/") -> {
+            val origin = Regex("""^https?://[^/]+""").find(baseUrl)?.value ?: ""
+            "$origin$clean"
+        }
+        else -> runCatching {
+            URI(baseUrl).resolve(clean).toString()
+        }.getOrDefault(clean)
+    }
+}
+
+private fun String.cleanEscaped(): String {
+    return this
+        .replace("\\/", "/")
+        .replace("\\u0026", "&")
+        .replace("&amp;", "&")
+        .trim()
+}

@@ -8,10 +8,12 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class MelongmoviePlugin : Plugin() {
     override fun load(context: Context) {
         Melongmovie.context = context
+
         registerMainAPI(Melongmovie())
+
         registerExtractorAPI(Dingtezuni())
-        registerExtractorAPI(Melongfilmstrp2p())
         registerExtractorAPI(Dintezuvio())
+        registerExtractorAPI(Melongfilmstrp2p())
         registerExtractorAPI(Ukokoko())
         registerExtractorAPI(Hglink())
     }

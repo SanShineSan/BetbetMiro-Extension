@@ -1,7 +1,7 @@
-version = 10
+version = 11
 
 cloudstream {
-    description = "Melongmovie - Official Project by BetbetMiro"
+    description = "Melongmovie provider maintained by BetbetMiro"
     language = "id"
     authors = listOf("BetbetMiro")
 
@@ -11,14 +11,13 @@ cloudstream {
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-     * */
+     */
     status = 1
     tvTypes = listOf(
-        "AsianDrama",
-        "TvSeries",
         "Movie",
+        "TvSeries",
+        "AsianDrama",
     )
 
-    // Menggunakan IP baru untuk favicon
-    iconUrl = "https://www.google.com/s2/favicons?domain=http://139.59.189.160&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=tv12.melongmovies.com&sz=%size%"
 }
