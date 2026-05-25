@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
@@ -43,6 +44,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import kotlinx.coroutines.delay
 import java.text.Normalizer
+import org.jsoup.Jsoup
 
 class JuraganFilmProvider : MainAPI() {
     override var mainUrl = base64Decode("aHR0cHM6Ly96MS5pZGxpeGt1LmNvbQ==")
@@ -286,11 +288,13 @@ class JuraganFilmProvider : MainAPI() {
             AppUtils.parseJson<LoadData>(data)
         }.getOrNull() ?: return false
 
+        // FIX 1: Menambahkan User-Agent agar tidak diblokir oleh Cloudflare/Server
         val headers = mapOf(
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl,
             "Accept" to "application/json,text/plain,*/*",
-            "Content-Type" to "application/json"
+            "Content-Type" to "application/json",
+            "User-Agent" to USER_AGENT
         )
 
         val playResponse = runCatching {
@@ -349,6 +353,14 @@ class JuraganFilmProvider : MainAPI() {
 
         var found = false
 
+        // FIX 2: Melakukan parsing iframe jika API hanya mengembalikan "code" html
+        var streamUrl = iframeResponse.url
+        if (streamUrl.isNullOrBlank() && !iframeResponse.code.isNullOrBlank()) {
+            streamUrl = runCatching {
+                Jsoup.parse(iframeResponse.code.orEmpty()).selectFirst("iframe")?.attr("src")
+            }.getOrNull()
+        }
+
         iframeResponse.subtitles.orEmpty().forEach { subtitle ->
             val label = subtitle.label ?: subtitle.lang ?: "Subtitle"
             val path = subtitle.path ?: return@forEach
@@ -361,16 +373,14 @@ class JuraganFilmProvider : MainAPI() {
             )
         }
 
-        iframeResponse.url
-            ?.takeIf { it.isNotBlank() }
-            ?.let { streamUrl ->
-                found = emitPlaybackUrl(
-                    streamUrl = streamUrl,
-                    referer = mainUrl,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            }
+        streamUrl?.takeIf { it.isNotBlank() }?.let { validUrl ->
+            found = emitPlaybackUrl(
+                streamUrl = validUrl,
+                referer = mainUrl,
+                subtitleCallback = subtitleCallback,
+                callback = callback
+            )
+        }
 
         return found
     }
@@ -382,10 +392,13 @@ class JuraganFilmProvider : MainAPI() {
         cookies: Map<String, String>
     ): Iframe? {
         if (redeemUrl.isBlank() || claim.isBlank()) return null
+        
+        // FIX 3: Memastikan redeemUrl selalu memiliki host domain jika formatnya relative
+        val fullRedeemUrl = if (redeemUrl.startsWith("http")) redeemUrl else mainUrl.trimEnd('/') + "/" + redeemUrl.trimStart('/')
 
         return runCatching {
             app.post(
-                redeemUrl,
+                fullRedeemUrl,
                 requestBody = """
                     {
                         "claim": "$claim"
@@ -405,7 +418,11 @@ class JuraganFilmProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val fixedUrl = streamUrl.trim().replace("\\/", "/").replace(".txt", ".m3u8")
+        // FIX 4: Jika url provider berupa //jeniusplay..., otomatis pasangkan https:
+        val fixedUrl = streamUrl.trim().replace("\\/", "/").replace(".txt", ".m3u8").let {
+            if (it.startsWith("//")) "https:$it" else it
+        }
+        
         if (fixedUrl.isBlank()) return false
 
         return when {
