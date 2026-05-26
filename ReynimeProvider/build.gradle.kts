@@ -1,9 +1,9 @@
-version = 6
+version = 7
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Reynime provider for reynime.my.id with fixed homepage parsing, source rows, episode mapping, and playback fallback."
+    description = "Reynime provider for reynime.my.id with seeded homepage rows, source categories, episode fallback, and playback resolver."
 
     status = 1
 

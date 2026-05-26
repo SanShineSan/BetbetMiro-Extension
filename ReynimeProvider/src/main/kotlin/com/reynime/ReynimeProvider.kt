@@ -116,7 +116,7 @@ class ReynimeProvider : MainAPI() {
 
     private fun placeholderPoster(title: String): String {
         val encoded = URLEncoder.encode(title.take(38), "UTF-8").replace("+", "%20")
-        return "https://placehold.co/300x450/111827/FFFFFF.jpg?text=$encoded"
+        return "https://placehold.co/300x450/png?text=$encoded"
     }
 
     private fun SeedSeries.toSeedSearchResponse(): SearchResponse {
@@ -152,12 +152,24 @@ class ReynimeProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // Reynime is rendered heavily on the client side and often blocks plain
+        // server-side HTML fetches. Returning the source-backed seed list first
+        // keeps Cloudstream's homepage from showing empty category rows while
+        // the detail/playback resolver still targets the real Reynime pages.
+        val seededItems = fallbackItemsFor(request.data)
+        if (page <= 1 && seededItems.isNotEmpty()) {
+            return newHomePageResponse(
+                request.name,
+                seededItems.distinctBy { it.url },
+                hasNext = false
+            )
+        }
+
         val candidates = buildPageCandidates(request.data, page)
-        var hasNext = false
 
         for (url in candidates) {
             val response = runCatching {
-                app.get(url, headers = headers, timeout = 25L)
+                app.get(url, headers = headers, timeout = 8L)
             }.getOrNull() ?: continue
 
             val document = response.document
@@ -166,7 +178,7 @@ class ReynimeProvider : MainAPI() {
                 .distinctBy { it.url }
 
             if (items.isNotEmpty()) {
-                hasNext = document.selectFirst(
+                val hasNext = document.selectFirst(
                     "a[rel=next], a.next, .pagination a:contains(Next), a[href*='page=${page + 1}'], button:contains(Load More)"
                 ) != null || response.text.contains("page\":${page + 1}")
 
@@ -178,8 +190,7 @@ class ReynimeProvider : MainAPI() {
             }
         }
 
-        val fallback = fallbackItemsFor(request.data)
-        return newHomePageResponse(request.name, fallback, hasNext = false)
+        return newHomePageResponse(request.name, seededItems.distinctBy { it.url }, hasNext = false)
     }
 
     private fun buildPageCandidates(data: String, page: Int): List<String> {
