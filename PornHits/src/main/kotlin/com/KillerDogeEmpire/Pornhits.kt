@@ -535,7 +535,7 @@ class Pornhits : MainAPI() {
         return urls.filterNot { isAdUrl(it) }
     }
 
-    private fun emitDirectLink(
+    private suspend fun emitDirectLink(
         url: String,
         referer: String,
         quality: Int,
