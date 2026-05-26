@@ -1,9 +1,9 @@
-version = 15
+version = 16
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Reynime provider with hardened catalog parsing, stricter episode classification, safer URL normalization, and resilient backend playback extraction for HLS, MP4, Rumble, Dailymotion, and nested embed sources."
+    description = "Reynime provider with seed-first detail metadata, stable canonical series URLs, stricter episode classification, safer URL normalization, and resilient backend playback extraction for HLS, MP4, Rumble, Dailymotion, and nested embed sources."
 
     status = 1
 

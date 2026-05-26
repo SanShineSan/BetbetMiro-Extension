@@ -189,7 +189,8 @@ class ReynimeProvider : MainAPI() {
         SourceSeries(62, "Zi Chuan 2nd Season", "zi-chuan-2nd-season", "https://cdn.myanimelist.net/images/anime/1186/151163l.jpg", "Donghua", "Completed", TvType.Anime, 43, 2025, 8.20, setOf("action", "fantasy", "donghua"))
     )
 
-    private fun seriesUrl(item: SourceSeries): String = "$mainUrl/series/${item.id}"
+    private fun seriesUrl(item: SourceSeries): String = "$mainUrl/series/${item.id}/${item.slug}"
+    private fun bareSeriesUrl(item: SourceSeries): String = "$mainUrl/series/${item.id}"
     private fun legacySeriesUrl(item: SourceSeries): String = "$mainUrl/series/${item.id}/${item.slug}"
 
     private fun SourceSeries.toSearchResponse(): SearchResponse {
@@ -200,8 +201,10 @@ class ReynimeProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val live = if (page == 1) fetchSourceCatalog(request.data) else emptyList()
-        val items = live.ifEmpty { sourceItemsFor(request.data) }
+        // The current source is a JavaScript-heavy SPA. HTML/API catalog responses can expose
+        // placeholder objects such as the global site title, so the homepage intentionally uses
+        // validated seed metadata and canonical /series/{id}/{slug} URLs.
+        val items = sourceItemsFor(request.data)
             .filter { it.name.isNotBlank() && !isBadTitle(it.name) }
             .distinctBy { it.url }
         return newHomePageResponse(request.name, items, hasNext = false)
@@ -366,23 +369,25 @@ class ReynimeProvider : MainAPI() {
         val document = response?.document ?: Jsoup.parse("")
 
         val title = listOfNotNull(
+            seed?.title,
+            extractJsonString(html, "series_title"),
+            extractJsonString(html, "anime_title"),
             extractJsonString(html, "title"),
             extractJsonString(html, "name"),
             document.selectFirst("meta[property=og:title]")?.attr("content"),
-            document.selectFirst("h1, .text-2xl, .text-3xl, .font-bold, .font-semibold")?.text(),
-            seed?.title
+            document.selectFirst("h1, .text-2xl, .text-3xl, .font-bold, .font-semibold")?.text()
         ).firstOrNull { it.isNotBlank() && !isBadTitle(it) }
             ?.cleanTitle()
             ?: pageUrl.substringAfterLast("/").replace("-", " ").cleanTitle().ifBlank { name }
 
         val poster = listOfNotNull(
+            seed?.poster,
             extractJsonString(html, "poster"),
             extractJsonString(html, "cover"),
             extractJsonString(html, "image"),
             extractJsonString(html, "thumbnail"),
             document.selectFirst("meta[property=og:image]")?.attr("content"),
-            document.selectFirst("img[alt*='${title.take(24)}'], img.h-full, img.w-full, .poster img, .cover img, img")?.getImageAttr(),
-            seed?.poster
+            document.selectFirst("img[alt*='${title.take(24)}'], img.h-full, img.w-full, .poster img, .cover img, img")?.getImageAttr()
         ).firstOrNull { it.isNotBlank() }?.let { normalizePoster(normalizeUrl(it, pageUrl)) }
 
         val description = listOfNotNull(
@@ -394,12 +399,13 @@ class ReynimeProvider : MainAPI() {
             document.selectFirst(".synopsis, .description, .desc, article p, main p")?.text()
         ).firstOrNull { it.isNotBlank() && it.length > 20 && !isBadTitle(it) }?.cleanTitle()
 
-        val tags = document.select("a[href*='genre'], a[href*='tag'], .genre a, .genres a, .tags a")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() && !isBadTitle(it) }
-            .distinct()
-            .ifEmpty { seed?.genres?.map { it.replace('-', ' ').cleanTitle() }.orEmpty() }
-            .ifEmpty { listOf(seed?.kind ?: "Donghua") }
+        val tags = seed?.genres?.map { it.replace('-', ' ').cleanTitle() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: document.select("a[href*='genre'], a[href*='tag'], .genre a, .genres a, .tags a")
+                .map { it.text().trim() }
+                .filter { it.isNotBlank() && !isBadTitle(it) }
+                .distinct()
+                .ifEmpty { listOf(seed?.kind ?: "Donghua") }
 
         val episodes = seed?.let { fetchApiEpisodes(it.id, poster, description) }.orEmpty()
             .ifEmpty { parseEpisodes(document, html, pageUrl, poster) }
@@ -559,6 +565,7 @@ class ReynimeProvider : MainAPI() {
         candidates.add(pageUrl)
         seed?.let {
             candidates.add(seriesUrl(it))
+            candidates.add(bareSeriesUrl(it))
             candidates.add(legacySeriesUrl(it))
             episode?.let { ep ->
                 candidates.add("$mainUrl/watch/${it.id}/$ep")
@@ -610,6 +617,20 @@ class ReynimeProvider : MainAPI() {
                 record.urls.forEach(urls::add)
                 record.id?.let(idsToProbe::add)
             }
+
+            if (urls.isEmpty() && !episodeNumber.isNullOrBlank()) {
+                listOf(
+                    "$mainUrl/backend/api/episodes.php?series_id=$seriesId&episode=$episodeNumber&_t=${System.currentTimeMillis()}",
+                    "$mainUrl/backend/api/episodes.php?series_id=$seriesId&episode_number=$episodeNumber&_t=${System.currentTimeMillis()}",
+                    "$mainUrl/backend/api/watch.php?series_id=$seriesId&episode=$episodeNumber&_t=${System.currentTimeMillis()}",
+                    "$mainUrl/backend/api/stream.php?series_id=$seriesId&episode=$episodeNumber&_t=${System.currentTimeMillis()}"
+                ).forEach { exactUrl ->
+                    probe(exactUrl).forEach { record ->
+                        record.urls.forEach(urls::add)
+                        record.id?.let(idsToProbe::add)
+                    }
+                }
+            }
         }
 
         episodeId?.let { idsToProbe.remove(it) }
@@ -647,14 +668,17 @@ class ReynimeProvider : MainAPI() {
         }
 
         fun parseObject(obj: JSONObject) {
-            val id = obj.pickString("id", "episode_id", "episodeId", "watch_id", "pid", "post_id")
-            val seriesId = obj.pickString("series_id", "seriesId", "anime_id", "animeId")
-            val title = obj.pickString("title", "name", "episode_title", "label", "judul")
-            val episodeNumber = obj.pickString("episode_number", "episodeNumber", "episode", "ep", "eps", "number")
-                ?: extractEpisodeNumber(title.orEmpty(), obj.toString())?.toString()
-
             val keyedUrls = backendVideoKeys.mapNotNull { key -> obj.pickString(key) }
             val scannedUrls = extractPlayableUrls(obj.toString())
+            val title = obj.pickString("episode_title", "label", "judul", "title", "name")
+            val episodeNumber = obj.pickString("episode_number", "episodeNumber", "episode", "ep", "eps", "number")
+                ?: extractEpisodeNumber(title.orEmpty(), obj.toString())?.toString()
+            val hasEpisodeSignal = obj.looksLikeEpisodeObject() || episodeNumber != null || keyedUrls.isNotEmpty() || scannedUrls.isNotEmpty()
+            if (!hasEpisodeSignal) return
+
+            val id = obj.pickString("episode_id", "episodeId", "watch_id", "pid", "post_id")
+                ?: obj.pickString("id")?.takeIf { obj.looksLikeEpisodeObject() || episodeNumber != null || keyedUrls.isNotEmpty() || scannedUrls.isNotEmpty() }
+            val seriesId = obj.pickString("series_id", "seriesId", "anime_id", "animeId")
             addRecord(id, seriesId, episodeNumber, keyedUrls + scannedUrls, obj.toString().hashCode().toString())
         }
 
@@ -1199,6 +1223,7 @@ class ReynimeProvider : MainAPI() {
         val value = title.lowercase().trim()
         return value.isBlank() || value == "home" || value == "beranda" || value == "login" || value == "register" ||
             value == "search" || value == "genre" || value == "watch" || value == "episode" || value == "episodes" ||
+            value == "reynime" || value == "reynime - nonton donghua sub indo" ||
             value == "donghua terbaru" || value.contains("join telegram") || value.contains("tentang reynime") ||
             value.contains("aktifkan javascript") || value.contains("nonton donghua sub indo gratis")
     }
