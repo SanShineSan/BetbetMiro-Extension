@@ -1,9 +1,12 @@
 package com.reynime
 
-import com.lagradost.cloudstream3.Plugin
+import android.content.Context
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 
+@CloudstreamPlugin
 class ReynimePlugin : Plugin() {
-    override fun load() {
+    override fun load(context: Context) {
         registerMainAPI(ReynimeProvider())
     }
 }
