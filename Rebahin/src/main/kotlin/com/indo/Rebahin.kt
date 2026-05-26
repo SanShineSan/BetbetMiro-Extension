@@ -23,36 +23,40 @@ class Rebahin : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    override val mainPage = mainPageOf(
-        "/" to "Film Terbaru",
-        "/category/movie/" to "Movie",
-        "/category/serial-tv/" to "Serial TV",
-        "/category/anime/" to "Anime",
-        "/category/donghua/" to "Donghua",
-        "/category/animasi/" to "Animasi",
-        "/category/box-office/" to "Box Office",
+    // Keep only one visible entry so Cloudstream opens a poster-based home screen,
+    // not a plain text catalog menu. The actual rows are built from source routes below.
+    override val mainPage = mainPageOf("/__home__" to "Rebahin")
 
-        "/category/action/" to "Action",
-        "/category/adventure/" to "Adventure",
-        "/category/comedy/" to "Comedy",
-        "/category/crime/" to "Crime",
-        "/category/drama/" to "Drama",
-        "/category/fantasy/" to "Fantasy",
-        "/category/mystery/" to "Mystery",
-        "/category/romance/" to "Romance",
-        "/category/science-fiction/" to "Science Fiction",
-        "/category/thriller/" to "Thriller",
+    private data class HomeRoute(val title: String, val path: String)
 
-        "/country/usa/" to "USA",
-        "/country/united-kingdom/" to "United Kingdom",
-        "/country/china/" to "China",
-        "/country/korea/" to "Korea",
-        "/country/japan/" to "Japan",
-        "/country/taiwan/" to "Taiwan",
-        "/country/hong-kong/" to "Hong Kong",
-        "/country/thailand/" to "Thailand",
-        "/country/indonesia/" to "Indonesia",
-        "/country/philippines/" to "Philippines"
+    private val homeRoutes = listOf(
+        HomeRoute("Film Terbaru", "/"),
+        HomeRoute("Movie", "/category/movie/"),
+        HomeRoute("Serial TV", "/category/serial-tv/"),
+        HomeRoute("Anime", "/category/anime/"),
+        HomeRoute("Donghua", "/category/donghua/"),
+        HomeRoute("Animasi", "/category/animasi/"),
+        HomeRoute("Box Office", "/category/box-office/"),
+        HomeRoute("Action", "/category/action/"),
+        HomeRoute("Adventure", "/category/adventure/"),
+        HomeRoute("Comedy", "/category/comedy/"),
+        HomeRoute("Crime", "/category/crime/"),
+        HomeRoute("Drama", "/category/drama/"),
+        HomeRoute("Fantasy", "/category/fantasy/"),
+        HomeRoute("Mystery", "/category/mystery/"),
+        HomeRoute("Romance", "/category/romance/"),
+        HomeRoute("Science Fiction", "/category/science-fiction/"),
+        HomeRoute("Thriller", "/category/thriller/"),
+        HomeRoute("USA", "/country/usa/"),
+        HomeRoute("United Kingdom", "/country/united-kingdom/"),
+        HomeRoute("China", "/country/china/"),
+        HomeRoute("Korea", "/country/korea/"),
+        HomeRoute("Japan", "/country/japan/"),
+        HomeRoute("Taiwan", "/country/taiwan/"),
+        HomeRoute("Hong Kong", "/country/hong-kong/"),
+        HomeRoute("Thailand", "/country/thailand/"),
+        HomeRoute("Indonesia", "/country/indonesia/"),
+        HomeRoute("Philippines", "/country/philippines/")
     )
 
     private val headers = mapOf(
@@ -80,6 +84,26 @@ class Rebahin : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // Home screen mode: build real poster rows, similar to the polished reference provider.
+        // This avoids Cloudstream showing only a plain text list of categories.
+        if (request.data == "/__home__") {
+            val rows = mutableListOf<HomePageList>()
+
+            homeRoutes.forEach { route ->
+                val items = runCatching {
+                    parseSearchItems(fetchDocument(pagedUrl(route.path, page)))
+                        .distinctBy { it.url }
+                        .take(20)
+                }.getOrDefault(emptyList())
+
+                if (items.isNotEmpty()) {
+                    rows.add(HomePageList(route.title, items))
+                }
+            }
+
+            return newHomePageResponse(rows, hasNext = false)
+        }
+
         val doc = fetchDocument(pagedUrl(request.data, page))
         val items = parseSearchItems(doc)
 
@@ -357,13 +381,19 @@ class Rebahin : MainAPI() {
         val parsed = linkedMapOf<String, ParsedItem>()
         val selectors = listOf(
             "article",
+            "div[id^=post-]",
             ".items article",
             ".result-item article",
-            ".item",
-            ".movie",
             ".ml-item",
+            ".movie",
+            ".item",
             ".poster",
-            ".post"
+            ".post",
+            ".box-item",
+            ".halim-item",
+            ".module .content .items > *",
+            ".movies-list > *",
+            ".series-list > *"
         ).joinToString(",")
 
         doc.select(selectors).forEach { element ->
@@ -389,27 +419,47 @@ class Rebahin : MainAPI() {
     }
 
     private fun parseItem(element: Element): ParsedItem? {
-        val anchor = element.selectFirst(
-            "h2 a[href], h3 a[href], h4 a[href], .data a[href], .title a[href], .poster a[href], a[title][href], a[href]"
-        ) ?: return null
+        // Dooplay/Rebahin cards usually place a YouTube trailer button before the real movie link.
+        // Selecting the first <a> blindly makes the parser discard the whole card, so always pick
+        // the first valid internal content URL instead.
+        val anchor = element.select("h2 a[href], h3 a[href], h4 a[href], .title a[href], .data a[href], a[href]")
+            .firstOrNull { candidate ->
+                val href = normalizeUrl(candidate.attr("href"), mainUrl)
+                isValidContentUrl(href) &&
+                    !candidate.text().contains("Trailer", true) &&
+                    !href.contains("youtube", true)
+            } ?: return null
 
         val url = normalizeUrl(anchor.attr("href"), mainUrl)
         if (!isValidContentUrl(url)) return null
 
+        val titleAnchor = element.selectFirst("h1 a[href], h2 a[href], h3 a[href], h4 a[href], .title a[href], .data h2, .data h3")
         val rawTitle = listOf(
+            titleAnchor?.attr("title").orEmpty(),
+            titleAnchor?.text().orEmpty(),
             anchor.attr("title"),
-            anchor.text(),
-            element.selectFirst("h2, h3, h4, .title, .data")?.text().orEmpty(),
-            element.selectFirst("img[alt]")?.attr("alt").orEmpty()
-        ).firstOrNull { it.cleanText().length > 2 }.orEmpty()
+            element.selectFirst("img[alt]")?.attr("alt").orEmpty(),
+            anchor.text()
+        ).firstOrNull { value ->
+            val clean = value.cleanText()
+            clean.length > 2 &&
+                !clean.equals("Tonton", true) &&
+                !clean.equals("Tonton Film", true) &&
+                !clean.equals("Trailer", true)
+        }.orEmpty()
 
         val title = cleanTitle(rawTitle)
         if (title.length < 2) return null
 
-        val poster = element.selectFirst("img[data-src], img[data-lazy-src], img[src]")?.let { img ->
-            listOf("data-src", "data-lazy-src", "src").firstNotNullOfOrNull { attr ->
-                img.attr(attr).takeIf { it.isNotBlank() }
-            }?.let { normalizeUrl(it, mainUrl) }
+        val poster = element.selectFirst("img[data-src], img[data-lazy-src], img[data-original], img[data-wpfc-original-src], img[src], source[srcset]")?.let { img ->
+            listOf("data-src", "data-lazy-src", "data-original", "data-wpfc-original-src", "src", "srcset")
+                .firstNotNullOfOrNull { attr ->
+                    img.attr(attr)
+                        .split(",")
+                        .firstOrNull()
+                        ?.substringBefore(" ")
+                        ?.takeIf { it.isNotBlank() }
+                }?.let { normalizeUrl(it, mainUrl) }
         }
 
         val text = element.text()
