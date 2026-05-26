@@ -1,10 +1,9 @@
-// use an integer for version numbers
-version = 31
+version = 32
 
 cloudstream {
     language = "id"
-
     authors = listOf("BetbetMiro")
+    description = "Movieon21 provider for tv.movieon21.mov with homepage categories, search, metadata, direct playback, iframe fallback, and download-host extraction."
 
     /**
      * Status int as the following:
@@ -13,12 +12,12 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
      */
-    status = 1 // will be 3 if unspecified
+    status = 1
+
     tvTypes = listOf(
-        "AnimeMovie",
-        "Anime",
-        "OVA",
+        "Movie"
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://anime.oploverz.ac&size=%size%"
+    isCrossPlatform = false
+    iconUrl = "https://www.google.com/s2/favicons?domain=tv.movieon21.mov&sz=%size%"
 }
