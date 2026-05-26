@@ -1,12 +1,9 @@
-version = 5
+version = 6
 
 cloudstream {
     language = "id"
-
     authors = listOf("BetbetMiro")
-
     status = 1
-    tvTypes = listOf("Movie", "TvSeries")
-
-    iconUrl = "https://www.google.com/s2/favicons?domain=https://rebahinxxi3.autos&sz=%size%"
+    tvTypes = listOf("Movie", "TvSeries", "Anime")
+    iconUrl = "https://www.google.com/s2/favicons?domain=rebahinxxi3.com&sz=%size%"
 }

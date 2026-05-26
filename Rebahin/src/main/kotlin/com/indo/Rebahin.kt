@@ -15,7 +15,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Rebahin : MainAPI() {
-    override var mainUrl = "https://rebahinxxi3.autos"
+    override var mainUrl = "https://rebahinxxi3.com"
     override var name = "Rebahin"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -25,28 +25,34 @@ class Rebahin : MainAPI() {
 
     // Single visible entry. The actual homepage rows are built below from the source routes,
     // so Cloudstream renders poster rows instead of a plain text category catalog.
-    override val mainPage = mainPageOf("/" to "Featured")
+    override val mainPage = mainPageOf("__home__" to "Rebahin")
 
     private data class HomeRoute(val title: String, val path: String)
 
     private val homeRoutes = listOf(
         HomeRoute("Featured", "/"),
-        HomeRoute("Film Terbaru", "/nonton-drama/"),
+        HomeRoute("Film Terbaru", "/movies/"),
         HomeRoute("Movie", "/movies/"),
-        HomeRoute("Serial TV", "/series/"),
-        HomeRoute("Populer", "/genre/populer/"),
-        HomeRoute("Romance", "/genre/romance/"),
-        HomeRoute("Drama", "/genre/drama/"),
+        HomeRoute("Serial TV", "/tvshows/"),
+        HomeRoute("Anime", "/anime/"),
+        HomeRoute("Donghua", "/genre/donghua/"),
+        HomeRoute("Animasi", "/genre/animation/"),
+        HomeRoute("Box Office", "/bioskop-online/"),
         HomeRoute("Action", "/genre/action/"),
-        HomeRoute("Sci-Fi", "/genre/sci-fi/"),
-        HomeRoute("Horror", "/genre/horror/"),
+        HomeRoute("Adventure", "/genre/adventure/"),
         HomeRoute("Comedy", "/genre/comedy/"),
         HomeRoute("Crime", "/genre/crime/"),
-        HomeRoute("Animation", "/genre/animation/"),
+        HomeRoute("Drama", "/genre/drama/"),
+        HomeRoute("Fantasy", "/genre/fantasy/"),
+        HomeRoute("Mystery", "/genre/mystery/"),
+        HomeRoute("Romance", "/genre/romance/"),
+        HomeRoute("Sci-Fi", "/genre/sci-fi/"),
+        HomeRoute("Horror", "/genre/horror/"),
+        HomeRoute("Thriller", "/genre/thriller/"),
         HomeRoute("Drama Korea", "/genre/drama-korea/"),
         HomeRoute("Thailand Series", "/genre/thailand-series/"),
-        HomeRoute("China", "/genre/drama-china/"),
-        HomeRoute("Japan", "/genre/drama-jepang/")
+        HomeRoute("Drama China", "/genre/drama-china/"),
+        HomeRoute("Drama Jepang", "/genre/drama-jepang/")
     )
 
     private val headers = mapOf(
@@ -57,11 +63,11 @@ class Rebahin : MainAPI() {
     )
 
     private val mirrors = listOf(
-        "https://rebahinxxi3.autos",
         "https://rebahinxxi3.com",
         "https://rebahinxxi3.ink",
-        "https://rebahinxxi3.rest",
         "https://rebahinxxi3.cyou",
+        "https://rebahinxxi3.autos",
+        "https://rebahinxxi3.rest",
         "https://windowsxpuser.com",
         "http://178.62.98.100"
     )
@@ -219,6 +225,10 @@ class Rebahin : MainAPI() {
             val referer = doc.location().ifBlank { page }
             val html = doc.html().cleanEscaped()
 
+            requestTopXtabPlayers(doc, referer).forEach { raw ->
+                handlePlayable(raw, referer, subtitleCallback, safeCallback)
+            }
+
             extractPlayerOptions(doc).forEach { (post, nume, type) ->
                 requestDooplayPlayer(post, nume, type, referer).forEach { raw ->
                     handlePlayable(raw, referer, subtitleCallback, safeCallback)
@@ -310,6 +320,121 @@ class Rebahin : MainAPI() {
         return results.toList()
     }
 
+    private suspend fun requestTopXtabPlayers(doc: Document, referer: String): List<String> {
+        val html = doc.html().cleanEscaped()
+        val endpoints = linkedSetOf<String>()
+
+        Regex("""["']([^"']*ajax-top-xtab\.php[^"']*)["']""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .map { it.groupValues[1] }
+            .map { normalizeUrl(it, referer) }
+            .filter { it.contains("ajax-top-xtab.php", true) }
+            .forEach { endpoints.add(it) }
+
+        val root = rootOf(referer)
+        listOf(
+            "$root/ajax-top-xtab.php",
+            "$root/wp-content/themes/indoxxi/ajax-top-xtab.php",
+            "$root/wp-content/themes/indoxxi21/ajax-top-xtab.php",
+            "$root/wp-content/themes/rebahin/ajax-top-xtab.php",
+            "$root/wp-content/themes/dooplay/ajax-top-xtab.php"
+        ).forEach { endpoints.add(it) }
+
+        val playerPairs = linkedSetOf<Pair<String, String>>()
+        doc.select("[data-id], [data-post], [data-movie], [data-server], [data-nume], [data-iframe]").forEach { el ->
+            val id = el.attr("data-id")
+                .ifBlank { el.attr("data-post") }
+                .ifBlank { el.attr("data-movie") }
+                .ifBlank { el.attr("data-film") }
+                .trim()
+            val server = el.attr("data-server")
+                .ifBlank { el.attr("data-nume") }
+                .ifBlank { el.attr("data-xfield") }
+                .trim()
+            if (id.matches(Regex("\\d+"))) playerPairs.add(id to server.ifBlank { "1" })
+        }
+
+        Regex("""(?:post|movie|id|id_post|movie_id)\s*[:=]\s*["']?(\d{2,})["']?""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .take(3)
+            .forEach { match ->
+                val id = match.groupValues[1]
+                (1..6).forEach { playerPairs.add(id to it.toString()) }
+            }
+
+        val results = linkedSetOf<String>()
+        endpoints.take(5).forEach { endpoint ->
+            runCatching {
+                val response = app.get(endpoint, headers = ajaxHeaders(), referer = referer).text.cleanEscaped()
+                collectPlayableFromAjaxResponse(response).forEach { results.add(it) }
+            }
+
+            playerPairs.take(18).forEach { (id, server) ->
+                val postBodies = listOf(
+                    mapOf("id" to id, "server" to server),
+                    mapOf("movie" to id, "server" to server),
+                    mapOf("post" to id, "nume" to server, "type" to "movie")
+                )
+
+                postBodies.forEach { body ->
+                    runCatching {
+                        val response = app.post(
+                            endpoint,
+                            data = body,
+                            headers = ajaxHeaders(),
+                            referer = referer
+                        ).text.cleanEscaped()
+                        collectPlayableFromAjaxResponse(response).forEach { results.add(it) }
+                    }
+                }
+            }
+        }
+        return results.toList()
+    }
+
+    private fun ajaxHeaders(): Map<String, String> {
+        return headers + mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+        )
+    }
+
+    private fun collectPlayableFromAjaxResponse(response: String): List<String> {
+        val results = linkedSetOf<String>()
+        val clean = response.cleanEscaped()
+
+        extractUrlsFromText(clean).forEach { results.add(it) }
+        extractBase64Payloads(clean).forEach { payload ->
+            results.add(payload)
+            extractUrlsFromText(payload).forEach { results.add(it) }
+        }
+
+        Regex("""data-iframe=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.groupValues[1].cleanEscaped() }
+            .forEach { raw ->
+                decodeBase64(raw)?.let { decoded ->
+                    results.add(decoded)
+                    extractUrlsFromText(decoded).forEach { results.add(it) }
+                } ?: results.add(raw)
+            }
+
+        return results.toList()
+    }
+
+    private fun decodeBase64(raw: String): String? {
+        val fixed = raw.trim()
+            .replace("-", "+")
+            .replace("_", "/")
+            .let { value ->
+                val padding = (4 - value.length % 4) % 4
+                value + "=".repeat(padding)
+            }
+        return runCatching { String(Base64.decode(fixed, Base64.DEFAULT)) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
     private fun extractPlayerOptions(doc: Document): List<Triple<String, String, String>> {
         val options = mutableListOf<Triple<String, String, String>>()
         doc.select("[data-post][data-nume], .dooplay_player_option, .player-option, li[id*=player-option]").forEach { el ->
@@ -373,14 +498,19 @@ class Rebahin : MainAPI() {
 
     private fun extractBase64Payloads(text: String): List<String> {
         val results = mutableListOf<String>()
-        Regex("""(?:atob|Base64\.decode)\(["']([A-Za-z0-9+/=]{24,})["']\)""", RegexOption.IGNORE_CASE)
-            .findAll(text)
-            .forEach { match ->
-                runCatching {
-                    String(Base64.decode(match.groupValues[1], Base64.DEFAULT))
-                }.getOrNull()?.let { results.add(it.cleanEscaped()) }
+        val patterns = listOf(
+            Regex("""(?:atob|Base64\.decode)\(["']([A-Za-z0-9+/=]{24,})["']\)""", RegexOption.IGNORE_CASE),
+            Regex("""data-iframe=["']([A-Za-z0-9+/=]{24,})["']""", RegexOption.IGNORE_CASE),
+            Regex("""data-src=["']([A-Za-z0-9+/=]{24,})["']""", RegexOption.IGNORE_CASE),
+            Regex("""iframe\s*[:=]\s*["']([A-Za-z0-9+/=]{24,})["']""", RegexOption.IGNORE_CASE)
+        )
+
+        patterns.forEach { regex ->
+            regex.findAll(text).forEach { match ->
+                decodeBase64(match.groupValues[1])?.let { results.add(it.cleanEscaped()) }
             }
-        return results
+        }
+        return results.distinct()
     }
 
     private fun parseSearchItems(doc: Document): List<SearchResponse> {
