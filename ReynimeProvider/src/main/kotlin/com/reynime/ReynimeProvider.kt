@@ -55,14 +55,14 @@ class ReynimeProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "" to "Update Terbaru",
+        "latest" to "Update Terbaru",
         "series" to "Daftar Donghua",
-        "series?sort=popular" to "Populer",
-        "series?sort=latest" to "Terbaru Ditambahkan",
-        "series?status=ongoing" to "Ongoing",
-        "series?status=completed" to "Completed",
-        "series?type=movie" to "Movie",
-        "series?type=ova" to "OVA",
+        "popular" to "Populer",
+        "added" to "Terbaru Ditambahkan",
+        "status/ongoing" to "Ongoing",
+        "status/completed" to "Completed",
+        "type/movie" to "Movie",
+        "type/ova" to "OVA",
         "genre/action" to "Action",
         "genre/adventure" to "Adventure",
         "genre/comedy" to "Comedy",
@@ -123,42 +123,86 @@ class ReynimeProvider : MainAPI() {
 
     private fun buildPageCandidates(data: String, page: Int): List<String> {
         val clean = data.trim('/').trim()
-        val normalizedGenre = clean.removePrefix("genre/")
+        val slug = clean.substringAfterLast('/').trim()
 
-        fun withPage(url: String): String {
+        fun paged(url: String): String {
             if (page <= 1) return url
             return if (url.contains("?")) "$url&page=$page" else "${url.trimEnd('/')}/page/$page"
         }
 
-        return when {
-            clean.isBlank() -> listOf(
-                withPage(mainUrl),
-                "$mainUrl/?page=$page",
-                "$mainUrl/series?page=$page",
-                "$mainUrl/api/series?page=$page",
-                "$mainUrl/api/episodes?page=$page"
-            )
+        val candidates = linkedSetOf<String>()
 
-            clean.startsWith("genre/") -> listOf(
-                "$mainUrl/$clean?page=$page",
-                "$mainUrl/series?genre=$normalizedGenre&page=$page",
-                "$mainUrl/series?genres=$normalizedGenre&page=$page",
-                "$mainUrl/search?genre=$normalizedGenre&page=$page",
-                "$mainUrl/api/series?genre=$normalizedGenre&page=$page",
-                "$mainUrl/api/series?genres=$normalizedGenre&page=$page"
-            )
+        when {
+            clean == "latest" || clean.isBlank() -> {
+                candidates.add(paged(mainUrl))
+                candidates.add("$mainUrl/?page=$page")
+                candidates.add("$mainUrl/series?page=$page")
+                candidates.add("$mainUrl/api/episodes?page=$page")
+                candidates.add("$mainUrl/api/series?page=$page")
+            }
 
-            clean.contains("?") -> listOf(
-                "$mainUrl/$clean&page=$page",
-                "$mainUrl/api/$clean&page=$page"
-            )
+            clean == "series" -> {
+                candidates.add(paged("$mainUrl/series"))
+                candidates.add("$mainUrl/series?page=$page")
+                candidates.add("$mainUrl/api/series?page=$page")
+            }
 
-            else -> listOf(
-                withPage("$mainUrl/$clean"),
-                "$mainUrl/$clean?page=$page",
-                "$mainUrl/api/$clean?page=$page"
-            )
-        }.distinct()
+            clean == "popular" -> {
+                candidates.add("$mainUrl/series?sort=popular&page=$page")
+                candidates.add("$mainUrl/series?order=popular&page=$page")
+                candidates.add("$mainUrl/api/series?sort=popular&page=$page")
+                candidates.add("$mainUrl/api/series?order=popular&page=$page")
+            }
+
+            clean == "added" -> {
+                candidates.add("$mainUrl/series?sort=latest&page=$page")
+                candidates.add("$mainUrl/series?order=latest&page=$page")
+                candidates.add("$mainUrl/api/series?sort=latest&page=$page")
+                candidates.add("$mainUrl/api/series?order=latest&page=$page")
+            }
+
+            clean.startsWith("status/") -> {
+                candidates.add("$mainUrl/series?status=$slug&page=$page")
+                candidates.add("$mainUrl/api/series?status=$slug&page=$page")
+                candidates.add("$mainUrl/status/$slug?page=$page")
+            }
+
+            clean.startsWith("type/") -> {
+                candidates.add("$mainUrl/series?type=$slug&page=$page")
+                candidates.add("$mainUrl/api/series?type=$slug&page=$page")
+                candidates.add("$mainUrl/type/$slug?page=$page")
+            }
+
+            clean.startsWith("genre/") -> {
+                candidates.add("$mainUrl/series?genre=$slug&page=$page")
+                candidates.add("$mainUrl/series?genres=$slug&page=$page")
+                candidates.add("$mainUrl/series?genre[]=$slug&page=$page")
+                candidates.add("$mainUrl/api/series?genre=$slug&page=$page")
+                candidates.add("$mainUrl/api/series?genres=$slug&page=$page")
+                candidates.add("$mainUrl/genre/$slug?page=$page")
+                candidates.add("$mainUrl/genres/$slug?page=$page")
+            }
+
+            clean.contains("?") -> {
+                candidates.add("$mainUrl/$clean&page=$page")
+                candidates.add("$mainUrl/api/$clean&page=$page")
+            }
+
+            else -> {
+                candidates.add(paged("$mainUrl/$clean"))
+                candidates.add("$mainUrl/$clean?page=$page")
+                candidates.add("$mainUrl/api/$clean?page=$page")
+            }
+        }
+
+        // Reynime is sometimes rendered as an SPA. If a filtered route does not render cards,
+        // fall back to the real source pages so rows do not become empty category shells.
+        candidates.add("$mainUrl/series?page=$page")
+        candidates.add(paged("$mainUrl/series"))
+        candidates.add("$mainUrl/api/series?page=$page")
+        candidates.add(paged(mainUrl))
+
+        return candidates.toList()
     }
 
     private fun parseCards(document: Document): List<SearchResponse> {
@@ -172,14 +216,18 @@ class ReynimeProvider : MainAPI() {
                 ".grid a[href*='/series/']:has(img), " +
                 "a[href*='/series/']:has(img), " +
                 "a[href*='/anime/']:has(img), " +
-                "a[href*='/donghua/']:has(img)"
+                "a[href*='/donghua/']:has(img), " +
+                "a[href*='/series/']"
         ).forEach { element ->
             element.toSearchResult()?.let { results[it.url] = it }
         }
 
         parseNextDataCards(document.html()).forEach { results[it.url] = it }
+        parseRawSeriesLinks(document.html()).forEach { results[it.url] = it }
 
-        return results.values.toList()
+        return results.values
+            .filter { it.name.isNotBlank() && !isBadTitle(it.name) }
+            .distinctBy { it.url }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -224,64 +272,130 @@ class ReynimeProvider : MainAPI() {
         val results = linkedMapOf<String, SearchResponse>()
         val clean = text.cleanEscaped()
 
-        Regex(
-            """\{[^{}]*?"(?:title|name)"\s*:\s*"((?:\\.|[^"])*)"[^{}]*?"(?:slug)"\s*:\s*"([^"]+)"[^{}]*?\}""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).findAll(clean).forEach { match ->
-            val title = match.groupValues[1]
-                .replace("\\\"", "\"")
-                .replace("\\/", "/")
-                .cleanTitle()
-            val slug = match.groupValues[2].trim('/').cleanEscaped()
-            if (title.isBlank() || slug.isBlank() || isBadTitle(title)) return@forEach
+        // Handles hydrated JSON where slug/title/poster order can change between deploys.
+        Regex("""\{[^{}]*?\}""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(clean)
+            .forEach { blockMatch ->
+                val block = blockMatch.value
+                val slug = extractJsonString(block, "slug")
+                    ?: extractJsonString(block, "href")
+                    ?: extractJsonString(block, "url")
+                    ?: return@forEach
 
-            val nearby = clean.substring(
-                (match.range.first - 600).coerceAtLeast(0),
-                (match.range.last + 900).coerceAtMost(clean.length)
-            )
+                if (!slug.contains("/series/", true) && !slug.matches(Regex("""[A-Za-z0-9_-]+"""))) return@forEach
 
-            val poster = Regex(
-                """"(?:poster|cover|image|thumbnail|thumb)"\s*:\s*"([^"]+)""",
-                RegexOption.IGNORE_CASE
-            ).find(nearby)?.groupValues?.getOrNull(1)?.cleanEscaped()?.let {
-                normalizeUrl(it, mainUrl)
+                val title = listOfNotNull(
+                    extractJsonString(block, "title"),
+                    extractJsonString(block, "name"),
+                    extractJsonString(block, "japaneseTitle"),
+                    slug.substringAfterLast("/").replace("-", " ")
+                ).firstOrNull { it.isNotBlank() && !isBadTitle(it) }
+                    ?.cleanTitle()
+                    ?: return@forEach
+
+                val rawPoster = listOfNotNull(
+                    extractJsonString(block, "poster"),
+                    extractJsonString(block, "cover"),
+                    extractJsonString(block, "image"),
+                    extractJsonString(block, "thumbnail"),
+                    extractJsonString(block, "thumb")
+                ).firstOrNull { it.isNotBlank() }
+
+                val href = when {
+                    slug.startsWith("http", true) -> normalizeUrl(slug, mainUrl)
+                    slug.startsWith("/series/", true) -> normalizeUrl(slug, mainUrl)
+                    slug.contains("/series/", true) -> normalizeUrl(slug, mainUrl)
+                    else -> "$mainUrl/series/$slug"
+                }
+
+                if (!href.startsWith(mainUrl) || isBlockedCatalogUrl(href)) return@forEach
+
+                val poster = rawPoster?.let { normalizeUrl(it, mainUrl) }
+                results[href] = newAnimeSearchResponse(title, href, getTypeFromText("$title $href")) {
+                    posterUrl = poster
+                }
             }
 
-            val href = if (slug.startsWith("http", true)) slug else "$mainUrl/series/$slug"
-            results[href] = newAnimeSearchResponse(title, href, getTypeFromText(title)) {
+        return results.values.toList()
+    }
+
+    private fun parseRawSeriesLinks(text: String): List<SearchResponse> {
+        val results = linkedMapOf<String, SearchResponse>()
+        val clean = text.cleanEscaped()
+
+        Regex(
+            """(?:href|url|to)=["']([^"']*/series/\d+/[^"']+)["']|["']([^"']*/series/\d+/[^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(clean).forEach { match ->
+            val raw = match.groupValues.drop(1).firstOrNull { it.isNotBlank() } ?: return@forEach
+            val href = normalizeUrl(raw, mainUrl)
+            if (!href.startsWith(mainUrl) || isBlockedCatalogUrl(href)) return@forEach
+
+            val nearby = clean.substring(
+                (match.range.first - 900).coerceAtLeast(0),
+                (match.range.last + 1200).coerceAtMost(clean.length)
+            )
+
+            val title = listOfNotNull(
+                extractJsonString(nearby, "title"),
+                extractJsonString(nearby, "name"),
+                Regex("""(?:alt|title)=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(nearby)?.groupValues?.getOrNull(1),
+                href.substringAfterLast("/").replace("-", " ")
+            ).firstOrNull { it.isNotBlank() && !isBadTitle(it) }
+                ?.cleanTitle()
+                ?: return@forEach
+
+            val poster = findImageNear(nearby)?.let { normalizeUrl(it, mainUrl) }
+
+            results[href] = newAnimeSearchResponse(title, href, getTypeFromText("$title $href")) {
                 posterUrl = poster
             }
         }
 
-        Regex(
-            """"(?:url|href)"\s*:\s*"([^"]*/series/[^"]+)""",
-            RegexOption.IGNORE_CASE
-        ).findAll(clean).forEach { match ->
-            val href = normalizeUrl(match.groupValues[1].cleanEscaped(), mainUrl)
-            val nearby = clean.substring(
-                (match.range.first - 800).coerceAtLeast(0),
-                (match.range.last + 900).coerceAtMost(clean.length)
-            )
-            val title = Regex(
-                """"(?:title|name|alt)"\s*:\s*"((?:\\.|[^"])*)""",
-                RegexOption.IGNORE_CASE
-            ).find(nearby)?.groupValues?.getOrNull(1)?.cleanTitle()
-                ?: href.substringAfterLast("/").replace("-", " ").cleanTitle()
+        return results.values.toList()
+    }
 
-            if (!isBadTitle(title)) {
-                val poster = Regex(
-                    """"(?:poster|cover|image|thumbnail|thumb)"\s*:\s*"([^"]+)""",
-                    RegexOption.IGNORE_CASE
-                ).find(nearby)?.groupValues?.getOrNull(1)?.cleanEscaped()?.let {
-                    normalizeUrl(it, mainUrl)
-                }
-                results[href] = newAnimeSearchResponse(title, href, getTypeFromText(title)) {
-                    posterUrl = poster
-                }
-            }
+    private fun findImageNear(text: String): String? {
+        val clean = text.cleanEscaped()
+
+        Regex(
+            """(?:src|data-src|poster|image|cover|thumbnail|thumb)=["']([^"']+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"']*)?)["']""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)?.groupValues?.getOrNull(1)?.let { return it }
+
+        Regex(
+            """"(?:poster|cover|image|thumbnail|thumb|src)"\s*:\s*"([^"]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"]*)?)"""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)?.groupValues?.getOrNull(1)?.let { return it }
+
+        Regex(
+            """/_next/image\?url=([^"'&]+)[^"']*""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)?.groupValues?.getOrNull(1)?.let {
+            return runCatching { URLDecoder.decode(it, "UTF-8") }.getOrDefault(it)
         }
 
-        return results.values.toList()
+        Regex(
+            """https?://[^"'\s<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"'\s<>]*)?""",
+            RegexOption.IGNORE_CASE
+        ).find(clean)?.value?.let { return it }
+
+        return null
+    }
+
+    private fun extractJsonString(text: String, key: String): String? {
+        return Regex(
+            """"${Regex.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"""",
+            RegexOption.IGNORE_CASE
+        ).find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&")
+            ?.replace("\\\"", "\"")
+            ?.replace("\\n", " ")
+            ?.trim()
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? {
@@ -428,7 +542,7 @@ class ReynimeProvider : MainAPI() {
         }
 
         Regex(
-            """"(?:url|href)"\s*:\s*"([^"]*/(?:episode|watch|stream|eps?)[^"]*)""",
+            """"(?:url|href)"\s*:\s*"([^"]*/(?:episode|watch|stream|eps?)[^"]*)"""",
             RegexOption.IGNORE_CASE
         ).findAll(html).forEachIndexed { index, match ->
             val href = normalizeUrl(match.groupValues[1].cleanEscaped(), pageUrl)
@@ -439,7 +553,7 @@ class ReynimeProvider : MainAPI() {
                 (match.range.last + 800).coerceAtMost(html.length)
             )
             val label = Regex(
-                """"(?:title|name|episode|label)"\s*:\s*"((?:\\.|[^"])*)""",
+                """"(?:title|name|episode|label)"\s*:\s*"((?:\\.|[^"])*)"""",
                 RegexOption.IGNORE_CASE
             ).find(nearby)?.groupValues?.getOrNull(1)?.cleanTitle().orEmpty()
 
@@ -450,6 +564,27 @@ class ReynimeProvider : MainAPI() {
                 posterUrl = poster
             }
         }
+
+        // Some Reynime series pages expose episode labels as plain text (EP 170 Episode 170)
+        // with the actual player loaded client-side. Preserve them as anchor data so loadLinks
+        // can resolve via page/API/player fallback instead of collapsing the show into one item.
+        Regex("""\bEP\s*(\d{1,4})\b|\bEpisode\s*(\d{1,4})\b""", RegexOption.IGNORE_CASE)
+            .findAll(document.text())
+            .mapNotNull { match ->
+                match.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.toIntOrNull()
+            }
+            .distinct()
+            .sorted()
+            .forEach { epNumber ->
+                val epUrl = "$pageUrl#episode-$epNumber"
+                if (!results.containsKey(epUrl)) {
+                    results[epUrl] = newEpisode(epUrl) {
+                        name = "Episode $epNumber"
+                        episode = epNumber
+                        posterUrl = poster
+                    }
+                }
+            }
 
         return results.values
             .distinctBy { it.data }
@@ -462,7 +597,14 @@ class ReynimeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val pageUrl = normalizeUrl(data, mainUrl)
+        val requestedUrl = normalizeUrl(data, mainUrl)
+        val episodeFromFragment = Regex("""#episode-(\d+)""")
+            .find(requestedUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        val pageUrl = requestedUrl.substringBefore("#")
+
         val response = runCatching {
             app.get(pageUrl, headers = headers, referer = mainUrl, timeout = 25L)
         }.getOrNull() ?: return false
@@ -528,6 +670,62 @@ class ReynimeProvider : MainAPI() {
                         if (nestedSuccess) return true
                     }
                 }
+            }
+        }
+
+        if (tryDailymotionFallback(pageUrl, html, episodeFromFragment, subtitleCallback, callback)) return true
+
+        return false
+    }
+
+    private suspend fun tryDailymotionFallback(
+        pageUrl: String,
+        html: String,
+        episodeNumber: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val rawTitle = listOfNotNull(
+            Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.replace(Regex("""\s+[-|]\s+Reynime.*$""", RegexOption.IGNORE_CASE), "")
+                ?.cleanTitle(),
+            pageUrl.substringAfterLast("/").replace("-", " ").cleanTitle()
+        ).firstOrNull { it.isNotBlank() && !isBadTitle(it) } ?: return false
+
+        val queries = linkedSetOf<String>()
+        if (episodeNumber != null) {
+            queries.add("$rawTitle Episode $episodeNumber Reynime")
+            queries.add("$rawTitle Ep $episodeNumber Sub Indo")
+            queries.add("$rawTitle $episodeNumber Reynime")
+        }
+        queries.add("$rawTitle Reynime")
+        queries.add(rawTitle)
+
+        for (query in queries.take(5)) {
+            val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+            val searchUrl = "https://www.dailymotion.com/search/$encoded/videos"
+            val text = runCatching {
+                app.get(searchUrl, headers = headers, referer = mainUrl, timeout = 15L).text.cleanEscaped()
+            }.getOrNull().orEmpty()
+
+            if (text.isBlank()) continue
+
+            val ids = Regex("""/video/([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+                .findAll(text)
+                .map { it.groupValues[1] }
+                .distinct()
+                .take(4)
+                .toList()
+
+            for (id in ids) {
+                val videoUrl = "https://www.dailymotion.com/video/$id"
+                val success = runCatching {
+                    loadExtractor(videoUrl, searchUrl, subtitleCallback, callback)
+                }.getOrDefault(false)
+                if (success) return true
             }
         }
 
@@ -711,8 +909,29 @@ class ReynimeProvider : MainAPI() {
                 )
             }.getOrNull().orEmpty()
 
-            generated.forEach(callback)
-            generated.isNotEmpty()
+            if (generated.isNotEmpty()) {
+                generated.forEach(callback)
+                true
+            } else {
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = link,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = referer
+                        this.quality = qualityFromUrl(link)
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to referer,
+                            "Origin" to mainUrl,
+                            "Accept" to "*/*"
+                        )
+                    }
+                )
+                true
+            }
         } else {
             callback(
                 newExtractorLink(

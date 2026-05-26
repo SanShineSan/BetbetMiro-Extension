@@ -1,9 +1,9 @@
-version = 3
+version = 4
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Reynime provider for reynime.my.id with Donghua-focused catalog rows and hardened playback extraction."
+    description = "Reynime provider for reynime.my.id with fixed homepage parsing, source rows, episode mapping, and playback fallback."
 
     status = 1
 
