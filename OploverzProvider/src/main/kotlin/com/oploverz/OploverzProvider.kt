@@ -8,13 +8,12 @@ import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import java.net.URLEncoder
 
 
 class OploverzProvider : MainAPI() {
     override var mainUrl = "https://anime.oploverz.ac"
     private val backAPI = "https://backapi.oploverz.ac"
-    override var name = "Oploverz🧚"
+    override var name = "Oploverz"
     override val hasMainPage = true
     override var lang = "id"
     override val hasQuickSearch = true
@@ -45,148 +44,70 @@ class OploverzProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "episodes:latest" to "Rilis Terbaru",
-        "series:sort=latest" to "Anime Terbaru",
-        "series:sort=popular" to "Sedang Trending",
-        "series:sort=score" to "Rating Tertinggi",
-        "series:status=Berlangsung" to "Ongoing",
-        "series:status=Selesai" to "Completed",
-        "series:type=Serial TV" to "Serial TV",
-        "series:type=Movie" to "Movie",
-        "series:type=OVA" to "OVA",
-        "series:type=Live Action" to "Live Action",
-        "series:genre=Action" to "Action",
-        "series:genre=Adult Cast" to "Adult Cast",
-        "series:genre=Adventure" to "Adventure",
-        "series:genre=Cars" to "Cars",
-        "series:genre=Childcare" to "Childcare",
-        "series:genre=Comedy" to "Comedy",
-        "series:genre=Delinquents" to "Delinquents",
-        "series:genre=Demons" to "Demons",
-        "series:genre=Detective" to "Detective",
-        "series:genre=Donghua" to "Donghua",
-        "series:genre=Drama" to "Drama",
-        "series:genre=Ecchi" to "Ecchi",
-        "series:genre=Fantasy" to "Fantasy",
-        "series:genre=Gag Humor" to "Gag Humor",
-        "series:genre=Game" to "Game",
-        "series:genre=Gore" to "Gore",
-        "series:genre=Gourmet" to "Gourmet",
-        "series:genre=Harem" to "Harem",
-        "series:genre=Historical" to "Historical",
-        "series:genre=Horror" to "Horror",
-        "series:genre=Infinite" to "Infinite",
-        "series:genre=Isekai" to "Isekai",
-        "series:genre=Josei" to "Josei",
-        "series:genre=KlockWorx" to "KlockWorx",
-        "series:genre=Live Action" to "Live Action",
-        "series:genre=Magic" to "Magic",
-        "series:genre=Martial Arts" to "Martial Arts",
-        "series:genre=Mecha" to "Mecha",
-        "series:genre=Medical" to "Medical",
-        "series:genre=Military" to "Military",
-        "series:genre=Movic" to "Movic",
-        "series:genre=Music" to "Music",
-        "series:genre=Mystery" to "Mystery",
-        "series:genre=Mythology" to "Mythology",
-        "series:genre=Organized Crime" to "Organized Crime",
-        "series:genre=Otaku Culture" to "Otaku Culture",
-        "series:genre=Parody" to "Parody",
-        "series:genre=Performing Arts" to "Performing Arts",
-        "series:genre=Pets" to "Pets",
-        "series:genre=Police" to "Police",
-        "series:genre=Psychological" to "Psychological",
-        "series:genre=Racing" to "Racing",
-        "series:genre=Reincarnation" to "Reincarnation",
-        "series:genre=Reverse Harem" to "Reverse Harem",
-        "series:genre=Romance" to "Romance",
-        "series:genre=Romantic Subtext" to "Romantic Subtext",
-        "series:genre=Samurai" to "Samurai",
-        "series:genre=School" to "School",
-        "series:genre=Sci-Fi" to "Sci-Fi",
-        "series:genre=Seinen" to "Seinen",
-        "series:genre=Shoujo" to "Shoujo",
-        "series:genre=Shounen" to "Shounen",
-        "series:genre=Showbiz" to "Showbiz",
-        "series:genre=Showgate" to "Showgate",
-        "series:genre=Slice of Life" to "Slice of Life",
-        "series:genre=Sotsu" to "Sotsu",
-        "series:genre=Space" to "Space",
-        "series:genre=Sports" to "Sports",
-        "series:genre=Strategy Game" to "Strategy Game",
-        "series:genre=Super Power" to "Super Power",
-        "series:genre=Supernatural" to "Supernatural",
-        "series:genre=Survival" to "Survival",
-        "series:genre=Suspense" to "Suspense",
-        "series:genre=Team Sports" to "Team Sports",
-        "series:genre=Thriller" to "Thriller",
-        "series:genre=Time Travel" to "Time Travel",
-        "series:genre=Urban Fantasy" to "Urban Fantasy",
-        "series:genre=Vampire" to "Vampire",
-        "series:genre=Video Game" to "Video Game",
-        "series:genre=Villainess" to "Villainess",
-        "series:genre=Warner Bros" to "Warner Bros",
-        "series:genre=Workplace" to "Workplace",
+        "api/episodes?sort=latest" to "Rilis Terbaru",
+        "api/series?sort=popular" to "Terpopuler",
+        "api/series?sort=rating" to "Rating Tertinggi",
+        "api/series?genres=action" to "Action",
+        "api/series?genres=adventure" to "Adventure",
+        "api/series?genres=comedy" to "Comedy",
+        "api/series?genres=drama" to "Drama",
+        "api/series?genres=ecchi" to "Ecchi",
+        "api/series?genres=fantasy" to "Fantasy",
+        "api/series?genres=harem" to "Harem",
+        "api/series?genres=historical" to "Historical",
+        "api/series?genres=isekai" to "Isekai",
+        "api/series?genres=josei" to "Josei",
+        "api/series?genres=magic" to "Magic",
+        "api/series?genres=martial-arts" to "Martial Arts",
+        "api/series?genres=mecha" to "Mecha",
+        "api/series?genres=military" to "Military",
+        "api/series?genres=music" to "Music",
+        "api/series?genres=mystery" to "Mystery",
+        "api/series?genres=psychological" to "Psychological",
+        "api/series?genres=romance" to "Romance",
+        "api/series?genres=school" to "School",
+        "api/series?genres=sci-fi" to "Sci-Fi",
+        "api/series?genres=seinen" to "Seinen",
+        "api/series?genres=shoujo" to "Shoujo",
+        "api/series?genres=shounen" to "Shounen",
+        "api/series?genres=slice-of-life" to "Slice of Life",
+        "api/series?genres=space" to "Space",
+        "api/series?genres=sports" to "Sports",
+        "api/series?genres=super-power" to "Super Power",
+        "api/series?genres=supernatural" to "Supernatural",
+        "api/series?genres=thriller" to "Thriller"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val currentPage = page.coerceAtLeast(1)
-        val data = request.data
+        val url = "$backAPI/${request.data}&page=$page&pageSize=24"
+        val isSeries = request.data.startsWith("api/series")
 
-        val home = when {
-            data.startsWith("episodes:") -> {
-                val sort = data.substringAfter("episodes:").ifBlank { "latest" }
-                app.get("$backAPI/api/episodes?page=$currentPage&pageSize=24&sort=${sort.urlEncode()}")
-                    .parsedSafe<Anime>()
-                    ?.data
-                    ?.map { it.toSearchResult() }
-                    .orEmpty()
+        val home = if (isSeries) {
+            app.get(url).parsedSafe<SearchAnime>()?.data?.map {
+                newAnimeSearchResponse(
+                    it.title ?: "",
+                    "$mainUrl/series/${it.slug}",
+                    TvType.Anime
+                ) {
+                    this.otherName = it.japaneseTitle
+                    this.posterUrl = it.poster
+                    this.score = Score.from10(it.score)
+                    addSub(it.totalEpisodes)
+                }
             }
-
-            data.startsWith("series:") -> {
-                val query = data.substringAfter("series:").toApiQuery()
-                val separator = if (query.isBlank()) "" else "&"
-                app.get("$backAPI/api/series?page=$currentPage&pageSize=24$separator$query")
-                    .parsedSafe<SearchAnime>()
-                    ?.data
-                    ?.map { it.toSearchResult() }
-                    .orEmpty()
+        } else {
+            app.get(url).parsedSafe<Anime>()?.data?.map {
+                it.toSearchResult()
             }
-
-            else -> {
-                app.get("$backAPI/api/episodes?page=$currentPage&pageSize=24&sort=${data.urlEncode()}")
-                    .parsedSafe<Anime>()
-                    ?.data
-                    ?.map { it.toSearchResult() }
-                    .orEmpty()
-            }
-        }
+        } ?: throw ErrorLoadingException()
 
         return newHomePageResponse(
             request.name,
             home
         )
-    }
-
-    private fun String.toApiQuery(): String {
-        if (isBlank()) return ""
-
-        return split("&")
-            .mapNotNull { item ->
-                val key = item.substringBefore("=").trim()
-                val value = item.substringAfter("=", "").trim()
-                if (key.isBlank()) return@mapNotNull null
-                if (value.isBlank()) key else "$key=${value.urlEncode()}"
-            }
-            .joinToString("&")
-    }
-
-    private fun String.urlEncode(): String {
-        return URLEncoder.encode(this, "UTF-8")
-            .replace("+", "%20")
     }
 
     private fun Data.toSearchResult(): AnimeSearchResponse {
@@ -199,20 +120,6 @@ class OploverzProvider : MainAPI() {
             this.posterUrl = series?.poster
             this.score = Score.from10(series?.score)
             addSub((episodeNumber?.toIntOrNull() ?: series?.totalEpisodes))
-        }
-    }
-
-    private fun Series.toSearchResult(): AnimeSearchResponse {
-        val seriesScore = score
-        return newAnimeSearchResponse(
-            title ?: "",
-            "$mainUrl/series/${slug}",
-            TvType.Anime
-        ) {
-            this.otherName = japaneseTitle
-            this.posterUrl = poster
-            this.score = Score.from10(seriesScore)
-            addSub(totalEpisodes)
         }
     }
 
@@ -367,5 +274,4 @@ class OploverzProvider : MainAPI() {
         @JsonProperty("score") val score: Int? = null,
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
     )
-
 }

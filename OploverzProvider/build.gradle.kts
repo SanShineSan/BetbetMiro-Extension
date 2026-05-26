@@ -1,9 +1,10 @@
+// use an integer for version numbers
 version = 33
 
 cloudstream {
     language = "id"
+
     authors = listOf("BetbetMiro")
-    description = "Oploverz provider for anime.oploverz.ac with source-backed anime categories, metadata, episode loading, and Oploverz host extraction."
 
     /**
      * Status int as the following:
@@ -12,14 +13,12 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
      */
-    status = 1
-
+    status = 1 // will be 3 if unspecified
     tvTypes = listOf(
-        "Anime",
         "AnimeMovie",
-        "OVA"
+        "Anime",
+        "OVA",
     )
 
-    isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=anime.oploverz.ac&sz=%size%"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://anime.oploverz.ac&size=%size%"
 }
