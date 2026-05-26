@@ -8,6 +8,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -15,7 +17,8 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Rebahin : MainAPI() {
-    override var mainUrl = "https://rebahinxxi3.com"
+    // 1. UPDATE DOMAIN KE YANG WORK (.biz)
+    override var mainUrl = "https://rebahinxxi3.biz"
     override var name = "Rebahin"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -23,36 +26,17 @@ class Rebahin : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // Single visible entry. The actual homepage rows are built below from the source routes,
-    // so Cloudstream renders poster rows instead of a plain text category catalog.
     override val mainPage = mainPageOf("__home__" to "Rebahin")
 
     private data class HomeRoute(val title: String, val path: String)
 
+    // 2. SUNAT ROUTE UTAMA (Mencegah "Hadew" kena limit IP dari Cloudflare Rebahin)
     private val homeRoutes = listOf(
         HomeRoute("Featured", "/"),
         HomeRoute("Film Terbaru", "/movies/"),
-        HomeRoute("Movie", "/movies/"),
         HomeRoute("Serial TV", "/tvshows/"),
         HomeRoute("Anime", "/anime/"),
-        HomeRoute("Donghua", "/genre/donghua/"),
-        HomeRoute("Animasi", "/genre/animation/"),
-        HomeRoute("Box Office", "/bioskop-online/"),
-        HomeRoute("Action", "/genre/action/"),
-        HomeRoute("Adventure", "/genre/adventure/"),
-        HomeRoute("Comedy", "/genre/comedy/"),
-        HomeRoute("Crime", "/genre/crime/"),
-        HomeRoute("Drama", "/genre/drama/"),
-        HomeRoute("Fantasy", "/genre/fantasy/"),
-        HomeRoute("Mystery", "/genre/mystery/"),
-        HomeRoute("Romance", "/genre/romance/"),
-        HomeRoute("Sci-Fi", "/genre/sci-fi/"),
-        HomeRoute("Horror", "/genre/horror/"),
-        HomeRoute("Thriller", "/genre/thriller/"),
-        HomeRoute("Drama Korea", "/genre/drama-korea/"),
-        HomeRoute("Thailand Series", "/genre/thailand-series/"),
-        HomeRoute("Drama China", "/genre/drama-china/"),
-        HomeRoute("Drama Jepang", "/genre/drama-jepang/")
+        HomeRoute("Drama Korea", "/genre/drama-korea/")
     )
 
     private val headers = mapOf(
@@ -63,6 +47,7 @@ class Rebahin : MainAPI() {
     )
 
     private val mirrors = listOf(
+        "https://rebahinxxi3.biz",
         "https://rebahinxxi3.com",
         "https://rebahinxxi3.ink",
         "https://rebahinxxi3.cyou",
@@ -85,8 +70,6 @@ class Rebahin : MainAPI() {
             data.equals("home", true) || data.equals("featured", true) ||
             data.contains("__home__", true) || data.removeSuffix("/") == mainUrl.removeSuffix("/")
 
-        // Home mode: build several visual poster rows from the real source categories.
-        // If one route fails, keep the remaining rows alive instead of returning a black screen.
         if (isHome && page <= 1) {
             val rows = mutableListOf<HomePageList>()
             homeRoutes.forEach { route ->
@@ -101,8 +84,6 @@ class Rebahin : MainAPI() {
 
             if (rows.isNotEmpty()) return newHomePageResponse(rows, hasNext = false)
 
-            // Last-resort fallback: parse the homepage once. This prevents a blank provider page
-            // when Cloudstream/source routing differs from the expected request data.
             val fallback = runCatching {
                 parseSearchItems(fetchDocument("/"))
                     .distinctBy { it.url }
@@ -133,7 +114,6 @@ class Rebahin : MainAPI() {
 
         if (htmlResults.isNotEmpty()) return htmlResults
 
-        // WordPress fallback. Some mirrors keep the REST API open even when search markup changes.
         return runCatching {
             val apiUrl = "$mainUrl/wp-json/wp/v2/search?search=$encoded&per_page=20"
             val json = app.get(apiUrl, headers = headers).text
@@ -243,6 +223,7 @@ class Rebahin : MainAPI() {
         return found
     }
 
+    // 3. SUNTIKAN HYBRID: MESIN PENGEKSTRAK PUNYA ORANG DIGABUNG KE SISTEM LU
     private suspend fun handlePlayable(
         raw: String,
         referer: String,
@@ -255,6 +236,43 @@ class Rebahin : MainAPI() {
 
         if (fixed.isBlank() || !fixed.startsWith("http", true) || isBadLink(fixed)) return
 
+        // Ekstraksi Custom Player "Pelm" dari kodingan orang lain
+        if (fixed.contains("pelm.re") || fixed.contains("pelm.my.id")) {
+            runCatching {
+                val pelmLink = fixed.replace("pelm.re", "pelm.my.id")
+                val iframe = app.get(pelmLink).document.selectFirst("iframe")?.attr("src")
+                
+                if (iframe != null) {
+                    val script = app.get(iframe, referer = pelmLink).document.select("script").html()
+                    
+                    // Ekstrak M3U8
+                    Regex("[\"'](http.*m3u8.*?)[\"']").find(script)?.groupValues?.getOrNull(1)?.let { m3u8Link ->
+                        M3u8Helper.generateM3u8(
+                            name,
+                            m3u8Link,
+                            referer = "$mainUrl/",
+                            headers = mapOf("Accept" to "*/*", "Origin" to mainUrl)
+                        ).forEach(callback)
+                    }
+
+                    // Ekstrak Subtitle
+                    val subData = Regex("\"?tracks\"?:\\s\\n?\\[(.*)],").find(script)?.groupValues?.getOrNull(1)
+                        ?: Regex("\"?tracks\"?:\\s\\n?\\[\\s*(?s:(.+)],\\n\\s*\"sources)").find(script)?.groupValues?.getOrNull(1)
+                        
+                    tryParseJson<List<Map<String, String>>>("[$subData]")?.forEach { track ->
+                        val file = track["file"]
+                        val label = track["label"] ?: "Unknown"
+                        if (file?.contains(".srt") == true) {
+                            val lang = if (label.contains("indonesia", true) || label.contains("bahasa", true)) "Indonesian" else label
+                            subtitleCallback.invoke(SubtitleFile(lang, file))
+                        }
+                    }
+                }
+            }
+            return // Stop eksekusi agar tidak dobel dengan loadExtractor bawah
+        }
+
+        // Kalau bukan pelm, jalankan mesin fallback asli lu
         when {
             isDirectVideo(fixed) -> emitDirectLink(fixed, referer, callback)
             else -> runCatching { loadExtractor(fixed, referer, subtitleCallback, callback) }
@@ -545,8 +563,6 @@ class Rebahin : MainAPI() {
             parseItem(element)?.let { item -> parsed.putIfAbsent(item.url, item) }
         }
 
-        // Fallback anchor scan. Rebahin often puts a Trailer button before the real Tonton Film
-        // button/title link, so the parser must walk all internal anchors and use nearby poster data.
         doc.select("a[href]").forEach { anchor ->
             parseAnchorItem(anchor)?.let { item -> parsed.putIfAbsent(item.url, item) }
         }
@@ -682,8 +698,6 @@ class Rebahin : MainAPI() {
     }
 
     private fun resolvePlayablePage(url: String, doc: Document): String {
-        // rebahinxxi3 often keeps the iframe/player on the detail page itself.
-        // windowsxpuser variants may use /play/. Start from detail when a player marker exists.
         if (doc.selectFirst("iframe[src], video[src], source[src], [data-post][data-nume], .player, .player-area, #player") != null) {
             return url
         }
