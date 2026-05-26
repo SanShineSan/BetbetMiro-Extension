@@ -7,9 +7,13 @@
 <img src="https://img.shields.io/github/license/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=green" alt="License" />
 <img src="https://img.shields.io/github/last-commit/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=red" alt="Last Commit" />
 
-<br><br>
+<br>
 
-[![GitHub Status](https://img.shields.io/badge/dynamic/json?label=GitHub%20Status&query=%24.status.description&url=https%3A%2F%2Fwww.githubstatus.com%2Fapi%2Fv2%2Fstatus.json&logo=github&style=flat-square)](https://www.githubstatus.com/)
+<a href="https://www.githubstatus.com/">
+  <img src="https://img.shields.io/badge/dynamic/json?label=GitHub%20Status&query=%24.status.description&url=https%3A%2F%2Fwww.githubstatus.com%2Fapi%2Fv2%2Fstatus.json&logo=github&style=for-the-badge" alt="GitHub Status" />
+</a>
+
+</div>
 
 ## 🎬 CloudStream Extension Repository
 
