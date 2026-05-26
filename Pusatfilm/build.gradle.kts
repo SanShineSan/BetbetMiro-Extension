@@ -1,15 +1,15 @@
-version = 1
+version = 2
 
 cloudstream {
     description = "PusatFilm - Streaming Movie and TV Series"
     language = "id"
-    authors = listOf("BetbetMiro") 
-    // isCrossPlatform = true  <-- HAPUS ATAU KOMENTARI BARIS INI
-    isCrossPlatform = false 
+    authors = listOf("BetbetMiro")
+    isCrossPlatform = false
     status = 1
     tvTypes = listOf(
         "AsianDrama",
         "TvSeries",
-        "Movie"
+        "Movie",
+        "Anime"
     )
 }
