@@ -389,16 +389,27 @@ class ReynimeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val requestedUrl = normalizeUrl(data, mainUrl)
-        val id = Regex("""(?:/watch/|/series/)(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
-            ?: Regex("""series=(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
-        val episode = Regex("""/watch/\d+/(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
-            ?: Regex("""episode=(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
+        val syntheticWatch = Regex("""/watch/(\d+)/(\d+)""").find(requestedUrl)
+        val directWatchEpisodeId = Regex("""/watch/(\d+)(?:[/?#]|$)""").find(requestedUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf { syntheticWatch == null }
+            ?: Regex("""(?:episode_id|api_id|id)=(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
+        val seriesId = syntheticWatch?.groupValues?.getOrNull(1)
+            ?: Regex("""/series/(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""series(?:_id)?=(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
+        val episode = syntheticWatch?.groupValues?.getOrNull(2)
+            ?: Regex("""episode(?:_number)?=(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
             ?: Regex("""#episode-(\d+)""").find(requestedUrl)?.groupValues?.getOrNull(1)
-        val seed = id?.toIntOrNull()?.let { value -> sourceSeries.firstOrNull { it.id == value } }
+        val seed = seriesId?.toIntOrNull()?.let { value -> sourceSeries.firstOrNull { it.id == value } }
         val pageUrl = seed?.let { seriesUrl(it) } ?: requestedUrl.substringBefore("#")
 
         val directLinks = linkedSetOf<String>()
         val embedLinks = linkedSetOf<String>()
+
+        collectBackendEpisodeUrls(seriesId, episode, directWatchEpisodeId, pageUrl).forEach { url ->
+            addCandidate(url, mainUrl, directLinks, embedLinks)
+        }
 
         buildPlaybackCandidates(pageUrl, seed, episode).forEach { url ->
             val response = runCatching { app.get(url, headers = headers, referer = pageUrl, timeout = 10L) }.getOrNull() ?: return@forEach
@@ -444,6 +455,105 @@ class ReynimeProvider : MainAPI() {
         }
         return candidates.toList()
     }
+    private data class BackendEpisodeRecord(
+        val id: String?,
+        val seriesId: String?,
+        val episodeNumber: String?,
+        val urls: List<String>
+    )
+
+    private suspend fun collectBackendEpisodeUrls(
+        seriesId: String?,
+        episodeNumber: String?,
+        episodeId: String?,
+        referer: String
+    ): List<String> {
+        val urls = linkedSetOf<String>()
+        val idsToProbe = linkedSetOf<String>()
+
+        suspend fun probe(url: String): List<BackendEpisodeRecord> {
+            val response = runCatching { app.get(url, headers = headers, referer = referer, timeout = 10L) }.getOrNull() ?: return emptyList()
+            return parseBackendEpisodeRecords(response.text)
+        }
+
+        episodeId?.let { id ->
+            probe("$mainUrl/backend/api/episodes.php?id=$id&_t=${System.currentTimeMillis()}").forEach { record ->
+                record.urls.forEach(urls::add)
+            }
+        }
+
+        if (!seriesId.isNullOrBlank()) {
+            val records = probe("$mainUrl/backend/api/episodes.php?series_id=$seriesId&limit=1000&_t=${System.currentTimeMillis()}")
+            val selected = records.filter { record ->
+                episodeNumber.isNullOrBlank() || record.episodeNumber == episodeNumber
+            }
+            selected.forEach { record ->
+                record.urls.forEach(urls::add)
+                record.id?.let(idsToProbe::add)
+            }
+        }
+
+        episodeId?.let { idsToProbe.remove(it) }
+        idsToProbe.take(4).forEach { id ->
+            probe("$mainUrl/backend/api/episodes.php?id=$id&_t=${System.currentTimeMillis()}").forEach { record ->
+                record.urls.forEach(urls::add)
+            }
+        }
+
+        return urls
+            .map { it.cleanEscaped().trim() }
+            .filter { it.startsWith("http", true) || it.startsWith("//") }
+            .distinct()
+    }
+
+    private fun parseBackendEpisodeRecords(text: String): List<BackendEpisodeRecord> {
+        val clean = text.cleanEscaped()
+        return Regex("""\{[^{}]*}""")
+            .findAll(clean)
+            .map { it.value }
+            .mapNotNull { obj ->
+                val id = extractJsonValue(obj, "id")
+                val seriesId = extractJsonValue(obj, "series_id")
+                val episodeNumber = extractJsonValue(obj, "episode_number")
+                val urls = backendVideoKeys.mapNotNull { key -> extractJsonValue(obj, key) }
+                    .map { it.cleanEscaped().trim() }
+                    .filter { it.contains("http", true) || it.startsWith("//") }
+                    .distinct()
+                if (id == null && episodeNumber == null && urls.isEmpty()) null else BackendEpisodeRecord(id, seriesId, episodeNumber, urls)
+            }
+            .toList()
+    }
+
+    private val backendVideoKeys = listOf(
+        "download_url",
+        "video_url",
+        "reynime_video_url",
+        "vip_video_url",
+        "regular_video_url",
+        "regular_video_url_1",
+        "regular_video_url_2",
+        "regular_video_url_3",
+        "regular_video_url_4",
+        "regular_video_url_5",
+        "regular_video_url_6",
+        "regular_video_url_7",
+        "regular_video_url_8",
+        "embed_url",
+        "player_url",
+        "stream_url"
+    )
+
+    private fun extractJsonValue(text: String, key: String): String? {
+        val pattern = """["']${Regex.escape(key)}["']\s*:\s*(?:["']((?:\\.|[^"'\\])*)["']|([^,}\]]+))"""
+        val match = Regex(pattern, RegexOption.IGNORE_CASE).find(text) ?: return null
+        return (match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.groupValues.getOrNull(2))
+            ?.trim()
+            ?.trim('"', '\'')
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&")
+            ?.takeIf { it.isNotBlank() && !it.equals("null", true) }
+    }
+
 
     private fun collectCandidatesFromDocument(document: Document, baseUrl: String, directLinks: MutableSet<String>, embedLinks: MutableSet<String>) {
         document.select(
@@ -488,10 +598,24 @@ class ReynimeProvider : MainAPI() {
     private fun addCandidate(raw: String, baseUrl: String, directLinks: MutableSet<String>, embedLinks: MutableSet<String>) {
         val fixed = normalizeUrl(raw.cleanEscaped(), baseUrl).replace(".txt", ".m3u8").trim()
         if (fixed.isBlank() || isBadMediaUrl(fixed) || shouldSkipUrl(fixed)) return
-        when {
-            isDirectVideo(fixed) -> directLinks.add(fixed)
-            fixed.startsWith("http", true) && isLikelyEmbed(fixed) -> embedLinks.add(fixed)
+        expandRumbleTarCandidates(fixed).forEach { candidate ->
+            when {
+                isDirectVideo(candidate) -> directLinks.add(candidate)
+                candidate.startsWith("http", true) && isLikelyEmbed(candidate) -> embedLinks.add(candidate)
+            }
         }
+    }
+
+    private fun expandRumbleTarCandidates(url: String): List<String> {
+        if (!isRumbleTarHls(url)) return listOf(url)
+        val noQuery = url.substringBefore("?")
+        val match = Regex("""\.([a-z]aa)\.tar$""", RegexOption.IGNORE_CASE).find(noQuery)
+        val base = match?.let { noQuery.removeSuffix(".${it.groupValues[1]}.tar") } ?: return listOf(url)
+        val variants = linkedSetOf(url)
+        val suffix = match.groupValues[1].lowercase()
+        variants.add("$base.$suffix.mp4")
+        variants.add("$base.aaa.mp4")
+        return variants.toList()
     }
 
     private suspend fun emitDirectLink(link: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
@@ -546,15 +670,15 @@ class ReynimeProvider : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
         listOf(
-            Regex("""https?://[^\"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt)(?:\?[^\"'\\\s<>]*)?""", RegexOption.IGNORE_CASE),
-            Regex("""//[^\"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt)(?:\?[^\"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            Regex("""https?://[^\"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt|tar)(?:\?[^\"'\\\s<>]*)?""", RegexOption.IGNORE_CASE),
+            Regex("""//[^\"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt|tar)(?:\?[^\"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
         ).forEach { regex ->
             regex.findAll(clean).map { it.value }.forEach { raw ->
                 val fixed = (if (raw.startsWith("//")) "https:$raw" else raw).replace(".txt", ".m3u8").cleanEscaped()
                 if (!isBadMediaUrl(fixed) && !shouldSkipUrl(fixed)) urls.add(fixed)
             }
         }
-        Regex("""https?%3A%2F%2F[^\"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.mkv|\.txt|embed|player|stream)[^\"'\\\s<>]*""", RegexOption.IGNORE_CASE)
+        Regex("""https?%3A%2F%2F[^\"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.mkv|\.txt|\.tar|embed|player|stream)[^\"'\\\s<>]*""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { runCatching { URLDecoder.decode(it.value, "UTF-8") }.getOrDefault(it.value) }
             .map { it.cleanEscaped().replace(".txt", ".m3u8") }
@@ -664,7 +788,19 @@ class ReynimeProvider : MainAPI() {
     }
 
     private fun isDirectVideo(url: String): Boolean = isHlsLike(url) || url.contains(".mp4", true) || url.contains(".webm", true) || url.contains(".mkv", true)
-    private fun isHlsLike(url: String): Boolean = url.contains(".m3u8", true) || url.contains("application/x-mpegurl", true)
+    private fun isHlsLike(url: String): Boolean = url.contains(".m3u8", true) ||
+        url.contains("application/x-mpegurl", true) ||
+        url.contains("application/vnd.apple.mpegurl", true) ||
+        isRumbleTarHls(url)
+
+    private fun isRumbleTarHls(url: String): Boolean {
+        val value = url.lowercase()
+        return value.contains(".tar?") && (
+            value.contains("r_file=chunklist.m3u8") ||
+                value.contains("r_type=application%2fvnd.apple.mpegurl") ||
+                value.contains("r_type=application/vnd.apple.mpegurl")
+            )
+    }
 
     private fun isLikelyEmbed(url: String): Boolean {
         val value = url.lowercase()
@@ -712,10 +848,10 @@ class ReynimeProvider : MainAPI() {
 
     private fun qualityFromUrl(url: String): Int = when {
         url.contains("2160", true) || url.contains("4k", true) -> Qualities.P2160.value
-        url.contains("1080", true) -> Qualities.P1080.value
-        url.contains("720", true) -> Qualities.P720.value
-        url.contains("480", true) -> Qualities.P480.value
-        url.contains("360", true) -> Qualities.P360.value
+        url.contains("1080", true) || url.contains(".haa.", true) -> Qualities.P1080.value
+        url.contains("720", true) || url.contains(".gaa.", true) || url.contains(".aaa.", true) -> Qualities.P720.value
+        url.contains("480", true) || url.contains(".caa.", true) -> Qualities.P480.value
+        url.contains("360", true) || url.contains(".baa.", true) -> Qualities.P360.value
         else -> getQualityFromName(url)
     }
 
