@@ -1,11 +1,12 @@
-version = 1
+version = 2
+
 cloudstream {
     language = "id"
-    
-    authors = listOf("BetbetMiro") 
-    
+
+    authors = listOf("BetbetMiro")
+
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
-    
-    iconUrl = "https://www.google.com/s2/favicons?domain=http://178.62.98.100&sz=%size%"
+
+    iconUrl = "https://www.google.com/s2/favicons?domain=https://windowsxpuser.com&sz=%size%"
 }

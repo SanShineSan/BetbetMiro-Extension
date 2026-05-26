@@ -1,6 +1,12 @@
 package com.indo
+
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
+
 @CloudstreamPlugin
-class RebahinPlugin : Plugin() { override fun load(context: Context) { registerMainAPI(Rebahin()) } }
+class RebahinPlugin : Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(Rebahin())
+    }
+}
