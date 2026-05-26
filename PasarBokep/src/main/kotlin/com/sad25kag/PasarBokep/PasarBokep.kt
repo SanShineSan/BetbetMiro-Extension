@@ -1,5 +1,7 @@
 package com.sad25kag.PasarBokep
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -20,17 +22,21 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Base64
 
 @CloudstreamPlugin
 class PasarBokepPlugin : BasePlugin() {
@@ -51,32 +57,24 @@ class PasarBokep : MainAPI() {
         TvType.NSFW
     )
 
+    // Source menu is mixed, so the home page is intentionally reduced to country/region rows only.
     override val mainPage = mainPageOf(
-        "" to "Latest Videos",
-        "page/2/" to "Video Lainnya",
-
         "category/bokep-indo/" to "Indonesia",
         "category/bokep-korea/" to "Korea",
-        "category/bokep-barat/" to "Barat",
         "category/bokep-jepang/" to "Jepang",
         "category/jepang-uncensored/" to "Jepang Uncensored",
-        "category/bokep-jilbab/" to "Jilbab",
-
-        "category/cerita-dewasa/" to "Cerita Dewasa",
-        "category/cerita-sex-tante/" to "Cerita Tante",
-
-        "category/komik-hentai/" to "Komik Hentai",
-        "category/komik-hentai-berwarna/" to "Hentai Berwarna",
-        "category/komik-hentai-naruto/" to "Hentai Naruto",
-        "category/komik-hentai-tante/" to "Hentai Tante",
-        "category/komik-hentai-mama/" to "Hentai Mama",
-        "category/komik-hentai-guru/" to "Hentai Guru"
+        "category/bokep-barat/" to "Barat / Western"
     )
 
     private val headers = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+    )
+
+    private val jsonHeaders = headers + mapOf(
+        "Accept" to "application/json,text/plain,*/*",
+        "X-Requested-With" to "XMLHttpRequest"
     )
 
     override suspend fun getMainPage(
@@ -180,7 +178,10 @@ class PasarBokep : MainAPI() {
             ) ?: return null
         }
 
-        val href = fixUrlNull(anchor.attr("href")) ?: return null
+        val href = normalizeUrl(
+            anchor.attr("abs:href").ifBlank { anchor.attr("href") },
+            mainUrl
+        )
 
         if (!href.startsWith(mainUrl)) return null
         if (isBlockedUrl(href)) return null
@@ -211,7 +212,9 @@ class PasarBokep : MainAPI() {
         if (title.length < 2) return null
         if (isUnsafeTitle(title)) return null
 
-        val poster = fixUrlNull(image?.getImageAttr())
+        val poster = image?.getImageAttr()
+            ?.let { normalizeUrl(it, href) }
+            ?.let { fixUrlNull(it) }
             ?.takeIf { !isBadImage(it) }
 
         return newMovieSearchResponse(
@@ -262,7 +265,7 @@ class PasarBokep : MainAPI() {
             return newSearchResponseList(emptyList(), hasNext = false)
         }
 
-        val encoded = URLEncoder.encode(keyword, "UTF-8")
+        val encoded = encode(keyword)
         val attempts = listOf(
             if (page <= 1) "$mainUrl/?s=$encoded" else "$mainUrl/page/$page/?s=$encoded",
             if (page <= 1) "$mainUrl/search/$encoded/" else "$mainUrl/search/$encoded/page/$page/",
@@ -291,6 +294,12 @@ class PasarBokep : MainAPI() {
             }
         }
 
+        if (bestResults.isEmpty()) {
+            val apiResults = searchViaWpApi(keyword, page)
+            bestResults = apiResults
+            hasNext = apiResults.size >= 20
+        }
+
         return newSearchResponseList(
             bestResults,
             hasNext = hasNext
@@ -305,24 +314,79 @@ class PasarBokep : MainAPI() {
         return search(query)
     }
 
+    private suspend fun searchViaWpApi(query: String, page: Int): List<SearchResponse> {
+        val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=${encode(query)}&page=$page&per_page=20&_embed=1"
+        val response = runCatching {
+            app.get(
+                apiUrl,
+                headers = jsonHeaders,
+                referer = mainUrl,
+                timeout = 30L
+            ).text.cleanEscaped()
+        }.getOrNull() ?: return emptyList()
+
+        return tryParseJson<List<WpPost>>(response)
+            ?.mapNotNull { it.toSearchResult() }
+            ?.distinctBy { it.url }
+            .orEmpty()
+    }
+
+    private fun WpPost.toSearchResult(): SearchResponse? {
+        val link = link?.takeIf { it.startsWith("http", true) } ?: return null
+        if (!link.startsWith(mainUrl) || isBlockedUrl(link)) return null
+
+        val title = title?.rendered
+            ?.htmlToText()
+            ?.cleanTitle()
+            ?.takeIf { it.isNotBlank() && !isUnsafeTitle(it) }
+            ?: return null
+
+        val poster = firstImage()
+            ?.let { normalizeUrl(it, link) }
+            ?.takeIf { !isBadImage(it) }
+
+        return newMovieSearchResponse(
+            title,
+            link,
+            TvType.NSFW
+        ) {
+            posterUrl = poster
+        }
+    }
+
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(
+        val response = app.get(
             url,
             headers = headers,
             timeout = 30L
-        ).document
+        )
 
-        val title = document.selectFirst("h1, h1.entry-title")
-            ?.text()
+        val document = response.document
+        val wpPost = fetchWpPost(url)
+
+        val title = wpPost?.title?.rendered
+            ?.htmlToText()
             ?.cleanTitle()
             ?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("h1, h1.entry-title")
+                ?.text()
+                ?.cleanTitle()
+                ?.takeIf { it.isNotBlank() }
             ?: url.substringAfterLast("/")
                 .replace("-", " ")
                 .cleanTitle()
 
-        val poster = getPoster(document)
+        val poster = wpPost?.firstImage()
+            ?.let { normalizeUrl(it, url) }
+            ?.takeIf { !isBadImage(it) }
+            ?: getPoster(document)
 
-        val plot = document.selectFirst(
+        val apiPlot = wpPost?.content?.rendered
+            ?.htmlToText()
+            ?.cleanDescription()
+            ?.takeIf { it.length > 30 }
+
+        val plot = apiPlot ?: document.selectFirst(
             ".entry-content p, " +
                 ".post-content p, " +
                 ".content p, " +
@@ -381,58 +445,81 @@ class PasarBokep : MainAPI() {
         )
 
         val document = response.document
-        val html = response.text.cleanEscaped()
+        val baseHtml = response.text.cleanEscaped()
+        val apiHtml = fetchWpPost(data)?.allRenderedHtml().orEmpty()
+        val unpackedHtml = runCatching { getAndUnpack(baseHtml) }.getOrDefault(baseHtml)
+        val combinedHtml = listOf(baseHtml, apiHtml, unpackedHtml)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+            .cleanEscaped()
 
         val directLinks = linkedSetOf<String>()
         val embedLinks = linkedSetOf<String>()
 
         document.select(
             "video[src], " +
+                "video[poster], " +
                 "video source[src], " +
                 "source[src], " +
                 "iframe[src], " +
                 "iframe[data-src], " +
                 "iframe[data-litespeed-src], " +
+                "iframe[srcdoc], " +
                 "embed[src], " +
-                "a[href]"
+                "object[data], " +
+                "button[data-src], " +
+                "button[data-url], " +
+                "button[data-video], " +
+                "div[data-src], " +
+                "div[data-url], " +
+                "div[data-video], " +
+                "a[href], " +
+                "a[data-src], " +
+                "a[data-url], " +
+                "a[data-video]"
         ).forEach { element ->
-            val href = element.attr("href")
-            val raw = element.attr("data-litespeed-src")
-                .ifBlank { element.attr("data-src") }
-                .ifBlank { element.attr("src") }
-                .ifBlank { href }
-                .trim()
+            val candidates = listOf(
+                element.attr("data-litespeed-src"),
+                element.attr("data-src"),
+                element.attr("data-url"),
+                element.attr("data-video"),
+                element.attr("data-file"),
+                element.attr("data"),
+                element.attr("src"),
+                element.attr("href"),
+                element.attr("onclick"),
+                element.attr("srcdoc")
+            ).filter { it.isNotBlank() }
 
             val label = element.text().lowercase()
 
-            if (
-                raw.startsWith("#") ||
-                raw.startsWith("javascript", true) ||
-                raw.contains("facebook.com", true) ||
-                raw.contains("twitter.com", true) ||
-                raw.contains("telegram", true) ||
-                raw.contains("whatsapp", true) ||
-                raw.contains("mailto:", true) ||
-                label.contains("lapor") ||
-                label.contains("contact") ||
-                label.contains("dmca")
-            ) {
-                return@forEach
-            }
+            candidates.forEach { raw ->
+                if (isBlockedCandidate(raw, label)) return@forEach
 
-            if (
-                element.tagName().equals("video", true) ||
-                element.tagName().equals("source", true) ||
-                element.tagName().equals("iframe", true) ||
-                isLikelyPlayable(raw) ||
-                isLikelyPlayableText(label)
-            ) {
-                addCandidate(raw, data, directLinks, embedLinks)
+                if (
+                    element.tagName().equals("video", true) ||
+                    element.tagName().equals("source", true) ||
+                    element.tagName().equals("iframe", true) ||
+                    element.tagName().equals("embed", true) ||
+                    isLikelyPlayable(raw) ||
+                    isLikelyPlayableText(label)
+                ) {
+                    addCandidate(raw, data, directLinks, embedLinks)
+                    extractPlayableUrls(raw).forEach { nestedRaw ->
+                        addCandidate(nestedRaw, data, directLinks, embedLinks)
+                    }
+                }
             }
         }
 
-        extractPlayableUrls(html).forEach { raw ->
+        extractPlayableUrls(combinedHtml).forEach { raw ->
             addCandidate(raw, data, directLinks, embedLinks)
+        }
+
+        extractBase64Payloads(combinedHtml).forEach { decoded ->
+            extractPlayableUrls(decoded).forEach { raw ->
+                addCandidate(raw, data, directLinks, embedLinks)
+            }
         }
 
         var found = false
@@ -447,26 +534,29 @@ class PasarBokep : MainAPI() {
         }
 
         embedLinks.distinct().forEach { embed ->
-            val success = loadExtractor(
-                embed,
-                data,
-                subtitleCallback,
-                callback
-            )
+            if (embed == data || embed.startsWith(mainUrl) && isBlockedUrl(embed)) return@forEach
+
+            val success = runCatching {
+                loadExtractor(
+                    embed,
+                    data,
+                    subtitleCallback,
+                    callback
+                )
+            }.getOrDefault(false)
 
             if (success) {
                 found = true
             } else {
                 resolveNestedLinks(embed, data).forEach { nested ->
                     val fixed = normalizeUrl(nested, embed)
+                        .cleanEscaped()
                         .replace(".txt", ".m3u8")
 
                     when {
-                        isAdUrl(fixed) -> Unit
+                        fixed.isBlank() || isAdUrl(fixed) -> Unit
 
-                        isHlsLike(fixed) ||
-                            fixed.contains(".mp4", true) ||
-                            fixed.contains(".webm", true) -> {
+                        isDirectVideoUrl(fixed) -> {
                             emitDirectLink(
                                 link = fixed,
                                 referer = embed,
@@ -475,13 +565,15 @@ class PasarBokep : MainAPI() {
                             found = true
                         }
 
-                        fixed.startsWith("http", true) -> {
-                            val nestedSuccess = loadExtractor(
-                                fixed,
-                                embed,
-                                subtitleCallback,
-                                callback
-                            )
+                        fixed.startsWith("http", true) && fixed != embed -> {
+                            val nestedSuccess = runCatching {
+                                loadExtractor(
+                                    fixed,
+                                    embed,
+                                    subtitleCallback,
+                                    callback
+                                )
+                            }.getOrDefault(false)
 
                             if (nestedSuccess) found = true
                         }
@@ -498,17 +590,20 @@ class PasarBokep : MainAPI() {
         referer: String
     ): List<String> {
         val text = runCatching {
-            app.get(
+            val response = app.get(
                 url,
                 headers = headers,
                 referer = referer,
                 timeout = 30L
             ).text.cleanEscaped()
+
+            val unpacked = runCatching { getAndUnpack(response) }.getOrDefault(response)
+            "$response\n$unpacked"
         }.getOrNull().orEmpty()
 
         if (text.isBlank()) return emptyList()
 
-        return extractPlayableUrls(text)
+        return extractPlayableUrls(text) + extractBase64Payloads(text).flatMap { extractPlayableUrls(it) }
     }
 
     private fun addCandidate(
@@ -519,17 +614,18 @@ class PasarBokep : MainAPI() {
     ) {
         if (raw.isBlank()) return
 
-        val fixed = normalizeUrl(raw.cleanEscaped(), baseUrl)
+        val expanded = raw.cleanEscaped().decodeIfNeeded()
+        val fixed = normalizeUrl(expanded, baseUrl)
+            .cleanEscaped()
             .replace(".txt", ".m3u8")
 
         if (fixed.isBlank() || isAdUrl(fixed)) return
+        if (!fixed.startsWith("http", true)) return
 
         when {
-            isHlsLike(fixed) ||
-                fixed.contains(".mp4", true) ||
-                fixed.contains(".webm", true) -> directLinks.add(fixed)
-
-            fixed.startsWith("http", true) -> embedLinks.add(fixed)
+            isDirectVideoUrl(fixed) -> directLinks.add(fixed)
+            fixed.startsWith(mainUrl) && isBlockedUrl(fixed) -> Unit
+            isKnownHost(fixed) || looksLikeEmbed(fixed) -> embedLinks.add(fixed)
         }
     }
 
@@ -543,7 +639,7 @@ class PasarBokep : MainAPI() {
         callback(
             newExtractorLink(
                 source = name,
-                name = name,
+                name = qualityName(link),
                 url = link,
                 type = if (isHlsLike(link)) {
                     ExtractorLinkType.M3U8
@@ -563,61 +659,124 @@ class PasarBokep : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
-        Regex(
-            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
-            RegexOption.IGNORE_CASE
-        ).findAll(clean)
-            .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
-            .filterNot { isAdUrl(it) }
-            .forEach { urls.add(it) }
+        listOf(
+            Regex(
+                """https?://[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.txt)(?:\?[^"'\\\s<>]*)?""",
+                RegexOption.IGNORE_CASE
+            ),
+            Regex(
+                """https?://[^"'\\\s<>]+?googlevideo\.com/videoplayback[^"'\\\s<>]*""",
+                RegexOption.IGNORE_CASE
+            ),
+            Regex(
+                """https?://[^"'\\\s<>]+?(?:/manifest/hls_playlist|/api/manifest/)[^"'\\\s<>]*""",
+                RegexOption.IGNORE_CASE
+            ),
+            Regex(
+                """https?://[^"'\\\s<>]+?(?:embed|player|stream|filemoon|filelions|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|luluvdo|lulu|hglink|hgcloud|majorplay|jeniusplay|pornhub|xvideos|xhamster|redtube|spankbang|uqload|sendvid|vidmoly)[^"'\\\s<>]*""",
+                RegexOption.IGNORE_CASE
+            )
+        ).forEach { regex ->
+            regex.findAll(clean)
+                .map { it.value.cleanEscaped().decodeIfNeeded().replace(".txt", ".m3u8") }
+                .filterNot { isAdUrl(it) }
+                .forEach { urls.add(it) }
+        }
 
         Regex(
-            """https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.txt)[^"'\\\s<>]*""",
+            """https?%3A%2F%2F[^"'\\\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.txt|googlevideo\.com%2Fvideoplayback)[^"'\\\s<>]*""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
-            .map {
-                runCatching {
-                    URLDecoder.decode(it.value, "UTF-8")
-                }.getOrDefault(it.value)
-            }
+            .map { it.value.decodeIfNeeded() }
             .map { it.cleanEscaped().replace(".txt", ".m3u8") }
             .filterNot { isAdUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
-            """(?:file|src|source|url|videoSource|videoUrl|embedUrl|embed_url|contentUrl)\s*[:=]\s*["']([^"']+)["']""",
+            """(?:file|src|source|url|video|videoSource|videoUrl|video_url|download|downloadUrl|download_url|embed|embedUrl|embed_url|iframe|hls|m3u8|contentUrl)\s*[=:]\s*["']([^"']+)["']""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
-            .map { it.cleanEscaped().replace(".txt", ".m3u8") }
+            .map { it.cleanEscaped().decodeIfNeeded().replace(".txt", ".m3u8") }
             .filter {
-                it.contains(".m3u8", true) ||
-                    it.contains(".mp4", true) ||
-                    it.contains(".webm", true) ||
-                    isKnownHost(it)
+                isDirectVideoUrl(it) ||
+                    isKnownHost(it) ||
+                    looksLikeEmbed(it)
             }
             .filterNot { isAdUrl(it) }
             .forEach { urls.add(it) }
 
         Regex(
-            """https?://[^"'\\\s<>]+?(?:embed|player|stream|filemoon|streamwish|wishfast|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload|lulustream|lulu|hglink|hgcloud|majorplay|jeniusplay|pornhub|xvideos|xhamster|redtube|spankbang)[^"'\\\s<>]*""",
+            """(?:atob|decodeURIComponent)\(["']([^"']+)["']\)""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
-            .map { it.value.cleanEscaped() }
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .map { it.decodeIfNeeded() }
+            .filter {
+                isDirectVideoUrl(it) ||
+                    isKnownHost(it) ||
+                    looksLikeEmbed(it)
+            }
             .filterNot { isAdUrl(it) }
             .forEach { urls.add(it) }
 
         return urls.toList()
     }
 
+    private fun extractBase64Payloads(text: String): List<String> {
+        val values = linkedSetOf<String>()
+
+        Regex(
+            """(?:atob|Base64\.decode|base64_decode)\(["']([A-Za-z0-9+/=_-]{16,})["']\)""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .forEach { encoded ->
+                decodeBase64(encoded)?.let { values.add(it.cleanEscaped()) }
+            }
+
+        Regex(
+            """["']([A-Za-z0-9+/=_-]{40,})["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .forEach { encoded ->
+                val decoded = decodeBase64(encoded) ?: return@forEach
+                if (decoded.contains("http", true) || decoded.contains("m3u8", true)) {
+                    values.add(decoded.cleanEscaped())
+                }
+            }
+
+        return values.toList()
+    }
+
+    private fun decodeBase64(value: String): String? {
+        return runCatching {
+            val fixed = value.replace('-', '+').replace('_', '/')
+            String(Base64.getDecoder().decode(fixed), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    private fun isBlockedCandidate(raw: String, label: String): Boolean {
+        return raw.startsWith("#") ||
+            raw.startsWith("javascript", true) ||
+            raw.contains("facebook.com", true) ||
+            raw.contains("twitter.com", true) ||
+            raw.contains("telegram", true) ||
+            raw.contains("whatsapp", true) ||
+            raw.contains("mailto:", true) ||
+            label.contains("lapor") ||
+            label.contains("contact") ||
+            label.contains("dmca")
+    }
+
     private fun isKnownHost(url: String): Boolean {
+        val host = hostOf(url)
         val value = url.lowercase()
 
         return listOf(
-            "embed",
-            "player",
-            "stream",
             "filemoon",
+            "filelions",
             "streamwish",
             "wishfast",
             "dood",
@@ -628,23 +787,44 @@ class PasarBokep : MainAPI() {
             "mixdrop",
             "mp4upload",
             "lulustream",
+            "luluvdo",
             "hglink",
             "hgcloud",
             "majorplay",
             "jeniusplay",
+            "uqload",
+            "sendvid",
+            "vidmoly",
             "pornhub",
             "xvideos",
             "xhamster",
             "redtube",
             "spankbang"
-        ).any { value.contains(it) }
+        ).any { host.contains(it) } || value.contains("/embed/") || value.contains("/player/")
+    }
+
+    private fun looksLikeEmbed(url: String): Boolean {
+        val value = url.lowercase()
+        val host = hostOf(url)
+
+        if (!url.startsWith("http", true)) return false
+        if (host.contains("googlevideo.com")) return false
+        if (isDirectVideoUrl(url)) return false
+
+        return value.contains("/embed") ||
+            value.contains("/player") ||
+            value.contains("/stream") ||
+            value.contains("?id=") ||
+            value.contains("?v=") ||
+            value.contains("/e/")
     }
 
     private fun isLikelyPlayable(url: String): Boolean {
-        return url.contains(".m3u8", true) ||
-            url.contains(".mp4", true) ||
-            url.contains(".webm", true) ||
-            isKnownHost(url)
+        return isDirectVideoUrl(url) ||
+            isKnownHost(url) ||
+            looksLikeEmbed(url) ||
+            url.contains("googlevideo.com", true) ||
+            url.contains("videoplayback", true)
     }
 
     private fun isLikelyPlayableText(text: String): Boolean {
@@ -654,15 +834,28 @@ class PasarBokep : MainAPI() {
             text.contains("server") ||
             text.contains("play") ||
             text.contains("mp4") ||
+            text.contains("m3u8") ||
             text.contains("720p") ||
             text.contains("1080p")
+    }
+
+    private fun isDirectVideoUrl(url: String): Boolean {
+        val value = url.lowercase()
+        val host = hostOf(url)
+
+        return isHlsLike(url) ||
+            value.contains(".mp4") ||
+            value.contains(".webm") ||
+            value.contains(".mkv") ||
+            (host.contains("googlevideo.com") && (value.contains("videoplayback") || value.contains("mime=video"))) ||
+            value.contains("/videoplayback?")
     }
 
     private fun normalizeUrl(
         url: String,
         baseUrl: String
     ): String {
-        val clean = url.cleanEscaped()
+        val clean = url.cleanEscaped().decodeIfNeeded()
 
         return when {
             clean.startsWith("http", true) -> clean
@@ -681,24 +874,56 @@ class PasarBokep : MainAPI() {
         }
     }
 
-    private fun getPoster(document: Document): String? {
-        return fixUrlNull(
-            document.selectFirst(
-                "meta[property=og:image], " +
-                    "meta[name=twitter:image], " +
-                    "video[poster], " +
-                    ".poster img, " +
-                    ".thumb img, " +
-                    "article img, " +
-                    "img"
-            )?.let { element ->
-                when {
-                    element.hasAttr("content") -> element.attr("content")
-                    element.hasAttr("poster") -> element.attr("poster")
-                    else -> element.getImageAttr()
-                }
+    private suspend fun fetchWpPost(url: String): WpPost? {
+        val slug = url.trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
+        val apiUrl = "$mainUrl/wp-json/wp/v2/posts?slug=${encode(slug)}&_embed=1"
+
+        val text = runCatching {
+            app.get(
+                apiUrl,
+                headers = jsonHeaders,
+                referer = mainUrl,
+                timeout = 30L
+            ).text.cleanEscaped()
+        }.getOrNull() ?: return null
+
+        return tryParseJson<List<WpPost>>(text)?.firstOrNull()
+    }
+
+    private fun WpPost.firstImage(): String? {
+        return jetpackFeaturedMediaUrl?.takeIf { it.isNotBlank() }
+            ?: embedded?.featuredMedia?.firstOrNull()?.sourceUrl?.takeIf { it.isNotBlank() }
+            ?: content?.rendered?.let { html ->
+                Jsoup.parse(html).selectFirst("img[src], img[data-src], img[data-lazy-src]")?.getImageAttr()
             }
-        )?.takeIf { !isBadImage(it) }
+    }
+
+    private fun WpPost.allRenderedHtml(): String {
+        return listOfNotNull(
+            title?.rendered,
+            content?.rendered,
+            excerpt?.rendered
+        ).joinToString("\n").cleanEscaped()
+    }
+
+    private fun getPoster(document: Document): String? {
+        return document.selectFirst(
+            "meta[property=og:image], " +
+                "meta[name=twitter:image], " +
+                "video[poster], " +
+                ".poster img, " +
+                ".thumb img, " +
+                "article img, " +
+                "img"
+        )?.let { element ->
+            when {
+                element.hasAttr("content") -> element.attr("content")
+                element.hasAttr("poster") -> element.attr("poster")
+                else -> element.getImageAttr()
+            }
+        }?.let { normalizeUrl(it, mainUrl) }
+            ?.let { fixUrlNull(it) }
+            ?.takeIf { !isBadImage(it) }
     }
 
     private fun Element.getImageAttr(): String? {
@@ -755,20 +980,30 @@ class PasarBokep : MainAPI() {
         val value = text.lowercase()
 
         return value.contains("pemerkosaan") ||
+            value.contains("diperkosa") ||
             value.contains("rape") ||
+            value.contains("forced") ||
             value.contains("sedarah") ||
             value.contains("incest") ||
             value.contains("anak kecil") ||
             value.contains("dibawah umur") ||
-            value.contains("underage")
+            value.contains("di bawah umur") ||
+            value.contains("underage") ||
+            value.contains("minor") ||
+            value.contains("anak smp") ||
+            value.contains("smp ") ||
+            value.contains(" smp")
     }
 
     private fun isHlsLike(url: String): Boolean {
-        return url.contains(".m3u8", true) ||
+        val value = url.lowercase()
+
+        return value.contains(".m3u8") ||
+            value.contains("/manifest/hls_playlist") ||
             (
-                url.contains("majorplay", true) &&
-                    url.contains("config", true) &&
-                    url.contains(".json", true)
+                value.contains("majorplay") &&
+                    value.contains("config") &&
+                    value.contains(".json")
                 )
     }
 
@@ -779,9 +1014,11 @@ class PasarBokep : MainAPI() {
             value.contains("preroll") ||
             value.contains("doubleclick") ||
             value.contains("googlesyndication") ||
-            value.contains("ads") ||
+            value.contains("adserver") ||
+            value.contains("/ads/") ||
             value.contains("banner") ||
-            value.contains("report-content")
+            value.contains("report-content") ||
+            value.contains("popads")
     }
 
     private fun qualityFromUrl(url: String): Int {
@@ -796,16 +1033,63 @@ class PasarBokep : MainAPI() {
         }
     }
 
+    private fun qualityName(url: String): String {
+        val quality = when {
+            url.contains("2160", true) || url.contains("4k", true) -> "4K"
+            url.contains("1080", true) -> "1080p"
+            url.contains("720", true) -> "720p"
+            url.contains("540", true) -> "540p"
+            url.contains("480", true) -> "480p"
+            url.contains("360", true) -> "360p"
+            isHlsLike(url) -> "HLS"
+            else -> "Direct"
+        }
+
+        return "$name - $quality"
+    }
+
+    private fun hostOf(url: String): String {
+        return runCatching {
+            URI(url).host.orEmpty().lowercase()
+        }.getOrDefault("")
+    }
+
+    private fun encode(value: String): String {
+        return URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+    }
+
+    private fun String.decodeIfNeeded(): String {
+        val value = this.trim()
+        if (!value.contains("%")) return value
+
+        return runCatching {
+            URLDecoder.decode(value, "UTF-8")
+        }.getOrDefault(value)
+    }
+
     private fun String.cleanEscaped(): String {
         return this
             .replace("\\/", "/")
             .replace("\\u0026", "&")
             .replace("&amp;", "&")
+            .replace("&#038;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#039;", "'")
+            .replace("\\\"", "\"")
+            .replace(Regex("""\\u([0-9a-fA-F]{4})""")) { match ->
+                match.groupValues[1].toInt(16).toChar().toString()
+            }
             .trim()
+    }
+
+    private fun String.htmlToText(): String {
+        return Jsoup.parse(this.cleanEscaped()).text().cleanEscaped()
     }
 
     private fun String.cleanTitle(): String {
         return this
+            .htmlToText()
             .replace(Regex("""\s+\|\s+Pasarbokep.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Pasarbokep.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Sub\s*Indo.*$""", RegexOption.IGNORE_CASE), "")
@@ -816,7 +1100,33 @@ class PasarBokep : MainAPI() {
 
     private fun String.cleanDescription(): String {
         return this
+            .htmlToText()
             .replace(Regex("""\s+"""), " ")
             .trim()
     }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private data class WpPost(
+        @JsonProperty("link") val link: String? = null,
+        @JsonProperty("title") val title: WpRendered? = null,
+        @JsonProperty("content") val content: WpRendered? = null,
+        @JsonProperty("excerpt") val excerpt: WpRendered? = null,
+        @JsonProperty("jetpack_featured_media_url") val jetpackFeaturedMediaUrl: String? = null,
+        @JsonProperty("_embedded") val embedded: WpEmbedded? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private data class WpRendered(
+        @JsonProperty("rendered") val rendered: String? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private data class WpEmbedded(
+        @JsonProperty("wp:featuredmedia") val featuredMedia: List<WpMedia>? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private data class WpMedia(
+        @JsonProperty("source_url") val sourceUrl: String? = null
+    )
 }
