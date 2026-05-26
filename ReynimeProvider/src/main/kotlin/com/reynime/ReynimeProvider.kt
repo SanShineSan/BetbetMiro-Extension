@@ -575,7 +575,7 @@ class ReynimeProvider : MainAPI() {
     }
 
 
-    private fun fallbackLoad(url: String): LoadResponse {
+    private suspend fun fallbackLoad(url: String): LoadResponse {
         val seed = findSeedFromUrl(url)
         val title = seed?.title ?: url.substringAfterLast("/").replace("-", " ").cleanTitle().ifBlank { name }
         val poster = placeholderPoster(title)
