@@ -59,7 +59,7 @@ object JavFCParser {
         }
     }
 
-    fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
+    suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
         val title = cleanText(
             document.selectFirst("h1.title, .title, h1, .video-title")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
