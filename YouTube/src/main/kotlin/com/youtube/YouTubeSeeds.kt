@@ -7,24 +7,25 @@ object YouTubeSeeds {
         YouTubeCategory(
             name = "Cerita Kamai",
             data = "$MAIN_URL/@ceritakamai",
-            mode = YouTubeCategoryMode.Channel
+            mode = YouTubeCategoryMode.Channel,
+            fallbackQuery = "Cerita Kamai video terbaru"
         ),
         YouTubeCategory(
             name = "Gameplay Proplayer",
             data = "$MAIN_URL/@gameplayproplayer",
             mode = YouTubeCategoryMode.Channel,
-            channelId = "UCVZAfLep-Ju-zAJsAGSVUNA"
+            fallbackQuery = "Gameplay Proplayer video terbaru"
         ),
         YouTubeCategory(
             name = "Calon Sarjana",
             data = "$MAIN_URL/@calonsarjanaid",
             mode = YouTubeCategoryMode.Channel,
-            channelId = "UCkCa2NoZlJlfJlMKgZhtKOQ"
+            fallbackQuery = "Calon Sarjana video terbaru"
         ),
         YouTubeCategory(
             name = "Trending Indonesia",
-            data = "$MAIN_URL/feed/trending?gl=ID&hl=id",
-            mode = YouTubeCategoryMode.Trending
+            data = "trending indonesia terbaru",
+            mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
             name = "Gaming Indonesia",
@@ -33,7 +34,7 @@ object YouTubeSeeds {
         ),
         YouTubeCategory(
             name = "Fakta & Edukasi",
-            data = "fakta unik edukasi indonesia",
+            data = "fakta unik edukasi indonesia terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
@@ -48,12 +49,12 @@ object YouTubeSeeds {
         ),
         YouTubeCategory(
             name = "Musik Indonesia",
-            data = "musik indonesia official video terbaru",
+            data = "musik indonesia official terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
             name = "Anime Indonesia",
-            data = "anime indonesia review subtitle indonesia",
+            data = "anime indonesia review rekomendasi terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
@@ -65,6 +66,22 @@ object YouTubeSeeds {
             name = "Berita Indonesia",
             data = "berita indonesia terbaru",
             mode = YouTubeCategoryMode.Search
+        ),
+        YouTubeCategory(
+            name = "Alur Cerita Manhwa",
+            data = "alur cerita manhwa manhua lengkap indonesia",
+            mode = YouTubeCategoryMode.Search
+        ),
+        YouTubeCategory(
+            name = "Live Streaming",
+            data = "live streaming indonesia",
+            mode = YouTubeCategoryMode.Search
         )
     )
+
+    fun findCategory(name: String?, data: String?): YouTubeCategory? {
+        return mainPage.firstOrNull { category ->
+            category.name == name || category.data == data
+        }
+    }
 }

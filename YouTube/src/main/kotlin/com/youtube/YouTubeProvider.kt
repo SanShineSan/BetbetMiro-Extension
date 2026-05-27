@@ -1,111 +1,117 @@
 package com.youtube
 
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.youtube.YouTubeUtils.channelVideosUrl
-import com.youtube.YouTubeUtils.encode
-import com.youtube.YouTubeUtils.headers
-import com.youtube.YouTubeUtils.rssUrl
-import com.youtube.YouTubeUtils.searchUrl
-import org.jsoup.Jsoup
-import org.jsoup.parser.Parser
+import com.youtube.YouTubeUtils.bestPoster
+import com.youtube.YouTubeUtils.durationMinutes
+import com.youtube.YouTubeUtils.formatCompact
+import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.stream.StreamInfo
 
 class YouTubeProvider : MainAPI() {
     override var mainUrl = YouTubeSeeds.MAIN_URL
     override var name = "YouTube"
     override val hasMainPage = true
     override var lang = "id"
-    override val hasDownloadSupport = false
-    override val supportedTypes = setOf(TvType.Movie)
+    override val supportedTypes = setOf(TvType.Others)
 
-    override val mainPage = mainPageOf(
-        *YouTubeSeeds.mainPage.map { it.data to it.name }.toTypedArray()
-    )
+    private val service = ServiceList.YouTube
+    private val videoFilter = listOf("videos")
 
-    private suspend fun safeGet(url: String, referer: String = mainUrl): com.lagradost.nicehttp.NiceResponse? {
-        return runCatching {
-            app.get(
-                url,
-                referer = referer,
-                headers = headers,
-                timeout = 30L
-            )
-        }.getOrNull()
+    override val mainPage = YouTubeSeeds.mainPage.map { category ->
+        MainPageData(category.name, category.data)
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val category = YouTubeSeeds.mainPage.firstOrNull { it.name == request.name || it.data == request.data }
-        val results = when (category?.mode) {
-            YouTubeCategoryMode.Channel -> getChannelResults(category)
-            YouTubeCategoryMode.Search -> getSearchResults(category.data)
-            YouTubeCategoryMode.Trending -> getHtmlResults(category.data)
-            null -> getHtmlResults(request.data)
-        }
-        return newHomePageResponse(listOf(HomePageList(request.name, results, category?.paged ?: false)))
-    }
+        if (page > 1) return newHomePageResponse(emptyList(), false)
 
-    private suspend fun getChannelResults(category: YouTubeCategory): List<SearchResponse> {
-        if (category.channelId != null) {
-            val rssDocument = safeGet(rssUrl(category.channelId))?.text?.let { xml ->
-                Jsoup.parse(xml, "", Parser.xmlParser())
+        val category = YouTubeSeeds.findCategory(request.name, request.data)
+            ?: YouTubeCategory(request.name, request.data, YouTubeCategoryMode.Search, request.name)
+
+        val items = when (category.mode) {
+            YouTubeCategoryMode.Channel -> getChannelVideos(category.data).ifEmpty {
+                getSearchVideos(category.fallbackQuery)
             }
-            val rssResults = rssDocument?.let { YouTubeParser.parseRss(this, it) }.orEmpty()
-            if (rssResults.isNotEmpty()) return rssResults
+            YouTubeCategoryMode.Search -> getSearchVideos(category.data)
         }
 
-        val videosUrl = channelVideosUrl(category.data)
-        val htmlResults = getHtmlResults(videosUrl)
-        if (htmlResults.isNotEmpty()) return htmlResults
-
-        val channelDocument = safeGet(category.data)?.document
-        val discoveredId = channelDocument
-            ?.selectFirst("meta[itemprop=channelId], meta[property=og:url]")
-            ?.attr("content")
-            ?.let { Regex("""UC[A-Za-z0-9_-]{20,}""").find(it)?.value }
-        if (discoveredId != null) {
-            val rssDocument = safeGet(rssUrl(discoveredId))?.text?.let { xml -> Jsoup.parse(xml, "", Parser.xmlParser()) }
-            return rssDocument?.let { YouTubeParser.parseRss(this, it) }.orEmpty()
-        }
-        return emptyList()
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, items)),
+            hasNext = false
+        )
     }
 
-    private suspend fun getSearchResults(query: String): List<SearchResponse> {
-        return getHtmlResults(searchUrl(query))
+    private suspend fun getSearchVideos(query: String): List<SearchResponse> {
+        return runCatching {
+            val searchInfo = SearchInfo.getInfo(
+                service,
+                service.searchQHFactory.fromQuery(query, videoFilter, "")
+            )
+            YouTubeParser.parseInfoItems(searchInfo.relatedItems)
+        }.getOrElse { emptyList() }
     }
 
-    private suspend fun getHtmlResults(url: String): List<SearchResponse> {
-        val response = safeGet(url) ?: return emptyList()
-        return YouTubeParser.parseHtml(this, response.text, url)
+    private suspend fun getChannelVideos(url: String): List<SearchResponse> {
+        return runCatching {
+            val channelInfo = ChannelInfo.getInfo(url)
+            val tabs = channelInfo.tabs.mapNotNull { tab ->
+                runCatching { ChannelTabInfo.getInfo(service, tab) }.getOrNull()
+            }
+
+            val videoTab = tabs.firstOrNull { it.name.equals("videos", true) }
+                ?: tabs.firstOrNull { it.relatedItems.isNotEmpty() }
+
+            YouTubeParser.parseInfoItems(videoTab?.relatedItems.orEmpty())
+        }.getOrElse { emptyList() }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        return getSearchResults(query).ifEmpty {
-            getHtmlResults("$mainUrl/results?search_query=${encode(query)}")
-        }
+        return getSearchVideos(query)
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val response = safeGet(url) ?: return null
-        val meta = YouTubeParser.parseMeta(response.document, response.text, url) ?: return null
-        val recommendations = YouTubeParser.parseRecommendations(this, response.text)
-        return newMovieLoadResponse(meta.title, meta.url, TvType.Movie, meta.url) {
-            posterUrl = meta.poster
-            backgroundPosterUrl = meta.poster
-            plot = meta.description
-            tags = listOfNotNull(meta.channel, meta.published).plus(meta.tags).distinct()
-            this.recommendations = recommendations
+        val videoInfo = runCatching { StreamInfo.getInfo(service, url) }.getOrNull() ?: return null
+        val title = videoInfo.name.takeIf { it.isNotBlank() } ?: return null
+        val runtime = durationMinutes(videoInfo.duration)
+
+        return newMovieLoadResponse(title, url, TvType.Others, url) {
+            posterUrl = bestPoster(videoInfo)
+            backgroundPosterUrl = bestPoster(videoInfo)
+            plot = videoInfo.description?.content.orEmpty()
+            if (runtime > 0) duration = runtime
+            tags = listOfNotNull(
+                videoInfo.uploaderName.takeIf { it.isNotBlank() },
+                formatCompact(videoInfo.viewCount)?.let { "👀 $it" },
+                formatCompact(videoInfo.likeCount)?.let { "👍 $it" }
+            )
+            actors = listOf(
+                ActorData(
+                    Actor(
+                        videoInfo.uploaderName,
+                        bestAvatarFromStream(videoInfo)
+                    )
+                )
+            )
         }
+    }
+
+    private fun bestAvatarFromStream(videoInfo: StreamInfo): String? {
+        return videoInfo.uploaderAvatars.lastOrNull()?.url
     }
 
     override suspend fun loadLinks(
