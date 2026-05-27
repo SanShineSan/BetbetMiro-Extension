@@ -89,7 +89,10 @@ object FilmLokalUtils {
     }
 
     fun isValidPoster(url: String?): Boolean {
-        val low = url.orEmpty().lowercase()
+        val raw = url.orEmpty().trim()
+        val low = raw.lowercase()
+        val path = runCatching { URI(raw).path.orEmpty().lowercase() }.getOrDefault(low)
+        val fileName = path.substringAfterLast('/')
         return low.startsWith("http") &&
             !low.startsWith("data:") &&
             !low.contains("/logo") &&
@@ -98,7 +101,12 @@ object FilmLokalUtils {
             !low.contains("cropped-") &&
             !low.contains("placeholder") &&
             !low.contains("no-image") &&
-            !low.endsWith(".svg")
+            !low.endsWith(".svg") &&
+            !path.contains("/wp-content/themes/") &&
+            !path.contains("/wp-content/plugins/") &&
+            !fileName.contains("filmlokal") &&
+            !fileName.contains("logo") &&
+            !fileName.contains("favicon")
     }
 
     fun isSameHost(url: String): Boolean {

@@ -1,99 +1,286 @@
 package com.filmlokal
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.filmlokal.FilmLokalUtils.absoluteUrl
+import com.filmlokal.FilmLokalUtils.cleanText
+import com.filmlokal.FilmLokalUtils.durationMinutes
+import com.filmlokal.FilmLokalUtils.isValidPoster
+import com.filmlokal.FilmLokalUtils.isVideoUrl
+import com.filmlokal.FilmLokalUtils.typeFromUrlOrTitle
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 object FilmLokalParser {
+    private val cardSelectors = listOf(
+        "article",
+        ".ml-item",
+        ".movie",
+        ".movie-item",
+        ".result-item",
+        ".film",
+        ".post",
+        ".item:has(img)",
+        ".owl-item:has(img)",
+        "a[href]:has(img)"
+    ).joinToString(",")
 
-    private const val TAG = "FilmLokalParser"
+    private const val IMAGE_SELECTOR =
+        "img[src], img[data-src], img[data-lazy-src], img[data-original], img[data-wpfc-original-src], img[srcset]"
 
-    fun parseListing(html: String?): List<SearchResponse> {
-        val doc = org.jsoup.parse(html.orEmpty())
-        val container = doc.selectFirst("div.row, div#primary, div.site-content")
-            ?: return emptyList()
-
-        return container.select("article.post, div.post").mapNotNull { el ->
-            el.toSearchResponse()
-        }
-    }
-
-    private fun Element.toSearchResponse(): SearchResponse? {
-        val titleEl = selectFirst("h2.entry-title a, h2 a, h3 a, a:has(h2)")
-            ?: return null
-        val title = titleEl.text().orEmpty()
-        val href = titleEl.attr("href")
-
-        // Taktik Aggressive buat nyari poster di listing
-        val poster = selectFirst("img.attachment-post-thumbnail, img.attachment-medium, img.attachment-large, img")
-            ?.attr("data-src")
-            ?: selectFirst("img")?.attr("lazy-src")
-            ?: selectFirst("img")?.attr("src")
-            ?: return null
-
-        val isTv = selectFirst("span.series, .type-series") != null
-        val type = if (isTv) TvType.TvSeries else TvType.Movie
-
-        return if (isTv) {
-            newTvSearchResponse(title, href, type) {
-                this.posterUrl = poster
-            }
+    fun parseListing(api: MainAPI, document: Document): List<SearchResponse> {
+        val primary = document.select(cardSelectors)
+        val containers: List<Element> = if (primary.isNotEmpty()) {
+            primary.toList()
         } else {
-            newMovieSearchResponse(title, href, type) {
-                this.posterUrl = poster
+            document.select("a[href]:has(img)").toList()
+        }
+
+        return containers
+            .mapNotNull { parseCard(api, it) }
+            .distinctBy { it.url }
+            .take(48)
+    }
+
+    private fun parseCard(api: MainAPI, element: Element): SearchResponse? {
+        val link = when {
+            element.tagName().equals("a", ignoreCase = true) && element.hasAttr("href") -> element
+            else -> element.selectFirst("a[href]:has(img)")
+                ?: element.selectFirst("h2 a[href], h3 a[href], .title a[href], a[title][href]")
+                ?: return null
+        }
+
+        val href = absoluteUrl(api.mainUrl, link.attr("href")) ?: return null
+        if (!isVideoUrl(href)) return null
+
+        val image = link.selectFirst(IMAGE_SELECTOR)
+            ?: element.selectFirst(IMAGE_SELECTOR)
+            ?: element.parent()?.selectFirst(IMAGE_SELECTOR)
+            ?: return null
+
+        val title = cleanTitle(
+            link.attr("title").ifBlank { link.attr("aria-label") }.ifBlank { link.text() }.ifBlank {
+                image.attr("alt").ifBlank { image.attr("title") }
             }
+        ).ifBlank { return null }
+
+        val poster = extractPoster(api.mainUrl, image, link) ?: extractPoster(api.mainUrl, image, element)
+        if (!isValidPoster(poster)) return null
+
+        val type = typeFromUrlOrTitle(href, title)
+        return api.newMovieSearchResponse(title, href, type) {
+            posterUrl = poster
         }
     }
 
-    // --- BAGIAN DETAIL YANG DI-FIX TOTAL ---
-    fun parseDetail(doc: Document, url: String): LoadResponse {
-        val title = doc.selectFirst("h1.entry-title, h1")?.text()?.orEmpty()
-            ?: "Unknown"
-        val plot = doc.selectFirst("div.entry-content, div.synopsis, div.content")?.text()
-            ?.trim()
+    suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
+        val title = cleanTitle(
+            document.selectFirst("h1.entry-title, h1, .title, .heading")?.text()
+                ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+        ).ifBlank { return null }
 
-        // TAKTIK "AGGRESSIVE FALLBACK SEARCH" BUAT POSTER DETAIL
-        // Kita cari poster dengan selector yang paling spesifik dulu, baru mundur ke yang generik.
-        val posterUrl = doc.selectFirst("div.heroImg img")?.attr("src")
-            // Selector WordPress/Generic Fallback
-            ?: doc.selectFirst("img.attachment-post-thumbnail, img.attachment-single-post-thumbnail")?.attr("src")
-            ?: doc.selectFirst("img.size-full, img.size-large")?.attr("src")
-            // Selector WordPress/Schema.org Fallback
-            ?: doc.selectFirst("meta[property='og:image']")?.attr("content")
-            // Selector Brute-Force terakhir: ambil tag img yang pertama kali ketemu di konten utama
-            ?: doc.selectFirst("div.site-content img")?.attr("src")
-            ?: doc.selectFirst("div.content img")?.attr("src")
-            // Paling mentok: ambil img tag yang pertama kali di dokumen
-            ?: doc.selectFirst("img")?.attr("src")
+        val contentRoot = document.selectFirst("article, .entry-content, .single, .post, main") ?: document
+        val poster = extractDetailPoster(api.mainUrl, title, document)
+            ?: extractPoster(
+                api.mainUrl,
+                contentRoot.selectFirst(".poster img, .thumb img, .mvic-thumb img, .wp-post-image, img[src*='uploads'], img[alt], img[title]"),
+                contentRoot
+            )
+            ?: absoluteUrl(api.mainUrl, document.selectFirst("meta[property=og:image]")?.attr("content"))
+                ?.takeIf { isValidPoster(it) }
 
-        val tagsEl = doc.select("span.tags-links a, span.cat-links a")
-        val tags = tagsEl.map { it.text() }
+        val plot = cleanText(
+            document.selectFirst(".desc, .description, .entry-content p, .sinopsis, .synopsis")?.text()
+                ?: document.selectFirst("meta[name=description]")?.attr("content")
+        )
 
-        val type = if (doc.selectFirst("span.series, div.post.type-series") != null) TvType.TvSeries else TvType.Movie
+        val tags = document.select(
+            "a[href*='/genre/'], " +
+                "a[href*='/country/'], " +
+                "a[href*='/year/'], " +
+                "a[href*='/quality/'], " +
+                "a[href*='/action/'], " +
+                "a[href*='/adventure/'], " +
+                "a[href*='/animation/'], " +
+                "a[href*='/comedy/'], " +
+                "a[href*='/crime/'], " +
+                "a[href*='/drama/'], " +
+                "a[href*='/fantasy/'], " +
+                "a[href*='/horror/'], " +
+                "a[href*='/mystery/'], " +
+                "a[href*='/romance/'], " +
+                "a[href*='/sci-fi/'], " +
+                "a[href*='/thriller/']"
+        )
+            .map { cleanTitle(it.text()) }
+            .filter { it.length in 2..30 }
+            .filterNot { tag ->
+                tag.equals("Watch", true) ||
+                    tag.equals("Trailer", true) ||
+                    tag.equals("Download", true) ||
+                    tag.equals("Home", true)
+            }
+            .distinct()
+            .take(16)
+
+        val episodes = parseEpisodes(api, document, url)
+        val recommendations = parseListing(api, document).filterNot { it.url == url }.take(12)
+        val type = if (episodes.size > 1) TvType.TvSeries else typeFromUrlOrTitle(url, title)
 
         return if (type == TvType.TvSeries) {
-            // Taktik Aggressive buat nyari episode series
-            val episodes = doc.select("div.episodes a, div#primary article.post a").mapNotNull { el ->
-                val epHref = el.attr("href")
-                val epName = el.text()
-                Episode(
-                    data = epHref,
-                    name = epName,
-                )
-            }.reversed() // Biasanya dibalik biar episode 1 di atas
-
-            newTvLoadResponse(title, url, type, episodes) {
-                this.posterUrl = posterUrl
+            api.newTvSeriesLoadResponse(title, url, type, episodes) {
+                posterUrl = poster
                 this.plot = plot
                 this.tags = tags
+                this.recommendations = recommendations
             }
         } else {
-            newMovieLoadResponse(title, url, type, url) {
-                this.posterUrl = posterUrl
+            api.newMovieLoadResponse(title, url, type, url) {
+                posterUrl = poster
                 this.plot = plot
                 this.tags = tags
+                this.recommendations = recommendations
+                duration = durationMinutes(document.text())
             }
         }
+    }
+
+    private fun parseEpisodes(api: MainAPI, document: Document, fallbackUrl: String): List<Episode> {
+        val seen = linkedSetOf<String>()
+        val selectors = ".eps a[href], .episode a[href], .episodes a[href], .episodelist a[href], a[href*='episode'], a[href*='season']"
+        val episodes = document.select(selectors).mapNotNull { anchor ->
+            val href = absoluteUrl(api.mainUrl, anchor.attr("href")) ?: return@mapNotNull null
+            if (!isVideoUrl(href)) return@mapNotNull null
+            val normalized = href.substringBefore("#")
+            if (!seen.add(normalized)) return@mapNotNull null
+
+            val text = cleanTitle(anchor.text())
+                .ifBlank { cleanTitle(anchor.attr("title")) }
+                .ifBlank { "Episode" }
+
+            api.newEpisode(href) {
+                name = text
+            }
+        }
+
+        return episodes.ifEmpty {
+            listOf(
+                api.newEpisode(fallbackUrl) {
+                    name = "Movie"
+                }
+            )
+        }
+    }
+
+
+    private fun extractDetailPoster(baseUrl: String, title: String, document: Document): String? {
+        val tokens = titleTokens(title)
+        val candidates = mutableListOf<Pair<Int, String>>()
+
+        document.select(IMAGE_SELECTOR).forEach { image ->
+            val sourceText = listOf(
+                image.attr("alt"),
+                image.attr("title"),
+                image.attr("aria-label"),
+                image.attr("src"),
+                image.attr("data-src"),
+                image.attr("data-lazy-src"),
+                image.attr("data-original")
+            ).joinToString(" ").lowercase()
+
+            val ancestry = generateSequence(image) { element -> element.parent() }
+                .take(5)
+                .joinToString(" ") { "${it.id()} ${it.className()}" }
+                .lowercase()
+
+            imageSourceCandidates(image).forEach { raw ->
+                val poster = absoluteUrl(baseUrl, raw)?.let { upscalePosterUrl(it) } ?: return@forEach
+                if (!isValidPoster(poster)) return@forEach
+
+                val candidateText = "$sourceText ${poster.substringAfterLast('/').substringBefore('?').lowercase()}"
+                val tokenHits = tokens.count { candidateText.contains(it) }
+                var score = tokenHits * 30
+
+                if (tokens.isNotEmpty() && tokenHits >= minOf(2, tokens.size)) score += 80
+                if (ancestry.contains("poster") || ancestry.contains("thumb") || ancestry.contains("mvic") || ancestry.contains("post-thumbnail")) score += 40
+                if (poster.contains("/wp-content/uploads/", ignoreCase = true)) score += 20
+                if (candidateText.contains("filmlokal") || candidateText.contains("logo")) score -= 150
+
+                candidates += (score to poster)
+            }
+        }
+
+        return candidates
+            .filter { it.first > 0 }
+            .distinctBy { it.second }
+            .sortedByDescending { it.first }
+            .firstOrNull()
+            ?.second
+    }
+
+    private fun imageSourceCandidates(image: Element): List<String> {
+        val sources = mutableListOf<String>()
+        listOf("data-src", "data-lazy-src", "data-original", "data-wpfc-original-src", "src").forEach { attr ->
+            image.attr(attr).takeIf { it.isNotBlank() }?.let { sources += it }
+        }
+        listOf("data-srcset", "srcset").forEach { attr ->
+            image.attr(attr)
+                .split(',')
+                .map { it.trim().substringBefore(' ') }
+                .filter { it.isNotBlank() }
+                .forEach { sources += it }
+        }
+        return sources.distinct()
+    }
+
+    private fun titleTokens(title: String): List<String> {
+        val ignored = setOf("sub", "dub", "the", "movie", "film", "and", "with", "untuk")
+        return cleanText(title.lowercase())
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .split(' ')
+            .map { it.trim() }
+            .filter { it.length >= 3 && it !in ignored && it.toIntOrNull() == null }
+            .take(6)
+    }
+
+    private fun upscalePosterUrl(url: String): String {
+        return url.replace(Regex("-\\d+x\\d+(?=\\.(?:jpg|jpeg|png|webp)(?:\\?|$))", RegexOption.IGNORE_CASE), "")
+    }
+
+    fun extractPoster(baseUrl: String, image: Element?, container: Element? = null): String? {
+        val candidates = mutableListOf<String?>()
+        if (image != null) {
+            candidates += imageSourceCandidates(image)
+        }
+        if (container != null) {
+            candidates += container.selectFirst("noscript img[src]")?.attr("src")
+            candidates += container.selectFirst("img[data-src], img[data-lazy-src], img[data-original], img[src]")?.let {
+                imageSourceCandidates(it).firstOrNull()
+            }
+            val style = container.attr("style")
+                .ifBlank { container.selectFirst("[style*=background]")?.attr("style").orEmpty() }
+            candidates += Regex("""url\((['\"]?)(.*?)\1\)""").find(style)?.groupValues?.getOrNull(2)
+            candidates += container.selectFirst("meta[property=og:image]")?.attr("content")
+        }
+        return candidates.asSequence()
+            .mapNotNull { absoluteUrl(baseUrl, it) }
+            .firstOrNull { isValidPoster(it) }
+    }
+
+    private fun cleanTitle(value: String?): String {
+        return cleanText(value)
+            .replace(Regex("(?i)^permalink\\s+to:\\s*"), "")
+            .replace(Regex("(?i)^permalink:\\s*"), "")
+            .replace(Regex("(?i)\\s+-\\s+filmlokal$"), "")
+            .replace(Regex("(?i)\\s+subtitle\\s+indonesia$"), " Sub")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 }
