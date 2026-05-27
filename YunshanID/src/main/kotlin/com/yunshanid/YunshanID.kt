@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 
 class YunshanID : MainAPI() {
     override var mainUrl = "https://yunshanid.site"
-    override var name = "Yunshan ID 🏔️"
+    override var name = "Yunshan ID "
     override val hasMainPage = true
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Anime, TvType.Movie)

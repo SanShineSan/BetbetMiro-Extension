@@ -13,7 +13,7 @@ import java.net.URLEncoder
 
 class ZoronimeProvider : MainAPI() {
     override var mainUrl = "https://zoronime.online"
-    override var name = "Zoronime😵"
+    override var name = "Zoronime"
     override var lang = "id"
     override val hasMainPage = true
     override val hasDownloadSupport = true

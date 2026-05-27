@@ -1,4 +1,4 @@
-version = 1 // Mulai dari versi 1 untuk rilisan pertamamu
+version = 2 // Mulai dari versi 1 untuk rilisan pertamamu
 
 cloudstream {
     description = "Yunshan ID - Donghua Subtitle Indonesia"
