@@ -1,7 +1,6 @@
 package com.loklok
 
 import android.util.Log
-import com.lagradost.cloudstream3.SubtitleHelper
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -266,6 +265,34 @@ object LoklokUtils {
         }
     }
 
+    private fun languageFromTwoLetters(code: String): String? {
+        return when (code.lowercase()) {
+            "id", "in" -> "Indonesian"
+            "en" -> "English"
+            "pt" -> "Portuguese"
+            "ms" -> "Malay"
+            "vi" -> "Vietnamese"
+            "th" -> "Thai"
+            "zh" -> "Chinese"
+            "ar" -> "Arabic"
+            "es" -> "Spanish"
+            "fr" -> "French"
+            "de" -> "German"
+            "ja" -> "Japanese"
+            "ko" -> "Korean"
+            "it" -> "Italian"
+            "tr" -> "Turkish"
+            "ru" -> "Russian"
+            "hi" -> "Hindi"
+            "bn" -> "Bengali"
+            "tl" -> "Tagalog"
+            "fil" -> "Filipino"
+            "my" -> "Burmese"
+            "km" -> "Khmer"
+            else -> null
+        }
+    }
+
     fun getLanguageName(abbr: String): String {
         return when (abbr) {
             "in_ID" -> "Indonesian"
@@ -281,9 +308,7 @@ object LoklokUtils {
             "de" -> "German"
             "ja" -> "Japanese"
             "ko" -> "Korean"
-            else -> abbr.split("_").first().let {
-                SubtitleHelper.fromTwoLettersToLanguage(it) ?: it
-            }
+            else -> languageFromTwoLetters(abbr.split("_").first()) ?: abbr
         }
     }
 }

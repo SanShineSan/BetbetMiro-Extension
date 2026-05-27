@@ -1,8 +1,8 @@
-version = 2
+version = 3
 
 cloudstream {
     language = "en"
-    description = "Loklok provider split-structure dengan kontrak payload eksplisit, kategori API/search baru, dan resolver playback previewInfo."
+    description = "Loklok provider split-structure dengan kontrak payload eksplisit, kategori API/search baru, dan resolver playback previewInfo tanpa dependency SubtitleHelper."
     authors = listOf("Betbet")
     status = 1
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AsianDrama")
