@@ -35,7 +35,11 @@ class Nonton01Provider : MainAPI() {
             if (results.isNotEmpty()) break
         }
 
-        return newHomePageResponse(listOf(HomePageList(request.name, results)))
+        return if (results.isNotEmpty()) {
+            newHomePageResponse(listOf(HomePageList(request.name, results)))
+        } else {
+            newHomePageResponse(emptyList())
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
