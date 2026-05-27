@@ -66,45 +66,23 @@ class SobatKeren21 : MainAPI() {
         "genre/drama-china/" to "Drama China",
         "genre/drama-jepang/" to "Drama Jepang",
         "genre/drama-thailand/" to "Drama Thailand",
-        "genre/drama-taiwan/" to "Drama Taiwan",
-        "genre/drama-hongkong/" to "Drama Hong Kong",
 
-        "genre/action/" to "Action",
-        "genre/adventure/" to "Adventure",
-        "genre/comedy/" to "Comedy",
         "genre/crime/" to "Crime",
         "genre/drama/" to "Drama",
         "genre/family/" to "Family",
         "genre/fantasy/" to "Fantasy",
-        "genre/historical/" to "Historical",
-        "genre/horror/" to "Horror",
-        "genre/komedi/" to "Komedi",
-        "genre/medical/" to "Medical",
         "genre/melodrama/" to "Melodrama",
         "genre/mystery/" to "Mystery",
-        "genre/percintaan/" to "Percintaan",
         "genre/romance/" to "Romance",
         "genre/school/" to "School",
-        "genre/sci-fi/" to "Sci-Fi",
         "genre/thriller/" to "Thriller",
-        "genre/variety-show/" to "Variety Show",
-        "genre/web-drama/" to "Web Drama",
 
         "country/korea/" to "Korea",
         "country/china/" to "China",
         "country/japan/" to "Japan",
         "country/thailand/" to "Thailand",
         "country/taiwan/" to "Taiwan",
-        "country/hong-kong/" to "Hong Kong",
-
-        "tahun/2025/" to "2025",
-        "tahun/2024/" to "2024",
-        "tahun/2023/" to "2023",
-        "tahun/2022/" to "2022",
-        "tahun/2021/" to "2021",
-        "tahun/2020/" to "2020",
-        "tahun/2019/" to "2019",
-        "tahun/2018/" to "2018"
+        "country/hong-kong/" to "Hong Kong"
     )
 
     private val headers = mapOf(
