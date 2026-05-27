@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.javfc.JavFCUtils.absoluteUrl
@@ -33,7 +32,7 @@ object JavFCParser {
 
         val link = element.selectFirst(".movie-title a[href]")
             ?: element.selectFirst("h3 a[href], h2 a[href], .title a[href]")
-            ?: element.selectFirst("a[href$=.html]")
+            ?: element.selectFirst("a[href]")
             ?: return null
 
         val href = absoluteUrl(api.mainUrl, link.attr("href")) ?: return null
@@ -52,7 +51,6 @@ object JavFCParser {
                 it.attr("data-src").ifBlank { it.attr("data-original").ifBlank { it.attr("src") } }
             )
         }
-
 
         return api.newMovieSearchResponse(title, href, TvType.NSFW) {
             posterUrl = poster
@@ -87,35 +85,42 @@ object JavFCParser {
         val episodes = parseEpisodes(api, document, url)
         val recommendations = parseListing(api, document).filterNot { it.url == url }.take(12)
 
-        return if (episodes.size > 1) {
-            api.newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
-                posterUrl = poster
-                this.plot = plot
-                this.tags = tags
-                this.recommendations = recommendations
-            }
-        } else {
-            api.newMovieLoadResponse(title, url, TvType.NSFW, url) {
-                posterUrl = poster
-                this.plot = plot
-                this.tags = tags
-                this.recommendations = recommendations
-            }
+        return api.newTvSeriesLoadResponse(title, url, TvType.NSFW, episodes) {
+            posterUrl = poster
+            this.plot = plot
+            this.tags = tags
+            this.recommendations = recommendations
         }
     }
 
     private fun parseEpisodes(api: MainAPI, document: Document, fallbackUrl: String): List<Episode> {
-        val episodeLinks = document.select(".season a[href]:not([data-toggle]), .episodes a[href], .episode a[href]")
-            .mapNotNull { a ->
-                val href = absoluteUrl(api.mainUrl, a.attr("href")) ?: return@mapNotNull null
-                if (!isLikelyMovieUrl(href)) return@mapNotNull null
-                val epName = cleanText(a.text()).ifBlank { "Episode" }
-                api.newEpisode(href, initializer = { name = epName })
-            }
-            .distinctBy { it.data }
+        val seen = mutableSetOf<String>()
 
-        return episodeLinks.ifEmpty {
-            listOf(api.newEpisode(fallbackUrl, initializer = { name = "Movie" }))
+        val items = document.select(
+            ".season a[href]:not([data-toggle]), .episodes a[href], .episode a[href], a[href*='?key='], a[href*='&key=']"
+        ).mapNotNull { a ->
+            val href = absoluteUrl(api.mainUrl, a.attr("href")) ?: return@mapNotNull null
+            if (!isLikelyMovieUrl(href)) return@mapNotNull null
+            if (!seen.add(href.substringBefore("#"))) return@mapNotNull null
+
+            val text = cleanText(a.text())
+            val epName = text.ifBlank {
+                if (href.contains("key=", ignoreCase = true)) "Playback" else "Movie"
+            }
+
+            api.newEpisode(href) {
+                name = epName
+            }
+        }
+
+        return if (items.isNotEmpty()) {
+            items
+        } else {
+            listOf(
+                api.newEpisode(fallbackUrl) {
+                    name = "Movie"
+                }
+            )
         }
     }
 }

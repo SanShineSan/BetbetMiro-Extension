@@ -50,13 +50,17 @@ object JavFCUtils {
     }
 
     fun isLikelyMovieUrl(url: String): Boolean {
-        return url.contains(JavFCSeeds.MAIN_URL) &&
-            url.endsWith(".html") &&
-            !url.contains("/genre/") &&
-            !url.contains("/home/") &&
-            !url.contains("/star/") &&
-            !url.contains("all-movies") &&
-            !url.contains("privacy") &&
-            !url.contains("dmca")
+        val normalized = url.lowercase()
+        val isKnownHost = normalized.contains("javfc2.xyz") || normalized.contains("javfc2.live")
+        return isKnownHost &&
+            !normalized.contains("/genre/") &&
+            !normalized.contains("/home/") &&
+            !normalized.contains("/star/") &&
+            !normalized.contains("/tag/") &&
+            !normalized.contains("/search") &&
+            !normalized.contains("all-movies") &&
+            !normalized.contains("privacy") &&
+            !normalized.contains("dmca") &&
+            (normalized.endsWith(".html") || normalized.contains("?key=") || normalized.contains("&key="))
     }
 }

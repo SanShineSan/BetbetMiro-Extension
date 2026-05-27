@@ -1,5 +1,7 @@
 package com.javfc
 
+import com.javfc.JavFCUtils.absoluteUrl
+import com.javfc.JavFCUtils.cleanText
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -10,14 +12,18 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getExtractorApiFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.javfc.JavFCUtils.absoluteUrl
-import com.javfc.JavFCUtils.cleanText
 import org.jsoup.nodes.Document
 
 object JavFCExtractor {
-    private val srcRegex = Regex("""(?i)(?:src|file|url)\s*[:=]\s*['\"](https?://[^'\"]+?)['\"]""")
-    private val hlsRegex = Regex("""https?://[^\s'\"<>]+\.m3u8[^\s'\"<>]*""", RegexOption.IGNORE_CASE)
-    private val mp4Regex = Regex("""https?://[^\s'\"<>]+\.mp4[^\s'\"<>]*""", RegexOption.IGNORE_CASE)
+    private val keyValueUrlRegex = Regex(
+        """(?i)(?:src|file|url|source|hlsUrl)\s*[:=]\s*['"]((?:https?:)?//[^'"]+|/[^'"]+)['"]"""
+    )
+    private val quotedMediaRegex = Regex(
+        """(?i)['"]((?:https?:)?//[^'"<>\\\s]+?\.(?:m3u8|mp4)(?:\?[^'"<>\\\s]*)?)['"]"""
+    )
+    private val bareMediaRegex = Regex(
+        """(?i)(?:https?:)?//[^\s'"<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s'"<>\\]*)?"""
+    )
 
     suspend fun loadLinks(
         providerName: String,
@@ -26,7 +32,12 @@ object JavFCExtractor {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = JavFCUtils.headers).document
+        val document = app.get(
+            data,
+            headers = JavFCUtils.headers,
+            referer = mainUrl
+        ).document
+
         var found = false
 
         collectSubtitles(mainUrl, document, subtitleCallback)
@@ -35,16 +46,16 @@ object JavFCExtractor {
         val embedUrls = extractEmbedUrls(mainUrl, document)
         val code = data.substringAfterLast('/').substringBeforeLast('.').substringBefore('?')
 
-        val tasks = mutableListOf<suspend () -> Unit>()
-
         directUrls.forEach { url ->
-            tasks.add {
+            try {
                 if (url.contains(".m3u8", ignoreCase = true)) {
-                    generateM3u8(
+                    val links = generateM3u8(
                         source = providerName,
                         streamUrl = url,
-                        referer = data
-                    ).forEach { link ->
+                        referer = mainUrl,
+                        headers = JavFCUtils.headers
+                    )
+                    links.forEach { link ->
                         found = true
                         callback(link)
                     }
@@ -52,39 +63,41 @@ object JavFCExtractor {
                     found = true
                     callback(
                         newExtractorLink(providerName, "$providerName MP4", url) {
-                            referer = data
+                            referer = mainUrl
                             quality = Qualities.Unknown.value
                             headers = JavFCUtils.headers
                         }
                     )
                 }
+            } catch (e: Throwable) {
+                Log.e("JavFC", "Direct media failed: ${e.message}")
             }
         }
 
         embedUrls.forEach { embed ->
-            tasks.add {
-                loadExtractor(embed, data, subtitleCallback) { link ->
+            try {
+                loadExtractor(embed, mainUrl, subtitleCallback) { link ->
                     found = true
                     callback(link)
                 }
+            } catch (e: Throwable) {
+                Log.e("JavFC", "Embed extractor failed: ${e.message}")
             }
         }
 
         if (code.isNotBlank()) {
-            tasks.add {
-                getExtractorApiFromName("SubtitleCat").takeIf { it.name == "SubtitleCat" }?.getUrl(
-                    url = code,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            }
-        }
-
-        tasks.forEach { task ->
             try {
-                task()
+                val subApi = getExtractorApiFromName("SubtitleCat")
+                if (subApi.name.equals("SubtitleCat", ignoreCase = true)) {
+                    subApi.getUrl(
+                        url = code,
+                        referer = mainUrl,
+                        subtitleCallback = subtitleCallback,
+                        callback = callback
+                    )
+                }
             } catch (e: Throwable) {
-                Log.e("JavFC", "Extractor task failed: ${e.message}")
+                Log.e("JavFC", "SubtitleCat failed: ${e.message}")
             }
         }
 
@@ -104,41 +117,66 @@ object JavFCExtractor {
     }
 
     private fun extractDirectUrls(mainUrl: String, document: Document): List<String> {
-        val raw = buildString {
-            appendLine(document.select("#player-div script, script").joinToString("\n") { it.html() })
-            appendLine(document.select("video source[src], source[src]").joinToString("\n") { it.attr("src") })
-        }
-
+        val raw = normalizedHtml(document)
         val direct = linkedSetOf<String>()
-        srcRegex.findAll(raw).map { it.groupValues[1] }.forEach { url ->
-            if (url.contains(".m3u8", ignoreCase = true) || url.contains(".mp4", ignoreCase = true)) {
-                direct.add(url)
-            }
-        }
-        hlsRegex.findAll(raw).map { it.value }.forEach { direct.add(it) }
-        mp4Regex.findAll(raw).map { it.value }.forEach { direct.add(it) }
 
-        document.select("video[src], source[src]").forEach { source ->
-            absoluteUrl(mainUrl, source.attr("src"))?.let { direct.add(it) }
+        document.select("video[src], video source[src], source[src]").forEach { source ->
+            normalizeMediaUrl(mainUrl, source.attr("src"))?.let { direct.add(it) }
         }
 
-        return direct.filter { it.startsWith("http") }.distinct()
+        keyValueUrlRegex.findAll(raw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
+            .filter { it.contains(".m3u8", ignoreCase = true) || it.contains(".mp4", ignoreCase = true) }
+            .forEach { direct.add(it) }
+
+        quotedMediaRegex.findAll(raw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
+            .forEach { direct.add(it) }
+
+        bareMediaRegex.findAll(raw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.value) }
+            .forEach { direct.add(it) }
+
+        return direct.distinct()
     }
 
     private fun extractEmbedUrls(mainUrl: String, document: Document): List<String> {
+        val raw = normalizedHtml(document)
         val embeds = linkedSetOf<String>()
 
         document.select("iframe[src], embed[src]").forEach { iframe ->
             absoluteUrl(mainUrl, iframe.attr("src"))?.let { embeds.add(it) }
         }
 
-        val scripts = document.select("#player-div script, script").joinToString("\n") { it.html() }
-        srcRegex.findAll(scripts)
-            .map { it.groupValues[1] }
+        keyValueUrlRegex.findAll(raw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
             .filterNot { it.contains(".m3u8", ignoreCase = true) || it.contains(".mp4", ignoreCase = true) }
             .forEach { embeds.add(it) }
 
         return embeds.filter { it.startsWith("http") }.distinct()
     }
 
+    private fun normalizedHtml(document: Document): String {
+        return document.html()
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .replace("\\u0026", "&")
+    }
+
+    private fun normalizeMediaUrl(mainUrl: String, value: String?): String? {
+        val raw = value.orEmpty()
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .replace("\\u0026", "&")
+            .trim()
+            .trim('"', '\'', ',', ';')
+
+        if (raw.isBlank() || raw.equals("null", ignoreCase = true)) return null
+        return when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http://") || raw.startsWith("https://") -> raw
+            raw.startsWith("/") -> absoluteUrl(mainUrl, raw)
+            else -> null
+        }
+    }
 }
