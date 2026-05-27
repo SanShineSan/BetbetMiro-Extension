@@ -1,10 +1,13 @@
 package com.youtube
 
+import com.lagradost.cloudstream3.utils.Qualities
 import org.schabi.newpipe.extractor.Image
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
 object YouTubeUtils {
+    const val USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+
     fun bestThumbnail(thumbnails: List<Image>?): String? {
         return thumbnails
             ?.mapNotNull { it.url }
@@ -44,10 +47,21 @@ object YouTubeUtils {
             .trim()
     }
 
-    fun isYoutubeWatchUrl(url: String): Boolean {
-        return url.contains("youtube.com/watch", true) ||
-            url.contains("youtu.be/", true) ||
-            url.contains("youtube.com/shorts/", true) ||
-            url.contains("youtube.com/live/", true)
+    fun qualityFromResolution(resolution: String?): Int {
+        val number = resolution.orEmpty()
+            .substringBefore("p")
+            .filter { it.isDigit() }
+            .toIntOrNull()
+            ?: return Qualities.Unknown.value
+
+        return number.takeIf { it > 0 } ?: Qualities.Unknown.value
+    }
+
+    fun canonicalWatchUrl(url: String): String {
+        val id = Regex("""(?:v=|youtu\.be/|shorts/|live/|embed/)([A-Za-z0-9_-]{11})""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+        return if (id != null) "${YouTubeSeeds.MAIN_URL}/watch?v=$id" else url
     }
 }

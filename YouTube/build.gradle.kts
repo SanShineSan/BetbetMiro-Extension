@@ -1,9 +1,9 @@
-version = 2
+version = 4
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "YouTube provider with NewPipe-backed Indonesian channel and category rows."
+    description = "YouTube provider with NewPipe-backed Indonesian channels, direct stream links, and category rows."
 
     /**
      * 0: Down

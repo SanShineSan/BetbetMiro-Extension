@@ -73,8 +73,12 @@ class YouTubeProvider : MainAPI() {
                 runCatching { ChannelTabInfo.getInfo(service, tab) }.getOrNull()
             }
 
-            val videoTab = tabs.firstOrNull { it.name.equals("videos", true) }
-                ?: tabs.firstOrNull { it.relatedItems.isNotEmpty() }
+            val videoTab = tabs.firstOrNull { tab ->
+                tab.name.contains("video", ignoreCase = true) ||
+                    tab.name.contains("upload", ignoreCase = true)
+            } ?: tabs.firstOrNull { tab ->
+                tab.relatedItems.any { it is org.schabi.newpipe.extractor.stream.StreamInfoItem }
+            }
 
             YouTubeParser.parseInfoItems(this, videoTab?.relatedItems.orEmpty())
         }.getOrElse { emptyList() }

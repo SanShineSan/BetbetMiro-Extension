@@ -5,10 +5,10 @@ object YouTubeSeeds {
 
     val mainPage = listOf(
         YouTubeCategory(
-            name = "Cerita Kamai",
+            name = "CERITA KAMAI",
             data = "$MAIN_URL/@ceritakamai",
             mode = YouTubeCategoryMode.Channel,
-            fallbackQuery = "Cerita Kamai video terbaru"
+            fallbackQuery = "CERITA KAMAI video terbaru"
         ),
         YouTubeCategory(
             name = "Gameplay Proplayer",
@@ -23,13 +23,13 @@ object YouTubeSeeds {
             fallbackQuery = "Calon Sarjana video terbaru"
         ),
         YouTubeCategory(
-            name = "Trending Indonesia",
-            data = "trending indonesia terbaru",
+            name = "Alur Cerita Manhwa",
+            data = "alur cerita manhwa manhua lengkap indonesia terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
             name = "Gaming Indonesia",
-            data = "gaming indonesia gameplay terbaru",
+            data = "gameplay indonesia terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
@@ -39,7 +39,7 @@ object YouTubeSeeds {
         ),
         YouTubeCategory(
             name = "Teknologi Indonesia",
-            data = "teknologi gadget indonesia terbaru",
+            data = "review teknologi gadget indonesia terbaru",
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
@@ -68,13 +68,8 @@ object YouTubeSeeds {
             mode = YouTubeCategoryMode.Search
         ),
         YouTubeCategory(
-            name = "Alur Cerita Manhwa",
-            data = "alur cerita manhwa manhua lengkap indonesia",
-            mode = YouTubeCategoryMode.Search
-        ),
-        YouTubeCategory(
             name = "Live Streaming",
-            data = "live streaming indonesia",
+            data = "live streaming indonesia terbaru",
             mode = YouTubeCategoryMode.Search
         )
     )
