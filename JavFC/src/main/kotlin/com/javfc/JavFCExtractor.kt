@@ -13,16 +13,23 @@ import com.lagradost.cloudstream3.utils.getExtractorApiFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
+import java.net.URLDecoder
 
 object JavFCExtractor {
+    private val classicPlayerSrcRegex = Regex(
+        """(?is)\bsrc\s*:\s*['\"`]([^'\"`]+)['\"`]"""
+    )
     private val keyValueUrlRegex = Regex(
-        """(?i)(?:src|file|url|source|hlsUrl)\s*[:=]\s*['"]((?:https?:)?//[^'"]+|/[^'"]+)['"]"""
+        """(?is)(?:src|file|url|source|hlsUrl|videoUrl|playlist)\s*[:=]\s*['\"`]([^'\"`]+)['\"`]"""
     )
     private val quotedMediaRegex = Regex(
-        """(?i)['"]((?:https?:)?//[^'"<>\\\s]+?\.(?:m3u8|mp4)(?:\?[^'"<>\\\s]*)?)['"]"""
+        """(?i)['\"`]((?:https?:)?//[^'\"<>\\\s]+?\.(?:m3u8|mp4)(?:\?[^'\"<>\\\s]*)?)['\"`]"""
     )
     private val bareMediaRegex = Regex(
-        """(?i)(?:https?:)?//[^\s'"<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s'"<>\\]*)?"""
+        """(?i)(?:https?:)?//[^\s'\"<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s'\"<>\\]*)?"""
+    )
+    private val encodedHttpRegex = Regex(
+        """(?i)https?%3A%2F%2F[^'\"<>\\\s]+"""
     )
 
     suspend fun loadLinks(
@@ -42,24 +49,14 @@ object JavFCExtractor {
 
         collectSubtitles(mainUrl, document, subtitleCallback)
 
+        val playerUrls = extractPlayerUrls(mainUrl, document)
         val directUrls = extractDirectUrls(mainUrl, document)
-        val embedUrls = extractEmbedUrls(mainUrl, document)
+        val embedUrls = extractEmbedUrls(mainUrl, document, playerUrls)
         val code = data.substringAfterLast('/').substringBeforeLast('.').substringBefore('?')
 
-        directUrls.forEach { url ->
+        (playerUrls + directUrls).distinct().forEach { url ->
             try {
-                if (url.contains(".m3u8", ignoreCase = true)) {
-                    val links = generateM3u8(
-                        source = providerName,
-                        streamUrl = url,
-                        referer = mainUrl,
-                        headers = JavFCUtils.headers
-                    )
-                    links.forEach { link ->
-                        found = true
-                        callback(link)
-                    }
-                } else {
+                if (url.contains(".mp4", ignoreCase = true)) {
                     found = true
                     callback(
                         newExtractorLink(providerName, "$providerName MP4", url) {
@@ -68,9 +65,33 @@ object JavFCExtractor {
                             headers = JavFCUtils.headers
                         }
                     )
+                } else {
+                    var emitted = false
+
+                    try {
+                        generateM3u8(
+                            source = providerName,
+                            streamUrl = url,
+                            referer = mainUrl,
+                            headers = JavFCUtils.headers
+                        ).forEach { link ->
+                            emitted = true
+                            found = true
+                            callback(link)
+                        }
+                    } catch (e: Throwable) {
+                        Log.e("JavFC", "HLS candidate failed: ${e.message}")
+                    }
+
+                    if (!emitted) {
+                        loadExtractor(url, mainUrl, subtitleCallback) { link ->
+                            found = true
+                            callback(link)
+                        }
+                    }
                 }
             } catch (e: Throwable) {
-                Log.e("JavFC", "Direct media failed: ${e.message}")
+                Log.e("JavFC", "Direct/player media failed: ${e.message}")
             }
         }
 
@@ -88,17 +109,24 @@ object JavFCExtractor {
         if (code.isNotBlank()) {
             try {
                 val subApi = getExtractorApiFromName("SubtitleCat")
-                if (subApi.name.equals("SubtitleCat", ignoreCase = true)) {
+                if (subApi != null && subApi.name.equals("SubtitleCat", ignoreCase = true)) {
                     subApi.getUrl(
                         url = code,
                         referer = mainUrl,
                         subtitleCallback = subtitleCallback,
-                        callback = callback
+                        callback = { link ->
+                            found = true
+                            callback(link)
+                        }
                     )
                 }
             } catch (e: Throwable) {
                 Log.e("JavFC", "SubtitleCat failed: ${e.message}")
             }
+        }
+
+        if (!found) {
+            Log.e("JavFC", "No playable media found for: $data")
         }
 
         return found
@@ -116,8 +144,30 @@ object JavFCExtractor {
         }
     }
 
+    private fun extractPlayerUrls(mainUrl: String, document: Document): List<String> {
+        val direct = linkedSetOf<String>()
+        val playerRaw = normalizedHtml(
+            document.select("#player-div script, #player-div, .player script, .player, script:containsData(src:), script:containsData(hlsUrl), script:containsData(videoUrl), script:containsData(playlist)")
+                .joinToString("\n") { it.html() }
+        )
+
+        classicPlayerSrcRegex.findAll(playerRaw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
+            .forEach { direct.add(it) }
+
+        keyValueUrlRegex.findAll(playerRaw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
+            .forEach { direct.add(it) }
+
+        encodedHttpRegex.findAll(playerRaw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.value) }
+            .forEach { direct.add(it) }
+
+        return direct.distinct()
+    }
+
     private fun extractDirectUrls(mainUrl: String, document: Document): List<String> {
-        val raw = normalizedHtml(document)
+        val raw = normalizedHtml(document.html())
         val direct = linkedSetOf<String>()
 
         document.select("video[src], video source[src], source[src]").forEach { source ->
@@ -126,7 +176,6 @@ object JavFCExtractor {
 
         keyValueUrlRegex.findAll(raw)
             .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
-            .filter { it.contains(".m3u8", ignoreCase = true) || it.contains(".mp4", ignoreCase = true) }
             .forEach { direct.add(it) }
 
         quotedMediaRegex.findAll(raw)
@@ -137,11 +186,15 @@ object JavFCExtractor {
             .mapNotNull { normalizeMediaUrl(mainUrl, it.value) }
             .forEach { direct.add(it) }
 
+        encodedHttpRegex.findAll(raw)
+            .mapNotNull { normalizeMediaUrl(mainUrl, it.value) }
+            .forEach { direct.add(it) }
+
         return direct.distinct()
     }
 
-    private fun extractEmbedUrls(mainUrl: String, document: Document): List<String> {
-        val raw = normalizedHtml(document)
+    private fun extractEmbedUrls(mainUrl: String, document: Document, knownPlayerUrls: List<String>): List<String> {
+        val raw = normalizedHtml(document.html())
         val embeds = linkedSetOf<String>()
 
         document.select("iframe[src], embed[src]").forEach { iframe ->
@@ -150,33 +203,68 @@ object JavFCExtractor {
 
         keyValueUrlRegex.findAll(raw)
             .mapNotNull { normalizeMediaUrl(mainUrl, it.groupValues[1]) }
-            .filterNot { it.contains(".m3u8", ignoreCase = true) || it.contains(".mp4", ignoreCase = true) }
+            .filterNot { value ->
+                knownPlayerUrls.any { it == value } ||
+                    value.contains(".m3u8", ignoreCase = true) ||
+                    value.contains(".mp4", ignoreCase = true)
+            }
             .forEach { embeds.add(it) }
 
         return embeds.filter { it.startsWith("http") }.distinct()
     }
 
-    private fun normalizedHtml(document: Document): String {
-        return document.html()
+    private fun normalizedHtml(value: String): String {
+        return value
             .replace("\\/", "/")
             .replace("&amp;", "&")
             .replace("\\u0026", "&")
+            .replace("%2F", "/", ignoreCase = true)
+            .replace("%3A", ":", ignoreCase = true)
+            .replace("%3F", "?", ignoreCase = true)
+            .replace("%26", "&", ignoreCase = true)
+            .replace("%3D", "=", ignoreCase = true)
     }
 
     private fun normalizeMediaUrl(mainUrl: String, value: String?): String? {
-        val raw = value.orEmpty()
+        val cleaned = value.orEmpty()
             .replace("\\/", "/")
             .replace("&amp;", "&")
             .replace("\\u0026", "&")
             .trim()
-            .trim('"', '\'', ',', ';')
+            .trim('"', '\'', '`', ',', ';')
+
+        val raw = decodeUrlCandidate(cleaned)
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .replace("\\u0026", "&")
+            .trim()
+            .trim('"', '\'', '`', ',', ';')
 
         if (raw.isBlank() || raw.equals("null", ignoreCase = true)) return null
+        if (raw.startsWith("data:", ignoreCase = true)) return null
+        if (raw.startsWith("blob:", ignoreCase = true)) return null
+
         return when {
             raw.startsWith("//") -> "https:$raw"
             raw.startsWith("http://") || raw.startsWith("https://") -> raw
             raw.startsWith("/") -> absoluteUrl(mainUrl, raw)
             else -> null
         }
+    }
+
+    private fun decodeUrlCandidate(value: String): String {
+        if (!value.contains("%")) return value
+
+        var current = value.replace("+", "%2B")
+        repeat(2) {
+            val decoded = try {
+                URLDecoder.decode(current, "UTF-8")
+            } catch (_: Throwable) {
+                current
+            }
+            if (decoded == current) return current
+            current = decoded
+        }
+        return current
     }
 }

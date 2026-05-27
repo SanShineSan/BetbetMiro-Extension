@@ -1,9 +1,9 @@
-version = 4
+version = 6
 
 cloudstream {
     language = "en"
     authors = listOf("BetbetMiro")
-    description = "JavFC provider with refreshed categories, tolerant parsing, keyed episode playback, and hardened extractor handling."
+    description = "JavFC provider with refreshed categories, tolerant parsing, keyed episode playback, classic player src recovery, URL-decoded media candidates, and hardened extractor handling."
 
     /**
      * 0: Down
