@@ -3,7 +3,6 @@ package com.filmlokal
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
-import kotlin.math.ceil
 
 object FilmLokalUtils {
     const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
@@ -25,7 +24,7 @@ object FilmLokalUtils {
         "", "page", "dmca", "faq", "kontak", "contact", "best-rating",
         "21-mph", "sub-indo", "sub-english", "censored", "film-semi", "uncensored",
         "live-streaming-igo", "jeruk-barat", "asian-amateur", "jav",
-        "film-series", "anime-boruto", "action", "adventure", "animation", "comedy", "crime",
+        "film-series", "action", "adventure", "animation", "comedy", "crime",
         "drama", "fantasy", "horror", "mystery", "romance", "sci-fi", "thriller",
         "year", "country", "genre", "quality", "tag", "cast", "director", "author"
     )
@@ -94,6 +93,9 @@ object FilmLokalUtils {
         return low.startsWith("http") &&
             !low.startsWith("data:") &&
             !low.contains("/logo") &&
+            !low.contains("logo-") &&
+            !low.contains("favicon") &&
+            !low.contains("cropped-") &&
             !low.contains("placeholder") &&
             !low.contains("no-image") &&
             !low.endsWith(".svg")

@@ -1,6 +1,7 @@
 package com.filmlokal
 
-import com.lagradost.api.Log
+import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
@@ -17,14 +18,25 @@ import org.jsoup.nodes.Document
 object FilmLokalExtractor {
     private const val TAG = "FilmLokal"
     private const val MAX_HOPS = 2
+    private const val MAX_DIRECT_CANDIDATES = 20
+    private const val MAX_EMBED_CANDIDATES = 10
 
     private val keyValueRegex = Regex(
-        """(?i)(?:file|src|url|source|hls|hlsUrl|video|videoUrl)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
+        """(?i)(?:file|src|url|source|hls|hlsUrl|video|videoUrl|stream|streamUrl|playlist|embed|iframe|link)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
     )
     private val quotedUrlRegex = Regex(
         """(?i)['\"]((?:https?:)?//[^'\"<>\s]+|/[^'\"<>\s]+)['\"]"""
     )
+    private val iframeRegex = Regex("""(?i)<iframe[^>]+src\s*=\s*['\"]([^'\"]+)['\"]""")
     private val encodedUrlRegex = Regex("""https?%3A%2F%2F[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
+    private val atobRegex = Regex("""(?i)atob\s*\(\s*['\"]([A-Za-z0-9+/=_-]{16,})['\"]\s*\)""")
+    private val base64StringRegex = Regex("""['\"]([A-Za-z0-9+/=]{28,})['\"]""")
+
+    private val serverAttributes = listOf(
+        "src", "href", "value", "data-src", "data-url", "data-link", "data-href",
+        "data-file", "data-video", "data-video-url", "data-stream", "data-stream-url",
+        "data-embed", "data-iframe", "data-player", "data-play", "data-server"
+    )
 
     suspend fun loadLinks(
         providerName: String,
@@ -33,8 +45,11 @@ object FilmLokalExtractor {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.e(TAG, "loadLinks start: $data")
         val emitted = linkedSetOf<String>()
-        return resolvePage(providerName, mainUrl, data, data, 0, emitted, subtitleCallback, callback)
+        val found = resolvePage(providerName, mainUrl, data, data, 0, emitted, subtitleCallback, callback)
+        if (!found) Log.e(TAG, "loadLinks no playable links for: $data")
+        return found
     }
 
     private suspend fun resolvePage(
@@ -47,7 +62,11 @@ object FilmLokalExtractor {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (depth > MAX_HOPS) return false
+        if (depth > MAX_HOPS) {
+            Log.e(TAG, "max hop reached: $pageUrl")
+            return false
+        }
+
         val document = runCatching {
             app.get(pageUrl, headers = FilmLokalUtils.siteHeaders, referer = referer).document
         }.onFailure { Log.e(TAG, "GET failed $pageUrl: ${it.message}") }.getOrNull() ?: return false
@@ -55,26 +74,32 @@ object FilmLokalExtractor {
         collectSubtitles(pageUrl, document, subtitleCallback)
         var found = false
 
-        val direct = extractDirectMedia(pageUrl, document)
-        for (url in direct) {
+        val direct = prioritizeCandidates(extractDirectMedia(pageUrl, document))
+        val embeds = prioritizeCandidates(extractEmbeds(pageUrl, document))
+        Log.e(TAG, "captured page=$pageUrl depth=$depth direct=${direct.size} embeds=${embeds.size}")
+
+        for (url in direct.take(MAX_DIRECT_CANDIDATES)) {
+            Log.e(TAG, "direct candidate: $url")
             val emittedNow = emitDirect(providerName, url, pageUrl, emitted, callback)
             found = found || emittedNow
-            if (!emittedNow && !url.contains(".m3u8", true) && !url.contains(".mp4", true)) {
+            if (!emittedNow) {
                 val extractorFound = runExtractor(url, pageUrl, emitted, subtitleCallback, callback)
                 found = found || extractorFound
             }
         }
 
-        val embeds = extractEmbeds(pageUrl, document).filterNot { emitted.contains(it) }.take(12)
-        for (embed in embeds) {
+        for (embed in embeds.filterNot { direct.contains(it) }.take(MAX_EMBED_CANDIDATES)) {
+            Log.e(TAG, "embed candidate: $embed referer=$pageUrl")
             val extractorFound = runExtractor(embed, pageUrl, emitted, subtitleCallback, callback)
             found = found || extractorFound
-            if (!extractorFound && depth < MAX_HOPS && FilmLokalUtils.originOf(embed) != FilmLokalUtils.originOf(pageUrl)) {
-                found = resolvePage(providerName, mainUrl, embed, pageUrl, depth + 1, emitted, subtitleCallback, callback) || found
+            if (!extractorFound && depth < MAX_HOPS && canRecurseInto(embed, pageUrl)) {
+                val nestedFound = resolvePage(providerName, mainUrl, embed, pageUrl, depth + 1, emitted, subtitleCallback, callback)
+                found = found || nestedFound
             }
         }
 
         if (!found) {
+            Log.e(TAG, "fallback extractor on page: $pageUrl")
             found = runExtractor(pageUrl, referer, emitted, subtitleCallback, callback)
         }
         return found
@@ -87,10 +112,9 @@ object FilmLokalExtractor {
         emitted: MutableSet<String>,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (!emitted.add(url)) return false
         return try {
             when {
-                url.contains(".m3u8", true) || url.contains("m3u8", true) -> {
+                looksLikeHls(url) -> {
                     val links = generateM3u8(
                         source = providerName,
                         streamUrl = url,
@@ -100,22 +124,41 @@ object FilmLokalExtractor {
                     links.forEach { link ->
                         if (emitted.add(link.url)) callback(link)
                     }
+                    if (links.isEmpty()) Log.e(TAG, "generateM3u8 returned empty: $url")
                     links.isNotEmpty()
                 }
-                url.contains(".mp4", true) || url.contains("googlevideo", true) || url.contains("videoplayback", true) -> {
-                    callback(
-                        newExtractorLink(providerName, "$providerName MP4", url) {
-                            this.referer = referer
-                            this.quality = Qualities.Unknown.value
-                            this.headers = videoHeaders(referer)
-                        }
-                    )
-                    true
+                looksLikeDirectMp4(url) -> {
+                    if (emitted.add(url)) {
+                        callback(
+                            newExtractorLink(providerName, "$providerName MP4", url) {
+                                this.referer = referer
+                                this.quality = Qualities.Unknown.value
+                                this.headers = videoHeaders(referer)
+                            }
+                        )
+                        true
+                    } else {
+                        false
+                    }
                 }
-                else -> false
+                else -> {
+                    // Some FilmLokal player scripts hide HLS behind extensionless urls.
+                    val links = runCatching {
+                        generateM3u8(
+                            source = providerName,
+                            streamUrl = url,
+                            referer = referer,
+                            headers = videoHeaders(referer)
+                        )
+                    }.getOrDefault(emptyList())
+                    links.forEach { link ->
+                        if (emitted.add(link.url)) callback(link)
+                    }
+                    links.isNotEmpty()
+                }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "emitDirect failed: ${e.message}")
+            Log.e(TAG, "emitDirect failed $url: ${e.message}")
             false
         }
     }
@@ -132,9 +175,11 @@ object FilmLokalExtractor {
             loadExtractor(url, referer, subtitleCallback) { link ->
                 if (emitted.add(link.url)) {
                     found = true
+                    Log.e(TAG, "loadExtractor emitted: ${link.url}")
                     callback(link)
                 }
             }
+            if (!found) Log.e(TAG, "loadExtractor emitted 0 links: $url")
             found
         } catch (e: Throwable) {
             Log.e(TAG, "loadExtractor failed $url: ${e.message}")
@@ -152,37 +197,36 @@ object FilmLokalExtractor {
 
     private fun extractDirectMedia(pageUrl: String, document: Document): List<String> {
         val out = linkedSetOf<String>()
-        document.select("video[src], video source[src], source[src]").forEach { source ->
-            normalizeUrl(pageUrl, source.attr("src"))?.let { out.add(it) }
-        }
+        extractAttributeUrls(pageUrl, document).filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+
         val html = normalizedHtml(document)
-        keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
-        quotedUrlRegex.findAll(html)
-            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
-            .filter { it.contains(".m3u8", true) || it.contains(".mp4", true) || it.contains("googlevideo", true) || it.contains("videoplayback", true) }
-            .forEach { out.add(it) }
-        encodedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.value) }.forEach { out.add(it) }
+        keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+        quotedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+        iframeRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+        encodedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.value) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+        decodeBase64Candidates(html).mapNotNull { normalizeUrl(pageUrl, it) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
         return out.distinct()
     }
 
     private fun extractEmbeds(pageUrl: String, document: Document): List<String> {
         val out = linkedSetOf<String>()
-        document.select("iframe[src], embed[src], a[href]").forEach { element ->
-            val raw = element.attr("src").ifBlank { element.attr("href") }
-            val url = normalizeUrl(pageUrl, raw) ?: return@forEach
-            val low = url.lowercase()
-            if (low.contains("youtube.com") || low.contains("youtu.be")) return@forEach
-            if (low.contains("trailer")) return@forEach
-            if (low.contains("myvidplay") || low.contains("minochinos") || low.contains("hglink") || low.contains("streamtape") || low.contains("dood") || low.contains("filemoon") || low.contains("vidhide") || low.contains("embed") || low.contains("player")) {
-                out.add(url)
+        extractAttributeUrls(pageUrl, document).filter { looksLikeEmbed(it) }.forEach { out.add(it) }
+
+        val html = normalizedHtml(document)
+        quotedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeEmbed(it) }.forEach { out.add(it) }
+        iframeRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeEmbed(it) }.forEach { out.add(it) }
+        keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeEmbed(it) }.forEach { out.add(it) }
+        decodeBase64Candidates(html).mapNotNull { normalizeUrl(pageUrl, it) }.filter { looksLikeEmbed(it) }.forEach { out.add(it) }
+        return out.distinct()
+    }
+
+    private fun extractAttributeUrls(pageUrl: String, document: Document): List<String> {
+        val out = linkedSetOf<String>()
+        document.select("iframe, embed, video, source, option, a[href], button, div, span").forEach { element ->
+            serverAttributes.forEach { attr ->
+                normalizeUrl(pageUrl, element.attr(attr))?.let { out.add(it) }
             }
         }
-        val html = normalizedHtml(document)
-        quotedUrlRegex.findAll(html)
-            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
-            .filterNot { it.contains(".jpg", true) || it.contains(".png", true) || it.contains(".webp", true) || it.contains("youtube", true) }
-            .filter { it.contains("embed", true) || it.contains("player", true) || it.contains("myvidplay", true) || it.contains("minochinos", true) || it.contains("hglink", true) || it.contains("streamtape", true) }
-            .forEach { out.add(it) }
         return out.distinct()
     }
 
@@ -190,6 +234,9 @@ object FilmLokalExtractor {
         .replace("\\/", "/")
         .replace("&amp;", "&")
         .replace("\\u0026", "&")
+        .replace("\\u003d", "=")
+        .replace("\\u003a", ":")
+        .replace("\\u002f", "/")
 
     private fun normalizeUrl(pageUrl: String, value: String?): String? {
         val raw = decodeMaybe(value.orEmpty())
@@ -199,6 +246,114 @@ object FilmLokalExtractor {
         val low = raw.lowercase()
         if (low == "#" || low == "null" || low == "undefined" || low == "about:blank") return null
         if (low.startsWith("javascript:") || low.startsWith("data:") || low.startsWith("blob:") || low.startsWith("intent:")) return null
+        if (low.contains(".jpg") || low.contains(".png") || low.contains(".webp") || low.contains(".gif")) return null
+        if (low.contains("youtube.com") || low.contains("youtu.be") || low.contains("trailer")) return null
+        if (isDeniedUrl(low)) return null
         return absoluteUrl(pageUrl, raw)
+    }
+
+    private fun decodeBase64Candidates(html: String): List<String> {
+        val out = linkedSetOf<String>()
+        val candidates = mutableListOf<String>()
+        atobRegex.findAll(html).map { it.groupValues[1] }.forEach { candidates.add(it) }
+        base64StringRegex.findAll(html).map { it.groupValues[1] }.take(80).forEach { candidates.add(it) }
+        candidates.forEach { encoded ->
+            val decoded = decodeBase64(encoded) ?: return@forEach
+            if (decoded.contains("http", ignoreCase = true) || decoded.contains("iframe", ignoreCase = true) || decoded.contains("m3u8", ignoreCase = true)) {
+                quotedUrlRegex.findAll(decoded).map { it.groupValues[1] }.forEach { out.add(it) }
+                iframeRegex.findAll(decoded).map { it.groupValues[1] }.forEach { out.add(it) }
+                keyValueRegex.findAll(decoded).map { it.groupValues[1] }.forEach { out.add(it) }
+                if (decoded.startsWith("http", ignoreCase = true)) out.add(decoded)
+            }
+        }
+        return out.distinct()
+    }
+
+    private fun decodeBase64(value: String): String? {
+        return runCatching {
+            val normalized = value.replace('-', '+').replace('_', '/')
+            val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+            String(Base64.decode(padded, Base64.DEFAULT))
+        }.getOrNull()
+    }
+
+    private fun looksLikeHls(url: String): Boolean {
+        val low = url.lowercase()
+        return low.contains(".m3u8") || low.contains("m3u8") || low.contains("playlist") || low.contains("master.m3u")
+    }
+
+    private fun looksLikeDirectMp4(url: String): Boolean {
+        val low = url.lowercase()
+        return low.contains(".mp4") || low.contains("googlevideo") || low.contains("videoplayback")
+    }
+
+    private fun looksLikeMediaOrPlayer(url: String): Boolean {
+        val low = url.lowercase()
+        return !isDeniedUrl(low) &&
+            (looksLikeHls(url) ||
+                looksLikeDirectMp4(url) ||
+                isKnownExtractorHost(low) ||
+                low.contains("/embed/") ||
+                low.contains("/player/") ||
+                low.contains("?embed=") ||
+                low.contains("?source=") ||
+                low.contains("?url="))
+    }
+
+    private fun looksLikeEmbed(url: String): Boolean {
+        val low = url.lowercase()
+        return !isDeniedUrl(low) &&
+            !looksLikeDirectMp4(url) &&
+            !looksLikeHls(url) &&
+            (isKnownExtractorHost(low) ||
+                low.contains("/embed/") ||
+                low.contains("/player/") ||
+                low.contains("?embed=") ||
+                low.contains("?source="))
+    }
+
+    private fun isKnownExtractorHost(low: String): Boolean {
+        return listOf(
+            "myvidplay", "minochinos", "hglink", "streamtape", "dood", "filemoon",
+            "vidhide", "vidguard", "filelions", "streamwish", "streamsb", "sbembed",
+            "voe.sx", "uqload", "mixdrop", "fembed", "doodstream", "streamlare"
+        ).any { low.contains(it) }
+    }
+
+    private fun isDeniedUrl(low: String): Boolean {
+        return low.contains("facebook.com") ||
+            low.contains("twitter.com") ||
+            low.contains("instagram.com") ||
+            low.contains("whatsapp") ||
+            low.contains("telegram") ||
+            low.contains("disqus") ||
+            low.contains("googletagmanager") ||
+            low.contains("google-analytics") ||
+            low.contains("doubleclick") ||
+            low.contains("/wp-content/themes/") ||
+            low.endsWith(".css") ||
+            low.endsWith(".js")
+    }
+
+    private fun canRecurseInto(embed: String, pageUrl: String): Boolean {
+        val embedOrigin = FilmLokalUtils.originOf(embed)
+        val pageOrigin = FilmLokalUtils.originOf(pageUrl)
+        val low = embed.lowercase()
+        return embedOrigin != null &&
+            embedOrigin != pageOrigin &&
+            !FilmLokalUtils.isSameHost(embed) &&
+            !isDeniedUrl(low) &&
+            (isKnownExtractorHost(low) || low.contains("/embed/") || low.contains("/player/"))
+    }
+
+    private fun prioritizeCandidates(urls: List<String>): List<String> {
+        return urls.distinct().sortedBy { url ->
+            when {
+                looksLikeHls(url) -> 0
+                looksLikeDirectMp4(url) -> 1
+                isKnownExtractorHost(url.lowercase()) -> 2
+                else -> 3
+            }
+        }
     }
 }

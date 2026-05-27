@@ -26,21 +26,29 @@ class FilmLokalProvider : MainAPI() {
     override val mainPage = mainPageOf(*FilmLokalSeeds.mainPageRows())
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = pageUrl(mainUrl, request.data, page)
-        val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
-        val results = FilmLokalParser.parseListing(this, document)
+        val results = runCatching {
+            val url = pageUrl(mainUrl, request.data, page)
+            val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
+            FilmLokalParser.parseListing(this, document)
+        }.getOrElse { emptyList() }
         return newHomePageResponse(listOf(HomePageList(request.name, results, isHorizontalImages = true)))
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = searchUrl(mainUrl, query)
-        val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
-        return FilmLokalParser.parseListing(this, document)
+        return runCatching {
+            val url = searchUrl(mainUrl, query)
+            val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
+            FilmLokalParser.parseListing(this, document)
+        }.getOrElse { emptyList() }
     }
 
+    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
+
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
-        return FilmLokalParser.parseLoadResponse(this, url, document)
+        return runCatching {
+            val document = app.get(url, headers = FilmLokalUtils.siteHeaders, referer = mainUrl).document
+            FilmLokalParser.parseLoadResponse(this, url, document)
+        }.getOrNull()
     }
 
     override suspend fun loadLinks(

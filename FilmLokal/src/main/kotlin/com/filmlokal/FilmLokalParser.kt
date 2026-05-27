@@ -24,14 +24,12 @@ object FilmLokalParser {
         ".ml-item",
         ".movie",
         ".movie-item",
-        ".item",
         ".result-item",
         ".film",
-        ".box",
-        ".col-md-2",
-        ".col-md-3",
-        ".col-sm-3",
-        ".owl-item"
+        ".post",
+        ".item:has(img)",
+        ".owl-item:has(img)",
+        "a[href]:has(img)"
     ).joinToString(",")
 
     private const val IMAGE_SELECTOR =
@@ -42,9 +40,7 @@ object FilmLokalParser {
         val containers: List<Element> = if (primary.isNotEmpty()) {
             primary.toList()
         } else {
-            document.select("a[href]")
-                .mapNotNull { it.parent() }
-                .distinct()
+            document.select("a[href]:has(img)").toList()
         }
 
         return containers
@@ -54,25 +50,28 @@ object FilmLokalParser {
     }
 
     private fun parseCard(api: MainAPI, element: Element): SearchResponse? {
-        val image = element.selectFirst(IMAGE_SELECTOR)
-            ?: element.parent()?.selectFirst(IMAGE_SELECTOR)
-            ?: return null
-
-        val link = element.selectFirst("a[href]:has(img), h2 a[href], h3 a[href], .title a[href], a[title][href]")
-            ?: image.parents().select("a[href]").first()
-            ?: element.selectFirst("a[href]")
-            ?: return null
+        val link = when {
+            element.tagName().equals("a", ignoreCase = true) && element.hasAttr("href") -> element
+            else -> element.selectFirst("a[href]:has(img)")
+                ?: element.selectFirst("h2 a[href], h3 a[href], .title a[href], a[title][href]")
+                ?: return null
+        }
 
         val href = absoluteUrl(api.mainUrl, link.attr("href")) ?: return null
         if (!isVideoUrl(href)) return null
 
-        val title = cleanText(
-            link.attr("title").ifBlank { link.text() }.ifBlank {
+        val image = link.selectFirst(IMAGE_SELECTOR)
+            ?: element.selectFirst(IMAGE_SELECTOR)
+            ?: element.parent()?.selectFirst(IMAGE_SELECTOR)
+            ?: return null
+
+        val title = cleanTitle(
+            link.attr("title").ifBlank { link.attr("aria-label") }.ifBlank { link.text() }.ifBlank {
                 image.attr("alt").ifBlank { image.attr("title") }
             }
         ).ifBlank { return null }
 
-        val poster = extractPoster(api.mainUrl, image, element)
+        val poster = extractPoster(api.mainUrl, image, link) ?: extractPoster(api.mainUrl, image, element)
         if (!isValidPoster(poster)) return null
 
         val type = typeFromUrlOrTitle(href, title)
@@ -82,16 +81,18 @@ object FilmLokalParser {
     }
 
     suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
-        val title = cleanText(
+        val title = cleanTitle(
             document.selectFirst("h1.entry-title, h1, .title, .heading")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
-        ).removeSuffix(" - Filmlokal").ifBlank { return null }
+        ).ifBlank { return null }
 
+        val contentRoot = document.selectFirst("article, .entry-content, .single, .post, main") ?: document
         val poster = extractPoster(
             api.mainUrl,
-            document.selectFirst(".poster img, .thumb img, .mvic-thumb img, article img, img[alt]"),
-            document
+            contentRoot.selectFirst(".poster img, .thumb img, .mvic-thumb img, .wp-post-image, img[src*='uploads'], img[alt], img[title]"),
+            contentRoot
         ) ?: absoluteUrl(api.mainUrl, document.selectFirst("meta[property=og:image]")?.attr("content"))
+            ?.takeIf { isValidPoster(it) }
 
         val plot = cleanText(
             document.selectFirst(".desc, .description, .entry-content p, .sinopsis, .synopsis")?.text()
@@ -116,7 +117,7 @@ object FilmLokalParser {
                 "a[href*='/sci-fi/'], " +
                 "a[href*='/thriller/']"
         )
-            .map { cleanText(it.text()) }
+            .map { cleanTitle(it.text()) }
             .filter { it.length in 2..30 }
             .filterNot { tag ->
                 tag.equals("Watch", true) ||
@@ -158,8 +159,8 @@ object FilmLokalParser {
             val normalized = href.substringBefore("#")
             if (!seen.add(normalized)) return@mapNotNull null
 
-            val text = cleanText(anchor.text())
-                .ifBlank { cleanText(anchor.attr("title")) }
+            val text = cleanTitle(anchor.text())
+                .ifBlank { cleanTitle(anchor.attr("title")) }
                 .ifBlank { "Episode" }
 
             api.newEpisode(href) {
@@ -191,14 +192,27 @@ object FilmLokalParser {
             candidates += image.attr("src")
         }
         if (container != null) {
-            candidates += container.selectFirst("meta[property=og:image]")?.attr("content")
             candidates += container.selectFirst("noscript img[src]")?.attr("src")
+            candidates += container.selectFirst("img[data-src], img[data-lazy-src], img[data-original], img[src]")?.let {
+                it.attr("data-src").ifBlank { it.attr("data-lazy-src").ifBlank { it.attr("data-original").ifBlank { it.attr("src") } } }
+            }
             val style = container.attr("style")
                 .ifBlank { container.selectFirst("[style*=background]")?.attr("style").orEmpty() }
             candidates += Regex("""url\((['\"]?)(.*?)\1\)""").find(style)?.groupValues?.getOrNull(2)
+            candidates += container.selectFirst("meta[property=og:image]")?.attr("content")
         }
         return candidates.asSequence()
             .mapNotNull { absoluteUrl(baseUrl, it) }
             .firstOrNull { isValidPoster(it) }
+    }
+
+    private fun cleanTitle(value: String?): String {
+        return cleanText(value)
+            .replace(Regex("(?i)^permalink\\s+to:\\s*"), "")
+            .replace(Regex("(?i)^permalink:\\s*"), "")
+            .replace(Regex("(?i)\\s+-\\s+filmlokal$"), "")
+            .replace(Regex("(?i)\\s+subtitle\\s+indonesia$"), " Sub")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 }

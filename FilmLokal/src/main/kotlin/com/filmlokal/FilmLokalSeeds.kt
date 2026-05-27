@@ -7,7 +7,6 @@ object FilmLokalSeeds {
         "/page/%d/" to "Upload Terbaru",
         "/best-rating/page/%d/" to "Best Rating",
         "/film-series/page/%d/" to "Film Series",
-        "/anime-boruto/page/%d/" to "Anime Boruto",
         "/action/page/%d/" to "Action",
         "/adventure/page/%d/" to "Adventure",
         "/animation/page/%d/" to "Animation",
