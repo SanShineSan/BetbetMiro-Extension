@@ -16,7 +16,9 @@ import com.nonton01.Nonton01Utils.originOf
 import com.nonton01.Nonton01Utils.videoHeaders
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 object Nonton01Extractor {
@@ -24,7 +26,7 @@ object Nonton01Extractor {
     private const val MAX_HOPS = 3
     private const val MAX_DIRECT_CANDIDATES = 26
     private const val MAX_EMBED_CANDIDATES = 14
-    private const val MAX_AJAX_CANDIDATES = 12
+    private const val MAX_AJAX_CANDIDATES = 48
 
     private val keyValueRegex = Regex(
         """(?i)(?:file|src|url|source|hls|hlsUrl|video|videoUrl|stream|streamUrl|playlist|embed|iframe|link|player|content)
@@ -211,92 +213,222 @@ object Nonton01Extractor {
         val numes = linkedSetOf<String>()
         val types = linkedSetOf<String>()
 
-        document.select("[data-post], [data-id], [data-nume], [data-type], .dooplay_player_option, .player-option, .server, .server-item").forEach { element ->
-            listOf("data-post", "data-id", "data-movie", "data-movieid").map { element.attr(it) }.filter { it.isNotBlank() && it.all { ch -> ch.isDigit() } }.forEach { posts.add(it) }
-            listOf("data-nume", "data-server", "data-episode").map { element.attr(it) }.filter { it.isNotBlank() && it.all { ch -> ch.isDigit() } }.forEach { numes.add(it) }
-            element.attr("data-type").takeIf { it.isNotBlank() }?.let { types.add(it) }
+        val optionSelectors = listOf(
+            ".dooplay_player_option",
+            "#playeroptionsul li",
+            "ul#playeroptionsul li",
+            ".player_sorces li",
+            ".player option",
+            ".player-option",
+            ".server",
+            ".server-item",
+            "[data-post]",
+            "[data-id]",
+            "[data-nume]",
+            "[data-type]"
+        ).joinToString(", ")
+
+        document.select(optionSelectors).forEach { element ->
+            listOf("data-post", "data-id", "data-movie", "data-movieid", "post", "id")
+                .map { element.attr(it) }
+                .filter { it.isNotBlank() && it.all { ch -> ch.isDigit() } }
+                .forEach { posts.add(it) }
+            listOf("data-nume", "data-server", "data-episode", "server", "episode")
+                .map { element.attr(it) }
+                .filter { it.isNotBlank() && it.all { ch -> ch.isDigit() } }
+                .forEach { numes.add(it) }
+            listOf("data-type", "type")
+                .map { element.attr(it) }
+                .filter { it.isNotBlank() }
+                .forEach { types.add(normalizeAjaxType(it)) }
+
+            val identityText = listOf(element.id(), element.className(), element.attr("onclick"), element.attr("data-target"), element.text())
+                .joinToString(" ")
+            extractAjaxIdsFromText(identityText, posts, numes, types)
         }
+
         dataPostRegex.findAll(html).map { it.groupValues[1] }.forEach { posts.add(it) }
         dataNumeRegex.findAll(html).map { it.groupValues[1] }.forEach { numes.add(it) }
-        dataTypeRegex.findAll(html).map { it.groupValues[1] }.forEach { types.add(it) }
+        dataTypeRegex.findAll(html).map { it.groupValues[1] }.forEach { types.add(normalizeAjaxType(it)) }
         jsPostRegex.findAll(html).map { it.groupValues[1] }.take(3).forEach { posts.add(it) }
         bodyPostRegex.findAll(html).map { it.groupValues[1] }.take(4).forEach { posts.add(it) }
+        extractAjaxIdsFromText(html, posts, numes, types)
 
-        if (posts.isEmpty()) return emptyList()
+        if (posts.isEmpty()) {
+            Log.e(TAG, "ajax attributes missing: no post/id found for $pageUrl")
+            return emptyList()
+        }
         if (numes.isEmpty()) (1..8).map { it.toString() }.forEach { numes.add(it) }
-        if (types.isEmpty()) listOf("movie", "tv", "episode").forEach { types.add(it) }
+
+        val inferredTypes = inferAjaxTypes(pageUrl)
+        val orderedTypes = linkedSetOf<String>()
+        if (types.isNotEmpty()) {
+            types.map { normalizeAjaxType(it) }.forEach { orderedTypes.add(it) }
+        } else {
+            inferredTypes.forEach { orderedTypes.add(it) }
+        }
+        listOf("movie", "tv", "episode").forEach { orderedTypes.add(it) }
+
+        Log.e(TAG, "ajax attrs page=$pageUrl posts=${posts.take(6)} numes=${numes.take(10)} types=${orderedTypes.take(6)}")
 
         val endpoints = listOf(
             "$origin/wp-admin/admin-ajax.php",
             "$origin/admin-ajax.php",
             "$origin/wp-json/dooplay/v1/player"
         )
+        val actions = listOf("doo_player_ajax", "dt_player_ajax", "player_ajax")
         val payloads = mutableListOf<Triple<String, String, String>>()
-        posts.take(2).forEach { post ->
-            numes.take(8).forEach { nume ->
-                types.take(3).forEach { type -> payloads.add(Triple(post, nume, type)) }
+        posts.take(3).forEach { post ->
+            numes.take(10).forEach { nume ->
+                orderedTypes.take(4).forEach { type -> payloads.add(Triple(post, nume, type)) }
             }
         }
 
         val out = linkedSetOf<String>()
         var attempts = 0
         for ((post, nume, type) in payloads) {
-            if (attempts >= MAX_AJAX_CANDIDATES) break
             for (endpoint in endpoints) {
-                if (attempts >= MAX_AJAX_CANDIDATES) break
-                attempts++
-                val actions = listOf("doo_player_ajax", "dt_player_ajax", "player_ajax")
                 for (action in actions) {
+                    if (attempts >= MAX_AJAX_CANDIDATES) {
+                        Log.e(TAG, "ajax probe limit reached attempts=$attempts candidates=${out.size}")
+                        return prioritizeCandidates(out.toList())
+                    }
+                    attempts++
                     val form = "action=$action&post=$post&nume=$nume&type=$type"
-                    Log.e(TAG, "ajax probe: $endpoint action=$action post=$post nume=$nume type=$type")
+                    val ajaxHeaders = Nonton01Utils.siteHeadersFor(pageUrl) + mapOf(
+                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                        "Referer" to pageUrl,
+                        "Origin" to origin,
+                        "Accept" to "application/json, text/javascript, */*; q=0.01",
+                        "X-Requested-With" to "XMLHttpRequest"
+                    )
+                    Log.e(TAG, "ajax probe#$attempts endpoint=$endpoint action=$action post=$post nume=$nume type=$type")
+
                     val responseText = runCatching {
                         val body = form.toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaTypeOrNull())
-                        app.post(
-                            endpoint,
-                            requestBody = body,
-                            headers = Nonton01Utils.siteHeadersFor(pageUrl) + mapOf(
-                                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                                "Referer" to pageUrl,
-                                "X-Requested-With" to "XMLHttpRequest"
-                            )
-                        ).text
-                    }.getOrNull() ?: runCatching {
-                        app.get(
-                            "$endpoint?$form",
-                            headers = Nonton01Utils.siteHeadersFor(pageUrl) + mapOf(
-                                "Referer" to pageUrl,
-                                "X-Requested-With" to "XMLHttpRequest"
-                            )
-                        ).text
-                    }.getOrNull()
+                        val res = app.post(endpoint, requestBody = body, headers = ajaxHeaders)
+                        val text = res.text
+                        Log.e(TAG, "ajax POST status=${res.code} action=$action post=$post nume=$nume type=$type body=${snippet(text)}")
+                        text
+                    }.onFailure { Log.e(TAG, "ajax POST failed endpoint=$endpoint action=$action post=$post nume=$nume type=$type error=${it.message}") }
+                        .getOrNull()
+                        ?: runCatching {
+                            val res = app.get("$endpoint?$form", headers = ajaxHeaders)
+                            val text = res.text
+                            Log.e(TAG, "ajax GET status=${res.code} action=$action post=$post nume=$nume type=$type body=${snippet(text)}")
+                            text
+                        }.onFailure { Log.e(TAG, "ajax GET failed endpoint=$endpoint action=$action post=$post nume=$nume type=$type error=${it.message}") }
+                            .getOrNull()
 
-                    if (!responseText.isNullOrBlank()) {
-                        extractUrlsFromText(pageUrl, ajaxPayloadText(responseText)).forEach { out.add(it) }
-                        if (out.isNotEmpty()) Log.e(TAG, "ajax captured ${out.size} candidates from $endpoint action=$action")
+                    if (responseText.isNullOrBlank()) {
+                        Log.e(TAG, "ajax empty response endpoint=$endpoint action=$action post=$post nume=$nume type=$type")
+                        continue
                     }
-                    if (out.any { looksLikeHls(it) || looksLikeDirectMp4(it) || isKnownExtractorHost(it.lowercase()) || looksLikeEmbed(it) }) break
+
+                    val payloadText = ajaxPayloadText(responseText)
+                    val urls = extractUrlsFromText(pageUrl, payloadText)
+                    if (urls.isEmpty()) {
+                        Log.e(TAG, "ajax parsed 0 urls action=$action post=$post nume=$nume type=$type payload=${snippet(payloadText)}")
+                    } else {
+                        Log.e(TAG, "ajax captured ${urls.size} urls action=$action post=$post nume=$nume type=$type urls=${urls.take(5)}")
+                        urls.forEach { out.add(it) }
+                    }
                 }
-                if (out.any { looksLikeHls(it) || looksLikeDirectMp4(it) || isKnownExtractorHost(it.lowercase()) || looksLikeEmbed(it) }) break
             }
-            if (out.any { looksLikeHls(it) || looksLikeDirectMp4(it) || isKnownExtractorHost(it.lowercase()) || looksLikeEmbed(it) }) break
         }
-        return out.toList()
+        Log.e(TAG, "ajax probes done attempts=$attempts candidates=${out.size}")
+        return prioritizeCandidates(out.toList())
     }
 
     private fun ajaxPayloadText(raw: String): String {
-        val normalized = raw
-            .replace("\\/", "/")
-            .replace("&amp;", "&")
-            .replace("&#038;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#039;", "'")
-        return runCatching {
-            val obj = JSONObject(normalized)
-            listOf("embed_url", "url", "link", "src", "file", "html", "iframe", "content", "data")
-                .mapNotNull { key -> obj.optString(key).takeIf { it.isNotBlank() && it != "null" } }
-                .joinToString("\n")
-                .ifBlank { normalized }
-        }.getOrDefault(normalized)
+        val normalized = normalizedText(raw)
+        val collected = linkedSetOf<String>()
+
+        fun collectJsonValue(value: Any?) {
+            when (value) {
+                null -> Unit
+                JSONObject.NULL -> Unit
+                is JSONObject -> {
+                    value.keys().forEach { key -> collectJsonValue(value.opt(key)) }
+                }
+                is JSONArray -> {
+                    for (i in 0 until value.length()) collectJsonValue(value.opt(i))
+                }
+                is String -> {
+                    val v = normalizedText(value)
+                    if (v.isNotBlank() && v != "0" && !v.equals("null", ignoreCase = true)) collected.add(v)
+                    if ((v.startsWith("{") && v.endsWith("}")) || (v.startsWith("[") && v.endsWith("]"))) {
+                        runCatching { collectJsonValue(JSONObject(v)) }
+                        runCatching { collectJsonValue(JSONArray(v)) }
+                    }
+                }
+                else -> collectJsonValue(value.toString())
+            }
+        }
+
+        runCatching { collectJsonValue(JSONObject(normalized)) }
+        runCatching { collectJsonValue(JSONArray(normalized)) }
+
+        if (collected.isEmpty()) collected.add(normalized)
+        return collected.joinToString("\n")
+    }
+
+    private fun extractAjaxIdsFromText(
+        text: String,
+        posts: MutableSet<String>,
+        numes: MutableSet<String>,
+        types: MutableSet<String>
+    ) {
+        Regex("""(?i)(?:player[-_]?option|player_option|option|server)[-_](\d{2,})[-_](\d{1,2})""")
+            .findAll(text)
+            .forEach {
+                posts.add(it.groupValues[1])
+                numes.add(it.groupValues[2])
+            }
+        Regex("""(?i)(?:data|post|movie)[-_](\d{2,})[-_](\d{1,2})[-_]([a-z]+)""")
+            .findAll(text)
+            .forEach {
+                posts.add(it.groupValues[1])
+                numes.add(it.groupValues[2])
+                types.add(normalizeAjaxType(it.groupValues[3]))
+            }
+        Regex("""(?i)(?:nume|server|episode)[-_=: ]+(\d{1,2})""")
+            .findAll(text)
+            .map { it.groupValues[1] }
+            .forEach { numes.add(it) }
+        Regex("""(?i)(?:type)[-_=: ]+([a-zA-Z0-9_-]+)""")
+            .findAll(text)
+            .map { it.groupValues[1] }
+            .forEach { types.add(normalizeAjaxType(it)) }
+    }
+
+    private fun normalizeAjaxType(value: String): String {
+        val v = value.trim().lowercase()
+        return when {
+            v.contains("episode") || v == "ep" -> "episode"
+            v.contains("tv") || v.contains("series") -> "tv"
+            v.contains("movie") || v.contains("film") -> "movie"
+            v.isBlank() -> "movie"
+            else -> v
+        }
+    }
+
+    private fun inferAjaxTypes(pageUrl: String): List<String> {
+        val low = pageUrl.lowercase()
+        return when {
+            low.contains("/episodes/") || low.contains("/episode/") -> listOf("episode", "tv")
+            low.contains("/tvshows/") || low.contains("/series/") -> listOf("tv", "episode")
+            low.contains("/movies/") || low.contains("/movie/") -> listOf("movie")
+            else -> listOf("movie")
+        }
+    }
+
+    private fun snippet(text: String?, max: Int = 300): String {
+        return text.orEmpty()
+            .replace("\n", " ")
+            .replace("\r", " ")
+            .replace(Regex("\\s+"), " ")
+            .take(max)
     }
 
     private suspend fun collectSubtitles(pageUrl: String, document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
@@ -324,6 +456,19 @@ object Nonton01Extractor {
     private fun extractUrlsFromText(pageUrl: String, text: String): List<String> {
         val html = normalizedText(text)
         val out = linkedSetOf<String>()
+
+        if (html.contains("<iframe", ignoreCase = true) || html.contains("<video", ignoreCase = true) || html.contains("<source", ignoreCase = true)) {
+            runCatching {
+                val miniDoc = Jsoup.parseBodyFragment(html, pageUrl)
+                miniDoc.select("iframe[src], embed[src], video[src], source[src], a[href], [data-src], [data-url], [data-file], [data-embed], [data-iframe]").forEach { element ->
+                    listOf("src", "href", "data-src", "data-url", "data-file", "data-embed", "data-iframe")
+                        .map { element.attr(it) }
+                        .mapNotNull { normalizeUrl(pageUrl, it) }
+                        .forEach { out.add(it) }
+                }
+            }.onFailure { Log.e(TAG, "mini HTML parse failed: ${it.message}") }
+        }
+
         keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
         quotedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
         iframeRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
