@@ -4,6 +4,7 @@ import com.hentaicop.HentaiCopUtils.absoluteUrl
 import com.hentaicop.HentaiCopUtils.cleanText
 import com.hentaicop.HentaiCopUtils.decodePossibleBase64
 import com.hentaicop.HentaiCopUtils.decodeUrl
+import com.hentaicop.HentaiCopUtils.isEpisodeUrl
 import com.hentaicop.HentaiCopUtils.isPseudoUrl
 import com.hentaicop.HentaiCopUtils.qualityFromText
 import com.hentaicop.HentaiCopUtils.videoHeaders
@@ -16,11 +17,15 @@ import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 object HentaiCopExtractor {
+    private const val MAX_PAGE_HOPS = 6
+    private const val MAX_SERVER_HOPS = 8
+
     private val keyValueMediaRegex = Regex(
-        """(?i)(?:file|src|source|url|hls|playlist|video|videoUrl|hlsUrl)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
+        """(?i)(?:file|src|source|url|hls|playlist|video|videoUrl|hlsUrl|embed_url)\s*[=:]\s*['\"]([^'\"]+)['\"]"""
     )
     private val iframeRegex = Regex("""(?i)<iframe[^>]+src=['\"]([^'\"]+)['\"]""")
     private val quotedMediaRegex = Regex(
@@ -39,30 +44,61 @@ object HentaiCopExtractor {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (isPseudoUrl(data)) return false
-
         val seenLinks = linkedSetOf<String>()
+        val seenPages = linkedSetOf<String>()
+        return resolvePage(providerName, mainUrl, data, data, seenPages, seenLinks, subtitleCallback, callback, 0)
+    }
+
+    private suspend fun resolvePage(
+        providerName: String,
+        mainUrl: String,
+        pageUrl: String,
+        referer: String,
+        seenPages: MutableSet<String>,
+        seenLinks: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+        depth: Int
+    ): Boolean {
+        if (depth > MAX_PAGE_HOPS) return false
+        val normalizedPage = absoluteUrl(referer, pageUrl) ?: return false
+        if (isPseudoUrl(normalizedPage) || !seenPages.add(normalizedPage)) return false
+
         var found = false
         val emitLink: (ExtractorLink) -> Unit = { link ->
             if (seenLinks.add(link.url)) callback(link)
         }
 
-        val document = app.get(data, headers = HentaiCopUtils.siteHeaders, referer = data).document
-        collectSubtitles(data, document, subtitleCallback)
+        val document = runCatching {
+            app.get(normalizedPage, headers = HentaiCopUtils.siteHeaders, referer = referer).document
+        }.getOrNull() ?: return false
 
-        extractMedia(data, data, document).forEach { media ->
-            val emitted = emitMedia(providerName, media.name, media.url, media.referer, seenLinks, emitLink)
-            if (emitted) found = true
+        collectSubtitles(normalizedPage, document, subtitleCallback)
+
+        extractMedia(normalizedPage, normalizedPage, document).forEach { media ->
+            if (emitMedia(providerName, media.name, media.url, media.referer, seenLinks, emitLink)) found = true
         }
 
-        val pageServers = extractServers(data, document)
-        for (server in pageServers) {
-            val serverFound = resolveServer(providerName, mainUrl, server, seenLinks, subtitleCallback, emitLink)
-            if (serverFound) found = true
+        extractAjaxServers(mainUrl, normalizedPage, document).forEach { server ->
+            if (resolveServer(providerName, server, seenPages, seenLinks, subtitleCallback, emitLink, 0)) found = true
+        }
+
+        extractServers(normalizedPage, document).forEach { server ->
+            if (resolveServer(providerName, server, seenPages, seenLinks, subtitleCallback, emitLink, 0)) found = true
+        }
+
+        if (!found) {
+            document.select(".eplister li a[href], .episodelist li a[href], .episode-list a[href], a[href*='-episode-']")
+                .mapNotNull { absoluteUrl(normalizedPage, it.attr("href")) }
+                .firstOrNull { isEpisodeUrl(it) && it != normalizedPage }
+                ?.let { episodeUrl ->
+                    if (resolvePage(providerName, mainUrl, episodeUrl, normalizedPage, seenPages, seenLinks, subtitleCallback, callback, depth + 1)) found = true
+                }
         }
 
         if (!found) {
             val fallback = runCatching {
-                loadExtractor(data, data, subtitleCallback) { link ->
+                loadExtractor(normalizedPage, normalizedPage, subtitleCallback) { link ->
                     if (seenLinks.add(link.url)) {
                         found = true
                         callback(link)
@@ -77,12 +113,14 @@ object HentaiCopExtractor {
 
     private suspend fun resolveServer(
         providerName: String,
-        mainUrl: String,
         server: HentaiCopServer,
+        seenPages: MutableSet<String>,
         seenLinks: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        depth: Int
     ): Boolean {
+        if (depth > MAX_SERVER_HOPS) return false
         var serverFound = false
         val normalizedServer = absoluteUrl(server.referer, server.url) ?: return false
         if (isPseudoUrl(normalizedServer)) return false
@@ -101,34 +139,24 @@ object HentaiCopExtractor {
             }
         }
 
-        val embedDocument = runCatching {
-            app.get(normalizedServer, headers = HentaiCopUtils.siteHeaders, referer = server.referer).document
-        }.getOrNull()
+        if (!seenPages.add(normalizedServer)) return serverFound
+        val embedText = runCatching {
+            app.get(normalizedServer, headers = HentaiCopUtils.videoHeaders(server.referer), referer = server.referer).text
+        }.getOrNull() ?: return serverFound
+        val embedDocument = Jsoup.parse(embedText, normalizedServer)
 
-        if (embedDocument != null) {
-            collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
-
-            val media = extractMedia(normalizedServer, normalizedServer, embedDocument)
-            for (item in media) {
-                val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
-                if (emitted) serverFound = true
-            }
-
-            val nestedServers = extractServers(normalizedServer, embedDocument)
-                .filterNot { it.url == normalizedServer || isPseudoUrl(it.url) }
-                .distinctBy { it.url }
-            for (nested in nestedServers) {
-                val nestedFound = runCatching {
-                    loadExtractor(nested.url, nested.referer, subtitleCallback) { link ->
-                        if (seenLinks.add(link.url)) {
-                            serverFound = true
-                            callback(link)
-                        }
-                    }
-                }.getOrDefault(false)
-                if (nestedFound) serverFound = true
-            }
+        collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
+        extractMedia(normalizedServer, normalizedServer, embedDocument).forEach { item ->
+            val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
+            if (emitted) serverFound = true
         }
+
+        extractServers(normalizedServer, embedDocument)
+            .filterNot { it.url == normalizedServer || isPseudoUrl(it.url) }
+            .distinctBy { it.url }
+            .forEach { nested ->
+                if (resolveServer(providerName, nested, seenPages, seenLinks, subtitleCallback, callback, depth + 1)) serverFound = true
+            }
 
         return serverFound
     }
@@ -196,6 +224,40 @@ object HentaiCopExtractor {
         }
     }
 
+    private suspend fun extractAjaxServers(mainUrl: String, pageUrl: String, document: Document): List<HentaiCopServer> {
+        val servers = linkedSetOf<HentaiCopServer>()
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val actions = listOf("player_ajax", "doo_player_ajax", "load_player", "hentaicop_player_ajax")
+
+        document.select("[data-post][data-nume], [data-post][data-number], .dooplay_player_option, .player-option, li[data-post]")
+            .forEachIndexed { index, element ->
+                val post = element.attr("data-post")
+                val nume = element.attr("data-nume").ifBlank { element.attr("data-number") }.ifBlank { "1" }
+                val type = element.attr("data-type").ifBlank { "iframe" }
+                if (post.isBlank()) return@forEachIndexed
+                val name = cleanText(element.text()).ifBlank { "Ajax ${index + 1}" }
+
+                for (action in actions) {
+                    val text = runCatching {
+                        app.post(
+                            ajaxUrl,
+                            data = mapOf("action" to action, "post" to post, "nume" to nume, "type" to type),
+                            headers = HentaiCopUtils.siteHeaders,
+                            referer = pageUrl
+                        ).text
+                    }.getOrNull().orEmpty()
+                    if (text.isBlank()) continue
+
+                    servers.addAll(extractServersFromText(pageUrl, name, text))
+                    extractMediaFromText(pageUrl, pageUrl, text).forEach { media ->
+                        servers.add(HentaiCopServer(media.name.ifBlank { name }, media.url, media.referer))
+                    }
+                    if (servers.isNotEmpty()) break
+                }
+            }
+        return servers.distinctBy { it.url }
+    }
+
     private fun extractServers(pageUrl: String, document: Document): List<HentaiCopServer> {
         val servers = linkedSetOf<HentaiCopServer>()
         val raw = normalizedHtml(document)
@@ -232,10 +294,23 @@ object HentaiCopExtractor {
             servers.add(HentaiCopServer(name, url, pageUrl))
         }
 
+        extractServersFromText(pageUrl, "Script", raw).forEach { servers.add(it) }
+        return servers.distinctBy { it.url }
+    }
+
+    private fun extractServersFromText(pageUrl: String, fallbackName: String, text: String): List<HentaiCopServer> {
+        val servers = linkedSetOf<HentaiCopServer>()
+        val raw = normalizedHtml(text)
+
+        iframeRegex.findAll(raw).forEachIndexed { index, match ->
+            val url = absoluteUrl(pageUrl, match.groupValues[1]) ?: return@forEachIndexed
+            if (!isPseudoUrl(url)) servers.add(HentaiCopServer("$fallbackName ${index + 1}", url, pageUrl))
+        }
+
         keyValueMediaRegex.findAll(raw).forEachIndexed { index, match ->
             val url = absoluteUrl(pageUrl, match.groupValues[1]) ?: return@forEachIndexed
             if (!isPseudoUrl(url) && url.startsWith("http", true) && !isDirectMedia(url)) {
-                servers.add(HentaiCopServer("Script ${index + 1}", url, pageUrl))
+                servers.add(HentaiCopServer("$fallbackName ${index + 1}", url, pageUrl))
             }
         }
 
@@ -256,8 +331,20 @@ object HentaiCopExtractor {
             if (!isPseudoUrl(url)) media.add(HentaiCopMedia("Source ${index + 1}", url, referer))
         }
 
+        media.addAll(extractMediaFromText(pageUrl, referer, raw))
+        return media
+            .filter { isDirectMedia(it.url) || isLikelyHlsCandidate(it.url) }
+            .distinctBy { it.url }
+    }
+
+    private fun extractMediaFromText(pageUrl: String, referer: String, text: String): List<HentaiCopMedia> {
+        val media = linkedSetOf<HentaiCopMedia>()
+        val raw = normalizedHtml(text)
+
         keyValueMediaRegex.findAll(raw).forEachIndexed { index, match ->
-            val url = absoluteUrl(pageUrl, match.groupValues[1]) ?: return@forEachIndexed
+            val decoded = decodePossibleBase64(match.groupValues[1]) ?: match.groupValues[1]
+            val iframeUrl = iframeRegex.find(decoded)?.groupValues?.getOrNull(1)
+            val url = absoluteUrl(pageUrl, iframeUrl ?: decoded) ?: return@forEachIndexed
             if (!isPseudoUrl(url)) media.add(HentaiCopMedia("File ${index + 1}", url, referer))
         }
 
@@ -276,18 +363,19 @@ object HentaiCopExtractor {
             if (!isPseudoUrl(url)) media.add(HentaiCopMedia("Encoded ${index + 1}", url, referer))
         }
 
-        return media
-            .filter { isDirectMedia(it.url) || isLikelyHlsCandidate(it.url) }
-            .distinctBy { it.url }
+        return media.distinctBy { it.url }
     }
 
-    private fun normalizedHtml(document: Document): String {
-        return document.html()
+    private fun normalizedHtml(document: Document): String = normalizedHtml(document.html())
+
+    private fun normalizedHtml(text: String): String {
+        return text
             .replace("\\/", "/")
             .replace("&amp;", "&")
             .replace("\\u0026", "&")
             .replace("\\u003d", "=")
             .replace("\\u003a", ":")
+            .replace("\\\"", "\"")
     }
 
     private fun isDirectMedia(url: String): Boolean {

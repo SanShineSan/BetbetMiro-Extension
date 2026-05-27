@@ -15,7 +15,6 @@ object HentaiCopUtils {
         "Referer" to "${HentaiCopSeeds.MAIN_URL}/"
     )
 
-    // Kept as an alias because Provider/Parser/Extractor references this name.
     val headers: Map<String, String> = siteHeaders
 
     fun videoHeaders(referer: String): Map<String, String> = mapOf(
@@ -41,6 +40,7 @@ object HentaiCopUtils {
             .replace("\\u0026", "&")
             .replace("\\u003d", "=")
             .replace("\\u003a", ":")
+            .replace("\\\"", "\"")
         return runCatching { URLDecoder.decode(cleaned, "UTF-8") }.getOrDefault(cleaned)
     }
 
@@ -91,17 +91,30 @@ object HentaiCopUtils {
     fun isPlayablePageUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.ROOT).substringBefore('#')
         if (!lower.contains("hentaicop.com")) return false
-        if (isBlockedCatalogUrl(lower)) return false
         return isSeriesUrl(lower) || isEpisodeUrl(lower)
+    }
+
+    fun isCatalogPageUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT).substringBefore('#')
+        return listOf("/hentai/", "/jav/", "/2d/", "/uncensored/", "/genre/", "/studio/", "/producer/").any { lower.contains(it) }
     }
 
     fun isBlockedCatalogUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.ROOT)
         return listOf(
-            "/genre/", "/studio/", "/producer/", "/tag/", "/category/", "/wp-",
-            "/series/list-mode", "/jadwal-hentai-baru", "/privacy", "/dmca", "/contact",
-            "/hentai/", "/jav/", "/2d/", "/uncensored/"
+            "/tag/", "/category/", "/wp-", "/series/list-mode", "/jadwal-hentai-baru",
+            "/privacy", "/dmca", "/contact", "/about", "/disclaimer"
         ).any { lower.contains(it) }
+    }
+
+    fun isUsablePosterUrl(url: String?): Boolean {
+        val lower = url.orEmpty().trim().lowercase(Locale.ROOT)
+        if (isPseudoUrl(lower)) return false
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+        if (lower.startsWith("data:") || lower.contains("base64,")) return false
+        if (lower.endsWith(".svg") || lower.contains("placeholder") || lower.contains("blank.gif") || lower.contains("no-image")) return false
+        return lower.contains(".jpg") || lower.contains(".jpeg") || lower.contains(".png") ||
+            lower.contains(".webp") || lower.contains("wp-content") || lower.contains("uploads") || lower.contains("image")
     }
 
     fun episodeToSeriesUrl(mainUrl: String, episodeUrl: String): String {

@@ -6,6 +6,8 @@ import com.hentaicop.HentaiCopUtils.cleanTitle
 import com.hentaicop.HentaiCopUtils.episodeNumber
 import com.hentaicop.HentaiCopUtils.isEpisodeUrl
 import com.hentaicop.HentaiCopUtils.isPlayablePageUrl
+import com.hentaicop.HentaiCopUtils.isPseudoUrl
+import com.hentaicop.HentaiCopUtils.isUsablePosterUrl
 import com.hentaicop.HentaiCopUtils.statusFromText
 import com.hentaicop.HentaiCopUtils.titleFromSlug
 import com.lagradost.cloudstream3.AnimeSearchResponse
@@ -19,6 +21,7 @@ import com.lagradost.cloudstream3.addEpisodes
 import com.lagradost.cloudstream3.newAnimeLoadResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
@@ -27,21 +30,21 @@ object HentaiCopParser {
         val results = linkedSetOf<AnimeSearchResponse>()
 
         document.select(
-            "article.bs.styletwo, article.bs, .listupd article, .listupd .bs, .bsx, .serieslist li, .soralist li, .eplister li, .swiper-slide, .postbody article"
+            "article.bs.styletwo, article.bs, .listupd article, .listupd .bs, .bsx, .swiper-slide, .postbody article, .post, .item"
         ).forEach { element ->
             parseCard(api, element)?.let { results.add(it) }
         }
 
-        if (results.size < 8) {
-            document.select("a[href]").forEach { anchor ->
+        if (results.size < 4) {
+            document.select("a[href]:has(img), a[href]:has(noscript)").forEach { anchor ->
                 parseAnchorCard(api, anchor)?.let { results.add(it) }
             }
         }
 
         return results
             .distinctBy { it.url }
-            .filter { it.name.length > 2 && it.url.isNotBlank() }
-            .take(48)
+            .filter { it.name.length > 2 && it.url.isNotBlank() && isUsablePosterUrl(it.posterUrl) }
+            .take(36)
     }
 
     private fun parseCard(api: MainAPI, element: Element): AnimeSearchResponse? {
@@ -54,25 +57,17 @@ object HentaiCopParser {
         if (!isPlayablePageUrl(href)) return null
 
         val targetUrl = href
-        val image = element.selectFirst("img")
+        val poster = posterFromElement(api, element, link) ?: return null
         val rawTitle = link.attr("oldtitle")
             .ifBlank { link.attr("title") }
-            .ifBlank { image?.attr("alt").orEmpty() }
-            .ifBlank { image?.attr("title").orEmpty() }
+            .ifBlank { element.selectFirst("img")?.attr("alt").orEmpty() }
+            .ifBlank { element.selectFirst("img")?.attr("title").orEmpty() }
             .ifBlank { link.text() }
             .ifBlank { element.selectFirst(".tt, h2, h3, .entry-title, .epl-title")?.text().orEmpty() }
             .ifBlank { titleFromSlug(targetUrl) }
 
         val title = cleanTitle(rawTitle).ifBlank { titleFromSlug(targetUrl) }
-        val poster = image?.let {
-            absoluteUrl(
-                api.mainUrl,
-                it.attr("data-src")
-                    .ifBlank { it.attr("data-lazy-src") }
-                    .ifBlank { it.attr("data-original") }
-                    .ifBlank { it.attr("src") }
-            )
-        }
+        if (title.length < 3 || title.equals("lihat semua", true)) return null
 
         return api.newAnimeSearchResponse(title, targetUrl, TvType.NSFW) {
             posterUrl = poster
@@ -82,19 +77,86 @@ object HentaiCopParser {
     private fun parseAnchorCard(api: MainAPI, anchor: Element): AnimeSearchResponse? {
         val href = absoluteUrl(api.mainUrl, anchor.attr("href")) ?: return null
         if (!isPlayablePageUrl(href)) return null
+        val poster = posterFromElement(api, anchor, anchor) ?: return null
         val targetUrl = href
         val text = cleanTitle(
             anchor.attr("title")
-                .ifBlank { anchor.text() }
                 .ifBlank { anchor.selectFirst("img")?.attr("alt").orEmpty() }
+                .ifBlank { anchor.text() }
         ).ifBlank { titleFromSlug(targetUrl) }
-        if (text.equals("home", true) || text.equals("download", true) || text.equals("lihat semua", true)) return null
-        val poster = anchor.selectFirst("img")?.let {
-            absoluteUrl(api.mainUrl, it.attr("data-src").ifBlank { it.attr("src") })
-        }
+        if (text.length < 3 || text.equals("home", true) || text.equals("download", true) || text.equals("lihat semua", true)) return null
         return api.newAnimeSearchResponse(text, targetUrl, TvType.NSFW) {
             posterUrl = poster
         }
+    }
+
+    private fun posterFromElement(api: MainAPI, vararg elements: Element?): String? {
+        val searchRoots = linkedSetOf<Element>()
+        elements.filterNotNull().forEach { element ->
+            searchRoots.add(element)
+            var parent = element.parent()
+            repeat(4) {
+                if (parent != null) {
+                    searchRoots.add(parent!!)
+                    parent = parent!!.parent()
+                }
+            }
+        }
+
+        for (root in searchRoots) {
+            root.select("img[data-src], img[data-lazy-src], img[data-original], img[data-wpfc-original-src], img[data-srcset], img[data-lazy-srcset], img[srcset], img[src]").forEach { img ->
+                val candidates = listOf(
+                    img.attr("data-src"),
+                    img.attr("data-lazy-src"),
+                    img.attr("data-original"),
+                    img.attr("data-wpfc-original-src"),
+                    img.attr("data-srcset").substringBefore(" "),
+                    img.attr("data-lazy-srcset").substringBefore(" "),
+                    img.attr("srcset").substringBefore(" "),
+                    img.attr("src")
+                )
+                candidates.mapNotNull { absoluteUrl(api.mainUrl, it) }.firstOrNull { isUsablePosterUrl(it) }?.let { return it }
+            }
+
+            root.select("noscript").forEach { noscript ->
+                val html = noscript.html()
+                val parsed = Jsoup.parse(html)
+                parsed.select("img[src], img[data-src], img[srcset]").forEach { img ->
+                    val candidate = img.attr("data-src").ifBlank { img.attr("srcset").substringBefore(" ").ifBlank { img.attr("src") } }
+                    absoluteUrl(api.mainUrl, candidate)?.takeIf { isUsablePosterUrl(it) }?.let { return it }
+                }
+                Regex("(?i)src=['\"]([^'\"]+)['\"]").find(html)?.groupValues?.getOrNull(1)
+                    ?.let { absoluteUrl(api.mainUrl, it) }
+                    ?.takeIf { isUsablePosterUrl(it) }
+                    ?.let { return it }
+            }
+
+            val styleText = root.attr("style") + " " + root.select("[style]").joinToString(" ") { it.attr("style") }
+            Regex("url\\((['\"]?)(.*?)\\1\\)", RegexOption.IGNORE_CASE)
+                .findAll(styleText)
+                .mapNotNull { absoluteUrl(api.mainUrl, it.groupValues.getOrNull(2)) }
+                .firstOrNull { isUsablePosterUrl(it) }
+                ?.let { return it }
+
+            listOf("data-bg", "data-background", "data-image", "data-poster", "data-thumb").forEach { attr ->
+                root.attr(attr).takeIf { it.isNotBlank() }
+                    ?.let { absoluteUrl(api.mainUrl, it) }
+                    ?.takeIf { isUsablePosterUrl(it) }
+                    ?.let { return it }
+            }
+        }
+
+        return null
+    }
+
+    private fun posterFromDocument(api: MainAPI, document: Document): String? {
+        val metaCandidates = listOf(
+            document.selectFirst("meta[property=og:image]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:image]")?.attr("content"),
+            document.selectFirst("link[rel=image_src]")?.attr("href")
+        )
+        metaCandidates.mapNotNull { absoluteUrl(api.mainUrl, it) }.firstOrNull { isUsablePosterUrl(it) }?.let { return it }
+        return posterFromElement(api, document.body())
     }
 
     suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
@@ -104,13 +166,7 @@ object HentaiCopParser {
                 ?: document.title()
         ).ifBlank { titleFromSlug(url) }
 
-        val poster = absoluteUrl(
-            api.mainUrl,
-            document.selectFirst("meta[property=og:image]")?.attr("content")
-                ?: document.selectFirst("img.wp-post-image, .thumb img, .poster img, .bigcover img, .infox img")?.let {
-                    it.attr("data-src").ifBlank { it.attr("data-lazy-src").ifBlank { it.attr("src") } }
-                }
-        )
+        val poster = posterFromDocument(api, document)
 
         val tags = document.select(".genxed a, a[href*='/genre/']")
             .map { cleanText(it.text()) }
@@ -145,13 +201,16 @@ object HentaiCopParser {
         val episodes = mutableListOf<Episode>()
 
         document.select(
-            ".eplister li a[href], .episodelist li a[href], .episode-list a[href], .soraddlx a[href], a[href*='-episode-']"
+            ".eplister li a[href], .episodelist li a[href], .episode-list a[href], .soraddlx a[href], .epcheck a[href], #episode_related a[href], a[href*='-episode-']"
         ).forEach { a ->
             val href = absoluteUrl(api.mainUrl, a.attr("href")) ?: return@forEach
             if (!isEpisodeUrl(href)) return@forEach
             val key = href.substringBefore('#')
             if (!seen.add(key)) return@forEach
-            val ep = episodeNumber(a.text()) ?: episodeNumber(href) ?: (episodes.size + 1)
+            val ep = episodeNumber(a.selectFirst(".epl-num")?.text())
+                ?: episodeNumber(a.text())
+                ?: episodeNumber(href)
+                ?: (episodes.size + 1)
             val name = cleanText(
                 a.selectFirst(".epl-title")?.text()
                     ?: a.attr("title")
@@ -161,9 +220,7 @@ object HentaiCopParser {
                 api.newEpisode(href) {
                     this.name = name
                     this.episode = ep
-                    this.posterUrl = a.selectFirst("img")?.let { img ->
-                        absoluteUrl(api.mainUrl, img.attr("data-src").ifBlank { img.attr("src") })
-                    }
+                    this.posterUrl = posterFromElement(api, a)
                 }
             )
         }
@@ -172,7 +229,7 @@ object HentaiCopParser {
 
         return listOf(
             api.newEpisode(fallbackUrl) {
-                name = "Movie"
+                name = if (isEpisodeUrl(fallbackUrl)) cleanTitle(titleFromSlug(fallbackUrl)).ifBlank { "Episode" } else "Movie"
                 episode = episodeNumber(fallbackUrl)
             }
         )
