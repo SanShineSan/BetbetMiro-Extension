@@ -97,7 +97,7 @@ object HentaiCopParser {
         }
     }
 
-    fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
+    suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
         val title = cleanTitle(
             document.selectFirst(".entry-title, h1.entry-title, h1")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
