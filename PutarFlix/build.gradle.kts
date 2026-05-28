@@ -1,11 +1,11 @@
-version = 14
+version = 15
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "PutarFlix provider with source-backed homepage rows, hardened server tab discovery, shortlink/FilePress resolving, and safer direct playback handling."
+    description = "PutarFlix provider with active source-backed categories, stronger Server 1/2/3 playback discovery, robust iframe/AJAX decoding, and hardened direct stream extraction."
 
-    status = 0
+    status = 1
 
     tvTypes = listOf(
         "Movie",

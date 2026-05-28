@@ -35,7 +35,7 @@ internal object PutarFlixUtils {
         "emturbovid", "hownetwork", "playeriframe", "p2p", "f16", "jeniusplay", "majorplay",
         "e2e.majorplay", "m3u8.majorplay", "hglink", "ghbrisk", "dhcplay", "streamcasthub",
         "embed4me", "upns.live", "4meplayer", "play.putar.in", "gdplayer", "z.awstream.net", "awstream", "megaplay", "luluvdo", "filedon", "blogger.com", "blogspot", "play.streamplay.co.in", "movearnpre",
-        "abysscdn", "vidsrc", "streamvid", "streamhub", "videy.co", "cdn", "mcloud", "upstream", "dropboxusercontent.com"
+        "abysscdn", "vidsrc", "vidsrc.to", "vidsrc.xyz", "streamvid", "streamhub", "videy.co", "cdn", "mcloud", "upstream", "dropboxusercontent.com", "lh3.googleusercontent.com", "googlevideo.com", "ok.ru", "rumble.com", "sbfull", "listeamed", "streamhide", "vidsrcme", "vidlink"
     )
 
     fun cleanText(value: String?): String {
@@ -57,10 +57,8 @@ internal object PutarFlixUtils {
     fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     fun absoluteUrl(base: String, value: String?): String? {
-        val raw = value?.trim().orEmpty()
-            .replace("&amp;", "&")
-            .replace("\\/", "/")
-        if (raw.isBlank() || raw == "#" || raw.startsWith("javascript:", true)) return null
+        val raw = cleanUrlText(value)
+        if (raw.isBlank() || raw == "#" || raw.startsWith("javascript:", true) || raw.startsWith("mailto:", true)) return null
         return runCatching {
             val normalized = if (raw.startsWith("//")) "https:$raw" else raw
             URI(base).resolve(normalized).toString()
@@ -303,9 +301,58 @@ internal object PutarFlixUtils {
         val lower = url.lowercase()
         val path = lower.substringBefore("?")
         if (path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".mkv") || path.endsWith(".mpd") || path.endsWith(".webm")) return true
+        if ("videoplayback" in lower || "get_video" in lower || "playlist.m3u8" in lower || "master.m3u8" in lower) return true
         // Rumble/edge-cdn style HLS can expose a .tar URL with r_file=chunklist.m3u8 in the query.
         if (lower.contains("r_file=chunklist.m3u8") || lower.contains("application/vnd.apple.mpegurl")) return true
         return false
+    }
+
+    fun cleanUrlText(value: String?): String {
+        return decodeUrlRepeated(value.orEmpty().trim())
+            .replace("&amp;", "&")
+            .replace("&#038;", "&")
+            .replace("&#38;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#39;", "'")
+            .replace("\\/", "/")
+            .replace("\\\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
+            .trim(' ', '"', '\'', '`', ',', ';', ')', ']', '}')
+    }
+
+    fun decodeBase64Payloads(value: String): List<String> {
+        val candidates = linkedSetOf<String>()
+        val normalized = value
+            .replace("\\/", "/")
+            .replace("\\\\/", "/")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#39;", "'")
+
+        Regex("""(?i)atob\s*\(\s*["']([A-Za-z0-9+/=_-]{16,})["']\s*\)""")
+            .findAll(normalized)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .forEach { candidates += it }
+
+        Regex("""["']([A-Za-z0-9+/=_-]{32,})["']""")
+            .findAll(normalized)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .filter { token -> token.length % 4 != 1 && token.any { it in "+/=_-" } }
+            .take(24)
+            .forEach { candidates += it }
+
+        return candidates.mapNotNull { token ->
+            val padded = token + "=".repeat((4 - token.length % 4) % 4)
+            runCatching { String(Base64.getDecoder().decode(padded)) }
+                .recoverCatching { String(Base64.getUrlDecoder().decode(padded)) }
+                .mapCatching { cleanUrlText(it) }
+                .getOrNull()
+                ?.takeIf { decoded -> decoded.contains("http", true) || decoded.contains("iframe", true) || decoded.contains("source", true) }
+        }.distinct()
     }
 
     fun decodeKnownRedirect(url: String): String {
@@ -350,30 +397,19 @@ internal object PutarFlixUtils {
     }
 
     fun extractUrlsFromText(base: String, value: String): List<String> {
-        val normalized = value
-            .replace("\\/", "/")
-            .replace("&amp;", "&")
-            .replace("\\\"", "\"")
-            .replace("\\u0026", "&")
-            .replace("\\u003d", "=")
-            .replace("\\u003a", ":")
-            .replace("\\u002f", "/")
-        val pools = listOf(normalized, decodeUrlRepeated(normalized))
+        val normalized = cleanUrlText(value)
+        val pools = (listOf(normalized, decodeUrlRepeated(normalized)) + decodeBase64Payloads(normalized)).distinct()
         val candidates = linkedSetOf<String>()
         val urlRegex = Regex("""https?:\\?/\\?/[^\"'<>)\]\[\s]+""", RegexOption.IGNORE_CASE)
         val protocolLessRegex = Regex("""(?<!:)//[^\"'<>)\]\[\s]+""", RegexOption.IGNORE_CASE)
+        val encodedUrlRegex = Regex("""https?%3A%2F%2F[^\"'<>)\]\[\s]+""", RegexOption.IGNORE_CASE)
         pools.forEach { pool ->
             urlRegex.findAll(pool).forEach { candidates += it.value }
             protocolLessRegex.findAll(pool).forEach { candidates += it.value }
+            encodedUrlRegex.findAll(pool).forEach { candidates += it.value }
         }
         return candidates.mapNotNull { raw ->
-            val cleaned = decodeUrlRepeated(raw)
-                .replace("\\/", "/")
-                .replace("\\u0026", "&")
-                .replace("\\u003d", "=")
-                .replace("\\u003a", ":")
-                .replace("\\u002f", "/")
-                .trim('"', '\'', ' ', '\n', '\r', '\t', ')', ']', '}', ',', ';')
+            val cleaned = cleanUrlText(raw)
             absoluteUrl(base, cleaned)
         }.distinct()
     }

@@ -27,10 +27,10 @@ import java.net.URI
 import java.net.URLDecoder
 
 internal object PutarFlixExtractor {
-    private const val EXTRACT_TIMEOUT_MS = 30_000L
-    private const val REQUEST_TIMEOUT_MS = 8_000L
-    private const val LOAD_EXTRACTOR_TIMEOUT_MS = 8_000L
-    private const val MAX_RESOLVE_DEPTH = 4
+    private const val EXTRACT_TIMEOUT_MS = 45_000L
+    private const val REQUEST_TIMEOUT_MS = 12_000L
+    private const val LOAD_EXTRACTOR_TIMEOUT_MS = 12_000L
+    private const val MAX_RESOLVE_DEPTH = 5
 
     private val directVideoRegex = Regex(
         """https?:\\?/\\?/[^\"'<>)\]\[\s]+?(?:(?:\.(?:m3u8|mp4|mkv|mpd|webm)(?:\?[^\"'<>)\]\[\s]+)?)|(?:\?[^\"'<>)\]\[\s]*(?:m3u8|mp4|mkv|mpd|webm)[^\"'<>)\]\[\s]*))""",
@@ -42,12 +42,21 @@ internal object PutarFlixExtractor {
         RegexOption.IGNORE_CASE
     )
 
+    private val rawHtmlRegex = Regex("""<iframe|<source|<video|&lt;iframe|&lt;source|&lt;video""", RegexOption.IGNORE_CASE)
+    private val payloadAttributes = listOf(
+        "content", "src", "data-src", "data-lazy-src", "data-litespeed-src",
+        "data-iframe", "data-embed", "data-link", "data-url", "data-video",
+        "data-video-url", "data-stream", "data-stream-url", "data-file", "data-href",
+        "data-content", "data-html", "data-frame", "data-player", "data-play",
+        "data-server", "data-hls", "data-m3u8", "value", "href", "srcdoc"
+    )
+
     private val playerContainers = listOf(
         "#player", "#player2", "#video", ".player", ".player-area", ".playex",
         ".movieplay", ".video-content", ".responsive-embed", ".embed-responsive",
-        ".pembed", ".dooplay_player", ".dooplay_player_content", ".server",
-        ".servers", ".server-item", ".player-option", ".download", ".dllinks",
-        "#download", ".entry-content", "article"
+        ".pembed", ".dooplay_player", ".dooplay_player_content", ".dooplay_player_option", "#playeroptionsul", ".server",
+        ".servers", ".server-item", ".player-option", ".player-option-item", ".muvipro-player-tabs", ".gmr-embed-responsive",
+        ".tab-content", ".tab-pane", ".download", ".dllinks", "#download", ".entry-content", "article"
     ).joinToString(",")
 
     suspend fun extract(
@@ -126,15 +135,20 @@ internal object PutarFlixExtractor {
     private fun collectServersFromDocument(pageUrl: String, doc: Document): List<PutarFlixServer> {
         val servers = linkedSetOf<PutarFlixServer>()
 
-        doc.select("iframe[src], embed[src], video[src], source[src]").forEach { element ->
+        doc.select("iframe[src], iframe[data-src], iframe[srcdoc], embed[src], video[src], video[data-src], source[src], source[data-src], meta[property=og:video], meta[property=og:video:url], meta[property=og:video:secure_url], meta[name=twitter:player]").forEach { element ->
             addServerFromElement(servers, pageUrl, element, allowInternalPlayerPage = true, forceAllowShortener = true)
         }
 
         doc.select(playerContainers).forEach { container ->
-            container.select("iframe[src], embed[src], video[src], source[src], a[href], button, div, li, span")
+            container.select("iframe[src], iframe[data-src], iframe[srcdoc], embed[src], video[src], video[data-src], source[src], source[data-src], a[href], button, div, li, span, [data-content], [data-html], [data-url], [data-link], [data-file], [data-video]")
                 .forEach { element ->
                     addServerFromElement(servers, pageUrl, element, allowInternalPlayerPage = true, forceAllowShortener = true)
                 }
+        }
+
+        doc.select("[srcdoc], [data-content], [data-html], [data-iframe], [data-embed], [data-player], [data-url], [data-video], [data-file]").forEach { element ->
+            payloadAttributes.mapNotNull { attr -> element.attr(attr).takeIf { it.isNotBlank() } }
+                .forEach { payload -> servers += collectServersFromAjaxText(pageUrl, payload, PutarFlixUtils.extractLabelNear(element)) }
         }
 
         // PutarFlix exposes download mirrors as shortlinks outside the visible player block.
@@ -213,6 +227,10 @@ internal object PutarFlixExtractor {
             }
         }
 
+        PutarFlixUtils.decodeBase64Payloads(fullHtml).forEach { decodedPayload ->
+            servers += collectServersFromAjaxText(pageUrl, decodedPayload, "PutarFlix Encoded")
+        }
+
         return servers.distinctBy { PutarFlixUtils.decodeKnownRedirect(it.url) }
     }
 
@@ -223,28 +241,41 @@ internal object PutarFlixExtractor {
         allowInternalPlayerPage: Boolean,
         forceAllowShortener: Boolean
     ) {
-        val raw = firstAttr(
-            element,
-            "src", "data-src", "data-lazy-src", "data-iframe", "data-embed", "data-link",
-            "data-url", "data-video", "data-file", "data-href", "href"
-        ) ?: return
+        val label = PutarFlixUtils.extractLabelNear(element)
+        val payloads = payloadAttributes.mapNotNull { attr ->
+            element.attr(attr).takeIf { it.isNotBlank() }
+        }.distinct()
 
-        val url = PutarFlixUtils.absoluteUrl(pageUrl, raw) ?: return
-        val decoded = PutarFlixUtils.decodeKnownRedirect(url)
+        for (rawPayload in payloads) {
+            val raw = PutarFlixUtils.cleanUrlText(rawPayload)
+            if (raw.isBlank()) continue
 
-        if (shouldSkipCandidate(
+            if (rawHtmlRegex.containsMatchIn(raw) || (raw.contains("http", true) && raw.contains("src=", true))) {
+                servers += collectServersFromAjaxText(pageUrl, raw, label)
+                continue
+            }
+
+            PutarFlixUtils.decodeBase64Payloads(raw).forEach { decodedPayload ->
+                servers += collectServersFromAjaxText(pageUrl, decodedPayload, label)
+            }
+
+            val url = PutarFlixUtils.absoluteUrl(pageUrl, raw) ?: continue
+            val decoded = PutarFlixUtils.decodeKnownRedirect(url)
+
+            if (shouldSkipCandidate(
+                    decoded,
+                    allowPlayerPage = allowInternalPlayerPage,
+                    allowShortener = forceAllowShortener
+                )
+            ) continue
+
+            servers += PutarFlixServer(
+                label,
                 decoded,
-                allowPlayerPage = allowInternalPlayerPage,
-                allowShortener = forceAllowShortener
+                pageUrl,
+                element.tagName()
             )
-        ) return
-
-        servers += PutarFlixServer(
-            PutarFlixUtils.extractLabelNear(element),
-            decoded,
-            pageUrl,
-            element.tagName()
-        )
+        }
     }
 
     private suspend fun collectAjaxServers(pageUrl: String, doc: Document): List<PutarFlixServer> {
@@ -344,11 +375,11 @@ internal object PutarFlixExtractor {
         val players = linkedSetOf<PutarFlixAjaxPlayer>()
         val fallbackType = if (pageUrl.contains("/tv/") || pageUrl.contains("/eps/")) "tv" else "movie"
 
-        doc.select("[data-post][data-nume], [data-type][data-post], .dooplay_player_option, li[id*=player-option], .server-item[data-id]")
+        doc.select("#playeroptionsul li[data-post][data-nume], [data-post][data-nume], [data-type][data-post], [data-postid][data-nume], [data-post-id][data-nume], .dooplay_player_option, .dooplay_player_option[data-post], li[id*=player-option], .player-option[data-post], .player-option-item[data-post], .server-item[data-id], .server[data-post]")
             .forEach { element ->
-                val post = firstAttr(element, "data-post", "data-id", "data-postid", "data-post-id") ?: return@forEach
-                val nume = firstAttr(element, "data-nume", "data-server", "data-player", "data-number", "data-no") ?: return@forEach
-                val type = firstAttr(element, "data-type") ?: fallbackType
+                val post = firstAttr(element, "data-post", "data-id", "data-postid", "data-post-id", "data-movie", "data-movieid") ?: return@forEach
+                val nume = firstAttr(element, "data-nume", "data-server", "data-player", "data-number", "data-no", "data-episode") ?: return@forEach
+                val type = firstAttr(element, "data-type", "data-kind") ?: fallbackType
                 players += PutarFlixAjaxPlayer(post, type, nume, PutarFlixUtils.extractLabelNear(element))
             }
 
@@ -375,12 +406,18 @@ internal object PutarFlixExtractor {
         Regex("""postid-(\d+)""", RegexOption.IGNORE_CASE).find(bodyClasses)?.groupValues?.getOrNull(1)?.let { return it }
 
         val scripts = doc.select("script").joinToString("\n") { it.data() + "\n" + it.html() }
+        val fullHtml = doc.outerHtml()
         return listOf(
             Regex("""postid-(\d+)""", RegexOption.IGNORE_CASE),
+            Regex("""data-(?:post|id|postid|movie|movieid)\s*=\s*["']?(\d+)""", RegexOption.IGNORE_CASE),
             Regex("""["']?postId["']?\s*[:=]\s*["']?(\d+)""", RegexOption.IGNORE_CASE),
             Regex("""["']?post_id["']?\s*[:=]\s*["']?(\d+)""", RegexOption.IGNORE_CASE),
+            Regex("""["']?movie_id["']?\s*[:=]\s*["']?(\d+)""", RegexOption.IGNORE_CASE),
             Regex("""["']?post["']?\s*[:=]\s*["']?(\d+)""", RegexOption.IGNORE_CASE)
-        ).firstNotNullOfOrNull { regex -> regex.find(scripts)?.groupValues?.getOrNull(1) }
+        ).firstNotNullOfOrNull { regex ->
+            regex.find(fullHtml)?.groupValues?.getOrNull(1)
+                ?: regex.find(scripts)?.groupValues?.getOrNull(1)
+        }
     }
 
     private fun collectServersFromAjaxText(pageUrl: String, response: String, label: String): List<PutarFlixServer> {
@@ -410,8 +447,14 @@ internal object PutarFlixExtractor {
             }
         }
 
+        PutarFlixUtils.decodeBase64Payloads(decodedText)
+            .filter { it != decodedText }
+            .forEach { decodedPayload ->
+                output += collectServersFromAjaxText(pageUrl, decodedPayload, label)
+            }
+
         val htmlDoc = Jsoup.parse(decodedText, pageUrl)
-        htmlDoc.select("iframe[src], embed[src], source[src], video[src], a[href]").forEach { element ->
+        htmlDoc.select("iframe[src], iframe[data-src], iframe[srcdoc], embed[src], source[src], source[data-src], video[src], video[data-src], a[href], [data-src], [data-file], [data-video], [data-url], [data-content], [data-html], [srcdoc]").forEach { element ->
             addServerFromElement(output, pageUrl, element, allowInternalPlayerPage = true, forceAllowShortener = true)
         }
 
@@ -1298,7 +1341,29 @@ private fun putarFlixExtractExtractorUrls(text: String): List<String> {
         .forEach { urls.add(it) }
 
     Regex(
-        """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|stream|streamUrl|stream_url|embedUrl|embed_url)\s*[:=]\s*["']([^"']+)["']""",
+        """https?://[^"'\\\s<>]+?(?:emturbovid|hownetwork|playeriframe|f16|jeniusplay|majorplay|streamwish|filemoon|dood|streamtape|vidhide|vidguard|voe|mixdrop|hglink|ghbrisk|dhcplay|streamcasthub|embed4me|upns\.live|4meplayer|play\.putar\.in|gdplayer|awstream|megaplay|luluvdo|filedon|blogger|blogspot|streamplay|movearnpre|vidsrc|embed|player|stream)[^"'\\\s<>]*""",
+        RegexOption.IGNORE_CASE
+    ).findAll(clean)
+        .map { it.value.putarFlixCleanEscaped().replace(".txt", ".m3u8") }
+        .filterNot { putarFlixIsJunkExtractorUrl(it) }
+        .forEach { urls.add(it) }
+
+    Regex(
+        """//[^"'\\\s<>]+?(?:emturbovid|hownetwork|playeriframe|f16|jeniusplay|majorplay|streamwish|filemoon|dood|streamtape|vidhide|vidguard|voe|mixdrop|hglink|ghbrisk|dhcplay|streamcasthub|embed4me|upns\.live|4meplayer|play\.putar\.in|gdplayer|awstream|megaplay|luluvdo|filedon|blogger|blogspot|streamplay|movearnpre|vidsrc|embed|player|stream)[^"'\\\s<>]*""",
+        RegexOption.IGNORE_CASE
+    ).findAll(clean)
+        .map { "https:${it.value.putarFlixCleanEscaped().replace(".txt", ".m3u8")}" }
+        .filterNot { putarFlixIsJunkExtractorUrl(it) }
+        .forEach { urls.add(it) }
+
+    PutarFlixUtils.decodeBase64Payloads(clean)
+        .filter { it != clean }
+        .forEach { decodedPayload ->
+            putarFlixExtractExtractorUrls(decodedPayload).forEach { urls.add(it) }
+        }
+
+    Regex(
+        """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|stream|streamUrl|stream_url|embedUrl|embed_url|iframe|content|playlist)\s*[:=]\s*["']([^"']+)["']""",
         RegexOption.IGNORE_CASE
     ).findAll(clean)
         .mapNotNull { it.groupValues.getOrNull(1) }
@@ -1352,7 +1417,15 @@ private fun putarFlixIsKnownExtractorHost(url: String): Boolean {
         "blogger.com",
         "blogspot",
         "play.streamplay.co.in",
-        "movearnpre"
+        "movearnpre",
+        "vidsrc",
+        "googlevideo",
+        "ok.ru",
+        "rumble",
+        "sbfull",
+        "listeamed",
+        "streamhide",
+        "vidlink"
     ).any { value.contains(it) }
 }
 

@@ -62,14 +62,19 @@ internal object PutarFlixSeeds {
     )
 
     // The visible player tabs on current PutarFlix pages are base, ?player=2, and ?player=3.
-    val playerNumbers = listOf("1", "2", "3")
+    val playerNumbers = listOf("1", "2", "3", "4", "5", "6")
 
     // WordPress movie themes commonly use these actions. Invalid actions safely return empty responses.
     val ajaxActions = listOf(
         "doo_player_ajax",
         "dooplay_player",
+        "dt_player_ajax",
         "muvipro_player_content",
         "player_ajax",
-        "player_ajax_request"
+        "player_ajax_request",
+        "get_player",
+        "get_video",
+        "load_player",
+        "fetch_player"
     )
 }
