@@ -316,8 +316,8 @@ internal object PutarFlixUtils {
             ?.substringAfter("=", "")
             ?.takeIf { it.isNotBlank() }
 
-        val encoded = encodedFromQuery
-            ?: if (isShortenerUrl(url)) uri.rawPath.orEmpty().substringAfterLast('/').takeIf { it.length > 12 } else null
+        val encoded: String = encodedFromQuery
+            ?: (if (isShortenerUrl(url)) uri.rawPath.orEmpty().substringAfterLast('/').takeIf { it.length > 12 } else null)
             ?: return url
 
         val decodedParam = decodeUrlRepeated(encoded)
