@@ -16,7 +16,21 @@ internal object PutarFlixUtils {
     )
 
     private val badExternalHosts = listOf(
-        "themoviedb.org", "facebook.com", "twitter.com", "instagram.com", "whatsapp.com"
+        "themoviedb.org", "facebook.com", "twitter.com", "instagram.com", "whatsapp.com",
+        "youtube.com", "youtu.be", "t.me", "telegram.me"
+    )
+
+    private val shortenerHosts = listOf(
+        "semawur.com", "linkduit.net", "safelinku.com", "safelinku.net", "ouo.io", "shrinkme.io"
+    )
+
+    private val playableHosts = listOf(
+        "filepress.today", "filepress.store", "drive.google.com", "googleusercontent.com",
+        "streamtape.com", "streamtape.to", "filemoon.sx", "filemoon.to", "doodstream.com",
+        "dood.to", "d000d.com", "vidhide", "voe.sx", "voe.ws", "mixdrop.co", "mixdrop.to",
+        "streamsb", "sbembed", "sbrapid", "streamwish", "wishfast", "hlswish", "vidmoly",
+        "mp4upload", "uqload", "vidoza", "fembed", "filelions", "luluvdo", "streamruby",
+        "vidguard", "vidplay", "filepursuit", "filegram", "pixeldrain.com", "krakenfiles.com"
     )
 
     fun cleanText(value: String?): String {
@@ -58,8 +72,33 @@ internal object PutarFlixUtils {
         return runCatching { URI(url).host?.removePrefix("www.")?.lowercase() }.getOrNull()
     }
 
+    fun originOf(url: String): String? {
+        return runCatching {
+            val uri = URI(url)
+            val scheme = uri.scheme ?: "https"
+            val host = uri.host ?: return@runCatching null
+            "$scheme://$host"
+        }.getOrNull()
+    }
+
     fun isPutarFlixUrl(url: String): Boolean {
         return hostOf(url) == hostOf(PutarFlixSeeds.MAIN_URL)
+    }
+
+    fun isShortenerUrl(url: String): Boolean {
+        val host = hostOf(url) ?: return false
+        return shortenerHosts.any { host == it || host.endsWith(".$it") }
+    }
+
+    fun isKnownPlayableHost(url: String): Boolean {
+        if (looksDirectVideo(url)) return true
+        val host = hostOf(url) ?: return false
+        return playableHosts.any { host == it || host.contains(it) || host.endsWith(".$it") }
+    }
+
+    fun isFilePressUrl(url: String): Boolean {
+        val host = hostOf(url) ?: return false
+        return host.contains("filepress.") && url.contains("/file/", true)
     }
 
     fun isContentUrl(url: String): Boolean {
@@ -81,9 +120,8 @@ internal object PutarFlixUtils {
         val lower = url.lowercase()
         if (lower.isBlank()) return true
         if (badExternalHosts.any { it in lower }) return true
-        if (lower.contains("youtube.com/watch") || lower.contains("youtu.be/")) return true
         if (lower.contains("/trailer") || lower.contains("/embed/trailer")) return true
-        if (lower.endsWith(".jpg") || lower.endsWith(".png") || lower.endsWith(".webp")) return true
+        if (lower.endsWith(".jpg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".gif")) return true
         if (lower.contains("wp-content") && !looksDirectVideo(lower)) return true
         return false
     }
@@ -188,8 +226,7 @@ internal object PutarFlixUtils {
     }
 
     fun decodeKnownRedirect(url: String): String {
-        val lower = url.lowercase()
-        if (!lower.contains("semawur.com") && !lower.contains("linkduit.net") && !lower.contains("safelinku")) return url
+        if (!isShortenerUrl(url)) return url
         val rawQuery = runCatching { URI(url).rawQuery }.getOrNull().orEmpty()
         val encoded = rawQuery.split("&")
             .firstOrNull { it.substringBefore("=") in listOf("url", "u", "go", "target") }
@@ -197,15 +234,16 @@ internal object PutarFlixUtils {
             ?.takeIf { it.isNotBlank() }
             ?: return url
         val decodedParam = decodeUrlRepeated(encoded)
+        if (decodedParam.startsWith("http", true)) return decodedParam
         val padded = decodedParam + "=".repeat((4 - decodedParam.length % 4) % 4)
         return runCatching { String(Base64.getDecoder().decode(padded)) }
             .recoverCatching { String(Base64.getUrlDecoder().decode(padded)) }
-            .getOrDefault(decodedParam.takeIf { it.startsWith("http", true) } ?: url)
+            .getOrDefault(url)
     }
 
     fun decodeUrlRepeated(value: String): String {
         var current = value
-        repeat(2) {
+        repeat(3) {
             val decoded = runCatching { URLDecoder.decode(current, "UTF-8") }.getOrDefault(current)
             if (decoded == current) return current
             current = decoded
@@ -218,10 +256,14 @@ internal object PutarFlixUtils {
             .replace("\\/", "/")
             .replace("&amp;", "&")
             .replace("\\\"", "\"")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
         val pools = listOf(normalized, decodeUrlRepeated(normalized))
         val candidates = linkedSetOf<String>()
-        val urlRegex = Regex("""https?:\\?/\\?/[^\"'<>\s]+""", RegexOption.IGNORE_CASE)
-        val protocolLessRegex = Regex("""(?<!:)//[^\"'<>\s]+""", RegexOption.IGNORE_CASE)
+        val urlRegex = Regex("""https?:\\?/\\?/[^\"'<>)\]\[\s]+""", RegexOption.IGNORE_CASE)
+        val protocolLessRegex = Regex("""(?<!:)//[^\"'<>)\]\[\s]+""", RegexOption.IGNORE_CASE)
         pools.forEach { pool ->
             urlRegex.findAll(pool).forEach { candidates += it.value }
             protocolLessRegex.findAll(pool).forEach { candidates += it.value }
@@ -229,7 +271,7 @@ internal object PutarFlixUtils {
         return candidates.mapNotNull { raw ->
             val cleaned = decodeUrlRepeated(raw)
                 .replace("\\/", "/")
-                .trim('"', '\'', ' ', '\n', '\r', '\t', ')', ']', '}')
+                .trim('"', '\'', ' ', '\n', '\r', '\t', ')', ']', '}', ',')
             absoluteUrl(base, cleaned)
         }.distinct()
     }
