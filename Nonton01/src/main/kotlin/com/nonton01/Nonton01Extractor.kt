@@ -24,9 +24,9 @@ import java.net.URLEncoder
 
 object Nonton01Extractor {
     private const val TAG = "Nonton01"
-    private const val MAX_HOPS = 4
+    private const val MAX_HOPS = 5
     private const val MAX_DIRECT_CANDIDATES = 26
-    private const val MAX_EMBED_CANDIDATES = 24
+    private const val MAX_EMBED_CANDIDATES = 32
     private const val MAX_AJAX_CANDIDATES = 96
 
     private val keyValueRegex = Regex(
@@ -35,6 +35,13 @@ object Nonton01Extractor {
     )
     private val quotedUrlRegex = Regex(
         """(?i)['\"]((?:https?:)?//[^'\"<>\s]+|/[^'\"<>\s]+)['\"]"""
+    )
+    private val bareMediaRegex = Regex(
+        """(?i)(?:https?:)?//[^\s'\"<>]+?(?:m3u8|mp4|videoplayback|get_video|master|playlist)[^\s'\"<>]*"""
+    )
+    private val packedEvalRegex = Regex(
+        """eval\s*\(\s*function\s*\(p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*(?:r|d)\s*\).*?\}\s*\(\s*['\"](.*?)['\"]\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*['\"](.*?)['\"]\.split\s*\(\s*['\"]\|['\"]\s*\)""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
     )
     private val iframeRegex = Regex("""(?i)<iframe[^>]+src\s*=\s*['\"]([^'\"]+)['\"]""")
     private val encodedUrlRegex = Regex("""https?%3A%2F%2F[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
@@ -128,7 +135,8 @@ object Nonton01Extractor {
 
         for (embed in embeds.take(MAX_EMBED_CANDIDATES)) {
             Log.e(TAG, "embed candidate: $embed referer=$pageUrl")
-            val extractorFound = runExtractor(embed, pageUrl, emitted, subtitleCallback, callback)
+            val customFound = runCustomHostExtractor(providerName, embed, pageUrl, emitted, subtitleCallback, callback)
+            val extractorFound = customFound || runExtractor(embed, pageUrl, emitted, subtitleCallback, callback)
             found = found || extractorFound
             if (!extractorFound && depth < MAX_HOPS && canRecurseInto(embed, pageUrl)) {
                 val nestedFound = resolvePage(providerName, embed, pageUrl, mainUrl, depth + 1, emitted, subtitleCallback, callback)
@@ -223,6 +231,122 @@ object Nonton01Extractor {
             Log.e(TAG, "loadExtractor failed $url: ${e.message}")
             false
         }
+    }
+
+
+    private suspend fun runCustomHostExtractor(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val low = url.lowercase()
+        return when {
+            low.contains("dood.") || low.contains("doodstream") || low.contains("doodwatch") ->
+                extractDood(providerName, url, referer, emitted, callback)
+            low.contains("streamtape") || low.contains("stape") ->
+                extractStreamTape(providerName, url, referer, emitted, callback)
+            low.contains("filemoon") || low.contains("vidhide") || low.contains("vidguard") ||
+                low.contains("streamwish") || low.contains("filelions") || low.contains("streamruby") ->
+                extractPackedPlayer(providerName, url, referer, emitted, subtitleCallback, callback)
+            else -> false
+        }
+    }
+
+    private suspend fun extractPackedPlayer(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val response = runCatching { app.get(url, headers = Nonton01Utils.siteHeadersFor(referer), referer = referer) }
+            .onFailure { Log.e(TAG, "custom packed GET failed $url: ${it.message}") }
+            .getOrNull() ?: return false
+        val html = normalizedText(response.text)
+        val candidates = prioritizeCandidates(extractUrlsFromText(url, html))
+        var found = false
+        for (candidate in candidates.take(20)) {
+            found = emitDirect(providerName, candidate, url, emitted, callback) || found
+            if (!found && shouldProbeAsEmbed(candidate, url)) {
+                found = runExtractor(candidate, url, emitted, subtitleCallback, callback) || found
+            }
+        }
+        Log.e(TAG, "custom packed host result found=$found url=$url candidates=${candidates.take(8)}")
+        return found
+    }
+
+    private suspend fun extractStreamTape(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val html = runCatching { app.get(url, headers = Nonton01Utils.siteHeadersFor(referer), referer = referer).text }
+            .onFailure { Log.e(TAG, "streamtape GET failed $url: ${it.message}") }
+            .getOrNull() ?: return false
+        val normalized = normalizedText(html)
+        val direct = linkedSetOf<String>()
+        Regex("""(?i)(?:https?:)?//[^'\"<>\s]+?/get_video\?[^'\"<>\s]+""")
+            .findAll(normalized)
+            .mapNotNull { normalizeUrl(url, it.value) }
+            .forEach { direct.add(it) }
+        Regex("""(?i)robotlink['\"]?\)?\.innerHTML\s*=\s*['\"]([^'\"]+)['\"]\s*\+\s*\(?\s*['\"]([^'\"]+)['\"]""")
+            .find(normalized)
+            ?.let { match -> normalizeUrl(url, match.groupValues[1] + match.groupValues[2]) }
+            ?.let { direct.add(it) }
+        var found = false
+        direct.forEach { finalUrl ->
+            if (emitted.add(finalUrl)) {
+                callback(
+                    newExtractorLink(providerName, "$providerName StreamTape", finalUrl) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                        this.headers = videoHeaders(url)
+                    }
+                )
+                found = true
+            }
+        }
+        Log.e(TAG, "custom streamtape found=$found url=$url candidates=${direct.take(4)}")
+        return found
+    }
+
+    private suspend fun extractDood(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val origin = originOf(url) ?: return false
+        val html = runCatching { app.get(url, headers = Nonton01Utils.siteHeadersFor(referer), referer = referer).text }
+            .onFailure { Log.e(TAG, "dood GET failed $url: ${it.message}") }
+            .getOrNull() ?: return false
+        val passPath = Regex("""(/pass_md5/[^'\"<>\s]+)""").find(html)?.groupValues?.getOrNull(1) ?: return false
+        val token = Regex("""token=([^&'\"<>\s]+)""").find(passPath)?.groupValues?.getOrNull(1).orEmpty()
+        val seed = runCatching { app.get(origin.trimEnd('/') + passPath, headers = Nonton01Utils.videoHeaders(url), referer = url).text }
+            .onFailure { Log.e(TAG, "dood pass_md5 failed: ${it.message}") }
+            .getOrNull()
+            ?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return false
+        val random = (1..10).joinToString("") { ('a'..'z').random().toString() }
+        val finalUrl = seed + random + if (token.isNotBlank()) "?token=$token&expiry=${System.currentTimeMillis()}" else ""
+        if (emitted.add(finalUrl)) {
+            callback(
+                newExtractorLink(providerName, "$providerName Dood", finalUrl) {
+                    this.referer = url
+                    this.quality = Qualities.Unknown.value
+                    this.headers = videoHeaders(url)
+                }
+            )
+            Log.e(TAG, "custom dood emitted: $finalUrl")
+            return true
+        }
+        return false
     }
 
     private suspend fun fetchAjaxPlayers(pageUrl: String, mainUrl: String, document: Document): List<String> {
@@ -608,8 +732,17 @@ object Nonton01Extractor {
         keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
         quotedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
         iframeRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
+        bareMediaRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.value) }.forEach { out.add(it) }
         encodedUrlRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.value) }.forEach { out.add(it) }
         decodeBase64Candidates(html).mapNotNull { normalizeUrl(pageUrl, it) }.forEach { out.add(it) }
+        decodePackedScripts(html).forEach { unpacked ->
+            keyValueRegex.findAll(unpacked).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
+            quotedUrlRegex.findAll(unpacked).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
+            iframeRegex.findAll(unpacked).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.forEach { out.add(it) }
+            bareMediaRegex.findAll(unpacked).mapNotNull { normalizeUrl(pageUrl, it.value) }.forEach { out.add(it) }
+            encodedUrlRegex.findAll(unpacked).mapNotNull { normalizeUrl(pageUrl, it.value) }.forEach { out.add(it) }
+            decodeBase64Candidates(unpacked).mapNotNull { normalizeUrl(pageUrl, it) }.forEach { out.add(it) }
+        }
         return out.distinct()
     }
 
@@ -673,6 +806,40 @@ object Nonton01Extractor {
         return absoluteUrl(pageUrl, raw)
     }
 
+
+    private fun decodePackedScripts(html: String): List<String> {
+        return packedEvalRegex.findAll(html)
+            .mapNotNull { match ->
+                val payload = normalizedText(match.groupValues[1])
+                val radix = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
+                val count = match.groupValues[3].toIntOrNull() ?: return@mapNotNull null
+                val symbols = normalizedText(match.groupValues[4]).split('|')
+                unpackPacker(payload, radix, count, symbols)
+            }
+            .filter { it.contains("http", ignoreCase = true) || it.contains("m3u8", ignoreCase = true) || it.contains("iframe", ignoreCase = true) }
+            .distinct()
+            .toList()
+    }
+
+    private fun unpackPacker(payload: String, radix: Int, count: Int, symbols: List<String>): String? {
+        return runCatching {
+            var source = payload
+            for (i in count - 1 downTo 0) {
+                val replacement = symbols.getOrNull(i).orEmpty()
+                if (replacement.isBlank()) continue
+                val token = encodePackerIndex(i, radix)
+                source = Regex("""\b${Regex.escape(token)}\b""").replace(source, replacement)
+            }
+            normalizedText(source)
+        }.onFailure { Log.e(TAG, "packer decode failed: ${it.message}") }.getOrNull()
+    }
+
+    private fun encodePackerIndex(value: Int, radix: Int): String {
+        val alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if (value < radix) return alphabet.getOrElse(value) { value.toString().first() }.toString()
+        return encodePackerIndex(value / radix, radix) + alphabet.getOrElse(value % radix) { '0' }
+    }
+
     private fun decodeBase64Candidates(html: String): List<String> {
         val out = linkedSetOf<String>()
         val candidates = mutableListOf<String>()
@@ -706,7 +873,7 @@ object Nonton01Extractor {
 
     private fun looksLikeDirectMp4(url: String): Boolean {
         val low = url.lowercase()
-        return low.contains(".mp4") || low.contains("googlevideo") || low.contains("videoplayback")
+        return low.contains(".mp4") || low.contains("googlevideo") || low.contains("videoplayback") || low.contains("/get_video?")
     }
 
     private fun isDirectMediaCandidate(url: String): Boolean {
