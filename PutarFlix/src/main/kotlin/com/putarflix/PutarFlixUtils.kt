@@ -146,6 +146,30 @@ internal object PutarFlixUtils {
             "drive.google.com/uc?id=" in lower
     }
 
+    fun extractGoogleDriveId(url: String): String? {
+        val decoded = decodeUrlRepeated(url)
+        val uri = runCatching { URI(decoded) }.getOrNull()
+        val queryId = uri?.rawQuery.orEmpty()
+            .split("&")
+            .firstOrNull { it.substringBefore("=").equals("id", true) }
+            ?.substringAfter("=", "")
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::decodeUrlRepeated)
+        if (!queryId.isNullOrBlank()) return queryId
+
+        return listOf(
+            Regex("""/file/d/([^/?#]+)""", RegexOption.IGNORE_CASE),
+            Regex("""/d/([^/?#]+)""", RegexOption.IGNORE_CASE),
+            Regex("""[?&]id=([^&#]+)""", RegexOption.IGNORE_CASE)
+        ).firstNotNullOfOrNull { regex ->
+            regex.find(decoded)?.groupValues?.getOrNull(1)?.let(::decodeUrlRepeated)
+        }?.takeIf { it.isNotBlank() }
+    }
+
+    fun googleDriveDownloadUrl(id: String): String {
+        return "https://drive.usercontent.google.com/download?id=${encode(id)}&export=download&confirm=t"
+    }
+
     fun isHtmlLandingUrl(url: String): Boolean {
         val lower = url.lowercase()
         if (isFinalStreamUrl(lower)) return false
@@ -285,23 +309,33 @@ internal object PutarFlixUtils {
     }
 
     fun decodeKnownRedirect(url: String): String {
-        if (!isShortenerUrl(url)) return url
         val uri = runCatching { URI(url) }.getOrNull() ?: return url
         val rawQuery = uri.rawQuery.orEmpty()
-        val encoded = rawQuery.split("&")
-            .firstOrNull { it.substringBefore("=") in listOf("url", "u", "go", "target") }
+        val encodedFromQuery = rawQuery.split("&")
+            .firstOrNull { it.substringBefore("=").lowercase() in listOf("url", "u", "go", "target", "link") }
             ?.substringAfter("=", "")
             ?.takeIf { it.isNotBlank() }
-            ?: uri.rawPath.orEmpty().substringAfterLast('/').takeIf { it.length > 12 }
+
+        val encoded = encodedFromQuery
+            ?: if (isShortenerUrl(url)) uri.rawPath.orEmpty().substringAfterLast('/').takeIf { it.length > 12 } else null
             ?: return url
 
         val decodedParam = decodeUrlRepeated(encoded)
-        if (decodedParam.startsWith("http", true)) return decodedParam
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
+            .trim()
+        if (decodedParam.startsWith("http", true) || decodedParam.startsWith("//")) {
+            return absoluteUrl(url, decodedParam) ?: decodedParam
+        }
 
         val padded = decodedParam + "=".repeat((4 - decodedParam.length % 4) % 4)
         return runCatching { String(Base64.getDecoder().decode(padded)) }
             .recoverCatching { String(Base64.getUrlDecoder().decode(padded)) }
-            .mapCatching { decodeUrlRepeated(it) }
+            .mapCatching { decodeUrlRepeated(it).replace("\\/", "/") }
+            .mapCatching { absoluteUrl(url, it) ?: it }
             .getOrDefault(url)
     }
 

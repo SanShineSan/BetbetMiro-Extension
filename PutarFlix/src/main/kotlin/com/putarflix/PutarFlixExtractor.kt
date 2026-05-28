@@ -470,10 +470,17 @@ internal object PutarFlixExtractor {
         val loadedWithLinks = safeLoadExtractor(fixedUrl, referer, subtitleCallback, callback)
         if (loadedWithLinks) return true
 
-        // Google Drive uc/file/open links are not directly playable. If Cloudstream's
-        // extractor did not emit a real stream above, do not pass the HTML landing
-        // page further into ExoPlayer.
-        if (PutarFlixUtils.isGoogleDriveLandingUrl(fixedUrl)) return false
+        // Google Drive uc/file/open links are not directly playable as HTML pages.
+        // If the built-in extractor did not emit a stream, convert the id to the
+        // drive.usercontent download endpoint instead of handing ExoPlayer a landing page.
+        if (PutarFlixUtils.isGoogleDriveLandingUrl(fixedUrl)) {
+            return resolveGoogleDriveLanding(
+                url = fixedUrl,
+                referer = referer,
+                label = label.ifBlank { "Google Drive" },
+                callback = callback
+            )
+        }
 
         if (shouldSkipCandidate(fixedUrl, allowPlayerPage = true, allowShortener = true)) return false
 
@@ -508,6 +515,17 @@ internal object PutarFlixExtractor {
         }
 
         return found
+    }
+
+    private suspend fun resolveGoogleDriveLanding(
+        url: String,
+        referer: String,
+        label: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val id = PutarFlixUtils.extractGoogleDriveId(url) ?: return false
+        val directUrl = PutarFlixUtils.googleDriveDownloadUrl(id)
+        return emitDirect(directUrl, referer, label.ifBlank { "Google Drive" }, callback)
     }
 
     private suspend fun resolveFilePress(
@@ -623,30 +641,69 @@ internal object PutarFlixExtractor {
             }
         }
 
-        extractJsonStringValues(decoded, "data").forEach { dataValue ->
-            val value = dataValue.trim()
-            when {
-                value.startsWith("http", true) -> {
-                    val fixed = PutarFlixUtils.decodeKnownRedirect(value)
-                    servers += PutarFlixServer(label, fixed, baseUrl, "filepress-api-data-url")
-                }
-                value.length > 8 && Regex("^[A-Za-z0-9_-]+$").matches(value) -> {
-                    secondStepIds += value
-                    servers += PutarFlixServer(
-                        label,
-                        "https://drive.google.com/file/d/$value/view",
-                        baseUrl,
-                        "filepress-drive-view"
-                    )
-                    servers += PutarFlixServer(
-                        label,
-                        "https://drive.google.com/uc?id=$value&export=download",
-                        baseUrl,
-                        "filepress-drive-uc"
-                    )
-                }
+        val keys = listOf(
+            "data", "id", "file_id", "fileId", "driveId", "googleDriveId", "gdrive",
+            "source", "src", "link", "url", "file", "download", "download_url", "downloadLink"
+        )
+
+        for (key in keys) {
+            extractJsonStringValues(decoded, key).forEach { rawValue ->
+                collectFilePressValueCandidate(baseUrl, rawValue, label, servers, secondStepIds)
             }
         }
+    }
+
+    private fun collectFilePressValueCandidate(
+        baseUrl: String,
+        rawValue: String,
+        label: String,
+        servers: MutableSet<PutarFlixServer>,
+        secondStepIds: MutableSet<String>
+    ) {
+        val value = PutarFlixUtils.decodeUrlRepeated(rawValue.trim())
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
+            .trim(' ', '"', '\'', '`')
+
+        if (value.isBlank()) return
+
+        if (value.startsWith("http", true) || value.startsWith("//")) {
+            val fixed = PutarFlixUtils.decodeKnownRedirect(PutarFlixUtils.absoluteUrl(baseUrl, value) ?: value)
+            servers += PutarFlixServer(label, fixed, baseUrl, "filepress-api-value-url")
+            return
+        }
+
+        if (!Regex("^[A-Za-z0-9_-]{8,160}$").matches(value)) return
+
+        // FilePress commonly returns its own 24-hex file id first, then a second-step
+        // payload may return a Google Drive id. Keep the second step, but do not turn
+        // Mongo-like ids into fake Drive URLs because they only create endless loading.
+        secondStepIds += value
+
+        if (looksLikeGoogleDriveId(value)) {
+            servers += PutarFlixServer(
+                label,
+                PutarFlixUtils.googleDriveDownloadUrl(value),
+                baseUrl,
+                "filepress-drive-direct"
+            )
+            servers += PutarFlixServer(
+                label,
+                "https://drive.google.com/file/d/$value/view",
+                baseUrl,
+                "filepress-drive-view"
+            )
+        }
+    }
+
+    private fun looksLikeGoogleDriveId(value: String): Boolean {
+        val clean = value.trim()
+        if (!Regex("^[A-Za-z0-9_-]{20,120}$").matches(clean)) return false
+        if (Regex("^[a-f0-9]{24}$", RegexOption.IGNORE_CASE).matches(clean)) return false
+        return true
     }
 
     private fun extractJsonStringValues(text: String, key: String): List<String> {
@@ -795,8 +852,10 @@ internal object PutarFlixExtractor {
                     timeout = REQUEST_TIMEOUT_MS,
                     headers = mapOf(
                         "Accept" to "application/json, text/javascript, */*; q=0.01",
+                        "Content-Type" to "application/json; charset=UTF-8",
                         "Origin" to (PutarFlixUtils.originOf(referer) ?: PutarFlixSeeds.MAIN_URL),
-                        "X-Requested-With" to "XMLHttpRequest"
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "User-Agent" to USER_AGENT
                     ),
                     requestBody = body
                 ).text
