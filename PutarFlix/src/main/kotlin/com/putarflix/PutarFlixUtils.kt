@@ -21,7 +21,8 @@ internal object PutarFlixUtils {
     )
 
     private val shortenerHosts = listOf(
-        "semawur.com", "linkduit.net", "safelinku.com", "safelinku.net", "ouo.io", "shrinkme.io"
+        "semawur.com", "linkduit.net", "safelinku.com", "safelinku.net", "ouo.io", "shrinkme.io",
+        "shortlinkto", "adlinkfly", "linksly.co", "droplink.co", "duit.cc", "cuty.io"
     )
 
     private val playableHosts = listOf(
@@ -33,7 +34,8 @@ internal object PutarFlixUtils {
         "vidguard", "vidplay", "filepursuit", "filegram", "pixeldrain.com", "krakenfiles.com",
         "emturbovid", "hownetwork", "playeriframe", "p2p", "f16", "jeniusplay", "majorplay",
         "e2e.majorplay", "m3u8.majorplay", "hglink", "ghbrisk", "dhcplay", "streamcasthub",
-        "embed4me", "upns.live", "4meplayer", "play.putar.in", "gdplayer", "z.awstream.net", "awstream", "megaplay", "luluvdo", "filedon", "blogger.com", "blogspot", "play.streamplay.co.in", "movearnpre"
+        "embed4me", "upns.live", "4meplayer", "play.putar.in", "gdplayer", "z.awstream.net", "awstream", "megaplay", "luluvdo", "filedon", "blogger.com", "blogspot", "play.streamplay.co.in", "movearnpre",
+        "abysscdn", "vidsrc", "streamvid", "streamhub", "videy.co", "cdn", "mcloud", "upstream", "dropboxusercontent.com"
     )
 
     fun cleanText(value: String?): String {
@@ -121,6 +123,7 @@ internal object PutarFlixUtils {
         val host = hostOf(lower).orEmpty()
         if (looksDirectVideo(lower)) return true
         if ("videoplayback" in lower) return true
+        if (".m3u8" in lower || ".mp4" in lower || ".mpd" in lower || ".webm" in lower) return true
         if ("googlevideo.com" in host) return true
         if ("googleusercontent.com" in host && "drive.google.com" !in host) return true
         if ("drive.usercontent.google.com" in host) return true
@@ -158,7 +161,7 @@ internal object PutarFlixUtils {
         val lower = url.lowercase()
         if (!lower.startsWith(PutarFlixSeeds.MAIN_URL)) return false
         if (badContentPaths.any { it in lower }) return false
-        return lower.contains("/eps/") || lower.contains("/tv/") || Regex("https?://[^/]+/[^/?#]+/?$").containsMatchIn(lower)
+        return lower.contains("/eps/") || lower.contains("/episode/") || lower.contains("/tv/") || Regex("https?://[^/]+/[^/?#]+/?$").containsMatchIn(lower)
     }
 
     fun isInternalNavigation(url: String): Boolean {
@@ -173,7 +176,7 @@ internal object PutarFlixUtils {
         if (lower.isBlank()) return true
         if (badExternalHosts.any { it in lower }) return true
         if (lower.contains("/trailer") || lower.contains("/embed/trailer")) return true
-        if (lower.endsWith(".jpg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".gif")) return true
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".css") || lower.endsWith(".js")) return true
         if (lower.contains("wp-content") && !looksDirectVideo(lower)) return true
         return false
     }
@@ -273,8 +276,12 @@ internal object PutarFlixUtils {
     }
 
     fun looksDirectVideo(url: String): Boolean {
-        val lower = url.lowercase().substringBefore("?")
-        return lower.endsWith(".m3u8") || lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".mpd")
+        val lower = url.lowercase()
+        val path = lower.substringBefore("?")
+        if (path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".mkv") || path.endsWith(".mpd") || path.endsWith(".webm")) return true
+        // Rumble/edge-cdn style HLS can expose a .tar URL with r_file=chunklist.m3u8 in the query.
+        if (lower.contains("r_file=chunklist.m3u8") || lower.contains("application/vnd.apple.mpegurl")) return true
+        return false
     }
 
     fun decodeKnownRedirect(url: String): String {

@@ -1,10 +1,18 @@
-version = 9
+version = 11
 
 cloudstream {
-    description = "PutarFlix provider by BetbetMiro"
-    authors = listOf("BetbetMiro")
-    status = 1
     language = "id"
-    tvTypes = listOf("Movie", "TvSeries", "AsianDrama")
-    iconUrl = "https://putarflix.com/wp-content/uploads/2023/11/cropped-PUTARFLIX-32x32.png"
+    authors = listOf("BetbetMiro")
+    description = "Reynime provider rebuilt around source-backed homepage rows, real poster data, /series detail routes, and hardened watch/API playback probing."
+
+    status = 1
+
+    tvTypes = listOf(
+        "Anime",
+        "AnimeMovie",
+        "OVA"
+    )
+
+    isCrossPlatform = false
+    iconUrl = "https://www.google.com/s2/favicons?domain=reynime.my.id&sz=%size%"
 }

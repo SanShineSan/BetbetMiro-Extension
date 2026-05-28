@@ -33,7 +33,7 @@ internal object PutarFlixExtractor {
     private const val MAX_RESOLVE_DEPTH = 4
 
     private val directVideoRegex = Regex(
-        """https?:\\?/\\?/[^\"'<>)\]\[\s]+?\.(?:m3u8|mp4|mkv|mpd)(?:\?[^\"'<>)\]\[\s]+)?""",
+        """https?:\\?/\\?/[^\"'<>)\]\[\s]+?(?:(?:\.(?:m3u8|mp4|mkv|mpd|webm)(?:\?[^\"'<>)\]\[\s]+)?)|(?:\?[^\"'<>)\]\[\s]*(?:m3u8|mp4|mkv|mpd|webm)[^\"'<>)\]\[\s]*))""",
         RegexOption.IGNORE_CASE
     )
     private val iframeRegex = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -199,6 +199,18 @@ internal object PutarFlixExtractor {
         }.getOrNull()
         if (!unpacked.isNullOrBlank()) {
             servers += collectServersFromAjaxText(pageUrl, unpacked, "PutarFlix Unpacked")
+        }
+
+        // Last-pass scan against the full raw HTML catches sources hidden in lazy
+        // attributes or inline JSON that are outside the usual player containers.
+        val fullHtml = normalizeExtractText(doc.outerHtml())
+        if (fullHtml.length > normalized.length) {
+            PutarFlixUtils.extractUrlsFromText(pageUrl, fullHtml).forEach { raw ->
+                val fixed = PutarFlixUtils.decodeKnownRedirect(raw)
+                if (!shouldSkipCandidate(fixed, allowPlayerPage = true, allowShortener = true)) {
+                    servers += PutarFlixServer("PutarFlix HTML", fixed, pageUrl, "full-html-url")
+                }
+            }
         }
 
         return servers.distinctBy { PutarFlixUtils.decodeKnownRedirect(it.url) }
@@ -419,6 +431,21 @@ internal object PutarFlixExtractor {
         if (depth > MAX_RESOLVE_DEPTH || fixedUrl in visited) return false
         visited += fixedUrl
 
+        extractWrappedTargetUrl(fixedUrl)?.let { target ->
+            if (target != fixedUrl && target !in visited) {
+                val resolved = resolveServer(
+                    url = target,
+                    referer = fixedUrl,
+                    label = label.ifBlank { "PutarFlix Wrapped" },
+                    subtitleCallback = subtitleCallback,
+                    callback = callback,
+                    visited = visited,
+                    depth = depth + 1
+                )
+                if (resolved) return true
+            }
+        }
+
         if (PutarFlixUtils.looksDirectVideo(fixedUrl) || PutarFlixUtils.isFinalStreamUrl(fixedUrl)) {
             return emitDirect(fixedUrl, referer, label, callback)
         }
@@ -633,6 +660,41 @@ internal object PutarFlixExtractor {
     }
 
 
+    private fun extractWrappedTargetUrl(url: String): String? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        val rawQuery = uri.rawQuery.orEmpty()
+        val params = rawQuery.split("&")
+            .mapNotNull { part ->
+                val key = part.substringBefore("=", "").lowercase()
+                val value = part.substringAfter("=", "")
+                if (key.isBlank() || value.isBlank()) null else key to value
+            }
+            .toMap()
+
+        val encoded = listOf("url", "u", "link", "file", "src", "source", "target", "video", "v")
+            .firstNotNullOfOrNull { key -> params[key]?.takeIf { it.isNotBlank() } }
+            ?: return null
+
+        val decoded = PutarFlixUtils.decodeUrlRepeated(encoded)
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
+            .trim()
+
+        if (decoded.startsWith("http", true) || decoded.startsWith("//")) {
+            return PutarFlixUtils.absoluteUrl(url, decoded)
+        }
+
+        val padded = decoded + "=".repeat((4 - decoded.length % 4) % 4)
+        return runCatching { String(java.util.Base64.getDecoder().decode(padded)) }
+            .recoverCatching { String(java.util.Base64.getUrlDecoder().decode(padded)) }
+            .mapCatching { PutarFlixUtils.decodeUrlRepeated(it) }
+            .mapCatching { PutarFlixUtils.absoluteUrl(url, it) }
+            .getOrNull()
+    }
+
     private fun shouldSkipCandidate(url: String, allowPlayerPage: Boolean, allowShortener: Boolean): Boolean {
         if (url.isBlank()) return true
         if (PutarFlixUtils.isRejectedVideoCandidate(url)) return true
@@ -692,7 +754,11 @@ internal object PutarFlixExtractor {
                 app.get(
                     url = url,
                     referer = referer,
-                    timeout = REQUEST_TIMEOUT_MS
+                    timeout = REQUEST_TIMEOUT_MS,
+                    headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    )
                 ).document
             }.getOrNull()
         }
@@ -709,7 +775,8 @@ internal object PutarFlixExtractor {
                         "X-Requested-With" to "XMLHttpRequest",
                         "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
                         "Accept" to "application/json, text/javascript, */*; q=0.01",
-                        "Origin" to PutarFlixSeeds.MAIN_URL
+                        "Origin" to PutarFlixSeeds.MAIN_URL,
+                        "User-Agent" to USER_AGENT
                     ),
                     data = data
                 ).text
@@ -754,6 +821,27 @@ internal object PutarFlixExtractor {
             else -> ExtractorLinkType.VIDEO
         }
 
+        val headers = mapOf(
+            "Referer" to referer,
+            "Origin" to (PutarFlixUtils.originOf(referer) ?: PutarFlixSeeds.MAIN_URL),
+            "User-Agent" to USER_AGENT
+        )
+
+        if (type == ExtractorLinkType.M3U8) {
+            val generated = runCatching {
+                generateM3u8(
+                    source = label.ifBlank { "PutarFlix" },
+                    streamUrl = url,
+                    referer = referer,
+                    headers = headers
+                )
+            }.getOrNull()
+            if (!generated.isNullOrEmpty()) {
+                generated.forEach(callback)
+                return true
+            }
+        }
+
         callback(
             newExtractorLink(
                 source = "PutarFlix",
@@ -763,11 +851,7 @@ internal object PutarFlixExtractor {
             ) {
                 this.referer = referer
                 this.quality = getQualityFromName(label).takeIf { it > 0 } ?: getQualityFromName(url)
-                this.headers = mapOf(
-                    "Referer" to referer,
-                    "Origin" to PutarFlixSeeds.MAIN_URL,
-                    "User-Agent" to "Mozilla/5.0"
-                )
+                this.headers = headers
             }
         )
         return true
