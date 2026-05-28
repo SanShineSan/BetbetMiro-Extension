@@ -23,6 +23,10 @@ object CgvIndoUtils {
         "Referer" to referer
     )
 
+    fun siteHeadersFor(referer: String): Map<String, String> = siteHeaders + mapOf(
+        "Referer" to referer
+    )
+
     fun ajaxHeaders(pageUrl: String): Map<String, String> {
         val origin = originOf(pageUrl) ?: CgvIndoSeeds.MAIN_URL
         return mapOf(

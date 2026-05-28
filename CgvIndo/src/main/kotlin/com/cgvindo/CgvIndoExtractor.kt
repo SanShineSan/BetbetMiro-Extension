@@ -23,7 +23,7 @@ object CgvIndoExtractor {
     private const val MAX_HOPS = 5
     private const val MAX_DIRECT = 24
     private const val MAX_EMBED = 32
-    private const val MAX_AJAX_PROBES = 36
+    private const val MAX_AJAX_PROBES = 96
 
     private val keyValueRegex = Regex(
         """(?i)(?:file|src|url|source|hls|hlsUrl|video|videoUrl|stream|streamUrl|playlist|embed|iframe|link|fileUrl)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
@@ -40,6 +40,15 @@ object CgvIndoExtractor {
     private val encodedUrlRegex = Regex("""https?%3A%2F%2F[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
     private val atobRegex = Regex("""(?i)atob\s*\(\s*['\"]([A-Za-z0-9+/=_-]{16,})['\"]\s*\)""")
     private val base64StringRegex = Regex("""['\"]([A-Za-z0-9+/=]{28,})['\"]""")
+
+    private val dataPostRegex = Regex("""(?i)data-(?:post|id|movie|movieid|postid|movie_id|post_id)\s*=\s*['\"]?(\d+)""")
+    private val dataNumeRegex = Regex("""(?i)data-(?:nume|server|episode|serverid)\s*=\s*['\"]?(\d+)""")
+    private val dataTypeRegex = Regex("""(?i)data-(?:type|player|kind)\s*=\s*['\"]?([a-zA-Z0-9_-]+)""")
+    private val jsPostRegex = Regex("""(?i)(?:post|post_id|movie_id|id)\s*[:=]\s*['\"]?(\d{2,})""")
+    private val bodyPostRegex = Regex("""(?i)(?:postid-|post-|wp-post-)(\d{2,})""")
+    private val ajaxUrlRegex = Regex("""(?i)(?:ajaxurl|ajax_url|admin_ajax|adminajax|ajaxUrl)\s*[=:]\s*[\'\"]([^\'\"]*admin-ajax\.php[^\'\"]*)[\'\"]""")
+    private val anyAdminAjaxRegex = Regex("""(?i)(?:https?:)?//[^\'\"<>\s]+admin-ajax\.php[^\'\"<>\s]*|/[^\'\"<>\s]*admin-ajax\.php[^\'\"<>\s]*""")
+    private val nonceRegex = Regex("""(?i)(?:nonce|security|_wpnonce|player_nonce|doo_nonce|dtNonce|playnonce)\s*[=:]\s*[\'\"]([A-Za-z0-9_\-]{5,})[\'\"]""")
 
     private val optionSelectors = listOf(
         ".dooplay_player_option", "#playeroptionsul li", "ul#playeroptionsul li", ".player_sorces li",
@@ -78,7 +87,7 @@ object CgvIndoExtractor {
     ): Boolean {
         if (depth > MAX_HOPS) return false
         val document = runCatching {
-            app.get(pageUrl, headers = CgvIndoUtils.siteHeaders, referer = referer).document
+            app.get(pageUrl, headers = CgvIndoUtils.siteHeadersFor(referer), referer = referer).document
         }.onFailure { Log.e(TAG, "GET failed $pageUrl: ${it.message}") }.getOrNull() ?: return false
 
         collectSubtitles(pageUrl, document, subtitleCallback)
@@ -112,33 +121,65 @@ object CgvIndoExtractor {
     private suspend fun fetchAjaxPlayers(pageUrl: String, document: Document): List<String> {
         val endpoints = ajaxEndpoints(pageUrl, document)
         val options = playerOptions(pageUrl, document)
+        val security = securityFields(document)
         if (options.isEmpty()) Log.e(TAG, "AJAX no player options found")
         val out = linkedSetOf<String>()
-        val actions = listOf("doo_player_ajax", "dt_player_ajax", "player_ajax", "get_player", "get_video", "get_embed", "getEmbed")
+        val actions = listOf(
+            "doo_player_ajax", "dt_player_ajax", "player_ajax", "get_player", "get_video",
+            "get_embed", "getEmbed", "get_player_content", "player", "getplayer"
+        )
         val fallbackTypes = inferTypes(pageUrl)
         var probes = 0
 
         for (endpoint in endpoints) {
             for (option in options) {
-                val postValues = listOfNotNull(option.post, option.server).distinct().ifEmpty { listOfNotNull(option.post) }
-                val numeValues = listOfNotNull(option.nume, option.server).distinct().ifEmpty { listOfNotNull(option.nume) }
-                val typeValues = listOfNotNull(option.type).ifEmpty { fallbackTypes }
+                val postValues = listOfNotNull(option.post)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                val numeValues = listOfNotNull(option.nume, option.server)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .ifEmpty { listOf("1") }
+                val typeValues = listOfNotNull(option.type)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .ifEmpty { fallbackTypes }
+
                 for (action in actions) {
-                    for (post in postValues.ifEmpty { listOf("") }) {
-                        for (nume in numeValues.ifEmpty { listOf("1") }) {
+                    for (post in postValues) {
+                        for (nume in numeValues) {
                             for (type in typeValues) {
-                                if (post.isBlank()) continue
-                                if (probes++ >= MAX_AJAX_PROBES) return out.toList()
-                                val forms = ajaxBodies(action, post, nume, type, option)
+                                if (probes++ >= MAX_AJAX_PROBES) {
+                                    Log.e(TAG, "AJAX probe cap reached candidates=${out.size}")
+                                    return out.toList()
+                                }
+                                val forms = ajaxBodies(action, post, nume, type, option, security)
                                 forms.forEach { body ->
+                                    val encodedBody = body.entries.joinToString("&") { (key, value) ->
+                                        "${key}=${URLEncoder.encode(value, "UTF-8")}"
+                                    }
                                     val response = runCatching {
-                                        val encodedBody = body.entries.joinToString("&") { (key, value) -> "${key}=${URLEncoder.encode(value, "UTF-8")}" }
                                         val requestBody = encodedBody.toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaTypeOrNull())
                                         val res = app.post(endpoint, requestBody = requestBody, headers = CgvIndoUtils.ajaxHeaders(pageUrl), referer = pageUrl)
-                                        Log.e(TAG, "AJAX endpoint=$endpoint action=$action post=$post nume=$nume type=$type status=${res.code} body=${res.text.take(300)}")
+                                        Log.e(TAG, "AJAX POST endpoint=$endpoint action=$action post=$post nume=$nume type=$type status=${res.code} body=${res.text.take(300)}")
                                         res.text
-                                    }.getOrNull() ?: return@forEach
-                                    ajaxPayloadUrls(pageUrl, response).forEach { out.add(it) }
+                                    }.getOrNull()
+
+                                    if (!response.isNullOrBlank()) {
+                                        ajaxPayloadUrls(pageUrl, response).forEach { out.add(it) }
+                                    }
+
+                                    if (response.isNullOrBlank() || response.trim() == "0") {
+                                        val getResponse = runCatching {
+                                            val getUrl = "$endpoint?$encodedBody"
+                                            val res = app.get(getUrl, headers = CgvIndoUtils.ajaxHeaders(pageUrl), referer = pageUrl)
+                                            Log.e(TAG, "AJAX GET endpoint=$getUrl status=${res.code} body=${res.text.take(300)}")
+                                            res.text
+                                        }.getOrNull()
+                                        if (!getResponse.isNullOrBlank()) {
+                                            ajaxPayloadUrls(pageUrl, getResponse).forEach { out.add(it) }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -146,16 +187,28 @@ object CgvIndoExtractor {
                 }
             }
         }
-        Log.e(TAG, "AJAX captured candidates=${out.size}")
+        Log.e(TAG, "AJAX captured candidates=${out.size} sample=${out.take(8)}")
         return out.toList()
     }
 
-    private fun ajaxBodies(action: String, post: String, nume: String, type: String, option: CgvIndoPlayerOption): List<Map<String, String>> {
+    private fun ajaxBodies(
+        action: String,
+        post: String,
+        nume: String,
+        type: String,
+        option: CgvIndoPlayerOption,
+        security: Map<String, String>
+    ): List<Map<String, String>> {
+        fun withSecurity(map: LinkedHashMap<String, String>): Map<String, String> {
+            security.forEach { (key, value) -> map[key] = value }
+            option.server?.takeIf { it.isNotBlank() }?.let { map.putIfAbsent("server", it) }
+            return map
+        }
         val base = linkedMapOf("action" to action, "post" to post, "nume" to nume, "type" to type)
         val alt = linkedMapOf("action" to action, "id" to post, "server" to nume, "type" to type)
         val alt2 = linkedMapOf("action" to action, "post_id" to post, "server" to nume, "episode" to nume, "type" to type)
-        option.server?.let { base["server"] = it }
-        return listOf(base, alt, alt2)
+        val alt3 = linkedMapOf("action" to action, "movie_id" to post, "nume" to nume, "type" to type)
+        return listOf(withSecurity(base), withSecurity(alt), withSecurity(alt2), withSecurity(alt3)).distinct()
     }
 
     private fun ajaxEndpoints(pageUrl: String, document: Document): List<String> {
@@ -163,37 +216,96 @@ object CgvIndoExtractor {
         val origin = CgvIndoUtils.originOf(pageUrl) ?: CgvIndoSeeds.MAIN_URL
         out.add("$origin/wp-admin/admin-ajax.php")
         val html = normalizedHtml(document)
-        Regex("(?i)(?:ajaxurl|admin_ajax|adminAjax|ajax_url)\\s*[:=]\\s*['\"]([^'\"]+)['\"]").findAll(html)
+        ajaxUrlRegex.findAll(html)
             .mapNotNull { CgvIndoUtils.absoluteUrl(pageUrl, it.groupValues[1]) }
             .forEach { out.add(it) }
-        document.select("[data-ajax], [data-ajaxurl], form[action]").forEach { el ->
-            listOf("data-ajax", "data-ajaxurl", "action").forEach { attr -> CgvIndoUtils.absoluteUrl(pageUrl, el.attr(attr))?.let { out.add(it) } }
+        anyAdminAjaxRegex.findAll(html)
+            .mapNotNull { CgvIndoUtils.absoluteUrl(pageUrl, it.value) }
+            .forEach { out.add(it) }
+        document.select("[data-ajax], [data-ajaxurl], [data-admin-ajax], form[action]").forEach { el ->
+            listOf("data-ajax", "data-ajaxurl", "data-admin-ajax", "action").forEach { attr ->
+                CgvIndoUtils.absoluteUrl(pageUrl, el.attr(attr))?.let { if ("admin-ajax" in it.lowercase()) out.add(it) }
+            }
         }
         return out.toList()
     }
 
     private fun playerOptions(pageUrl: String, document: Document): List<CgvIndoPlayerOption> {
         val out = mutableListOf<CgvIndoPlayerOption>()
+        val globalPost = globalPostId(document)
+        val html = normalizedHtml(document)
+
         document.select(optionSelectors).forEach { el ->
-            val attrs = listOf(el.attr("data-post"), el.attr("data-id"), el.attr("data-movie"), el.attr("data-movieid"), el.attr("data-postid"))
-            val post = attrs.firstOrNull { it.isNotBlank() }
-            val nume = listOf(el.attr("data-nume"), el.attr("data-server"), el.attr("data-episode"), el.attr("value")).firstOrNull { it.isNotBlank() }
-            val type = listOf(el.attr("data-type"), el.attr("data-player"), el.attr("data-kind")).firstOrNull { it.isNotBlank() }
-            val idClass = "${el.id()} ${el.className()} ${el.attr("onclick")}" 
-            val fallback = Regex("(?i)(?:player-option|dooplay_player_option|player_option)[-_]?(\\d+)[-_]?(\\d+)?").find(idClass)
-            val fPost = post ?: fallback?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
-            val fNume = nume ?: fallback?.groupValues?.getOrNull(2)?.takeIf { it.isNotBlank() } ?: el.attr("data-server").takeIf { it.isNotBlank() }
-            if (!fPost.isNullOrBlank() || !fNume.isNullOrBlank()) {
-                out.add(CgvIndoPlayerOption(fPost, fNume ?: "1", type, el.attr("data-server").takeIf { it.isNotBlank() }, CgvIndoUtils.cleanText(el.text())))
+            val explicitPost = listOf(
+                el.attr("data-post"), el.attr("data-id"), el.attr("data-movie"),
+                el.attr("data-movieid"), el.attr("data-postid"), el.attr("data-post-id"), el.attr("data-movie-id")
+            ).firstOrNull { it.isNotBlank() && it.all { ch -> ch.isDigit() } }
+            val explicitNume = listOf(
+                el.attr("data-nume"), el.attr("data-server"), el.attr("data-serverid"),
+                el.attr("data-episode"), el.attr("value")
+            ).firstOrNull { it.isNotBlank() && it.all { ch -> ch.isDigit() } }
+            val type = listOf(el.attr("data-type"), el.attr("data-player"), el.attr("data-kind"))
+                .firstOrNull { it.isNotBlank() }
+            val idClass = "${el.id()} ${el.className()} ${el.attr("onclick")} ${el.attr("data-option")}" 
+            val fallback = Regex("(?i)(?:player-option|dooplay_player_option|player_option|option)[-_]?(\\d+)(?:[-_](\\d+))?").find(idClass)
+            val first = fallback?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+            val second = fallback?.groupValues?.getOrNull(2)?.takeIf { it.isNotBlank() }
+
+            val post = explicitPost ?: globalPost ?: if (second != null) first else null
+            val nume = explicitNume ?: second ?: if (post != first) first else null ?: el.attr("data-server").takeIf { it.isNotBlank() } ?: "1"
+            if (!post.isNullOrBlank()) {
+                out.add(CgvIndoPlayerOption(post, nume, type, el.attr("data-server").takeIf { it.isNotBlank() }, CgvIndoUtils.cleanText(el.text())))
             }
         }
-        if (out.isEmpty()) {
-            val html = normalizedHtml(document)
-            val post = Regex("(?i)post\\s*[:=]\\s*['\"]?(\\d+)").find(html)?.groupValues?.getOrNull(1)
-                ?: Regex("(?i)post_id\\s*[:=]\\s*['\"]?(\\d+)").find(html)?.groupValues?.getOrNull(1)
-            if (!post.isNullOrBlank()) out.add(CgvIndoPlayerOption(post, "1", inferTypes(pageUrl).firstOrNull()))
+
+        // Regex fallback for inline dooplay options inside scripts or escaped HTML.
+        val global = globalPost
+        if (!global.isNullOrBlank()) {
+            val numbers = linkedSetOf<String>()
+            dataNumeRegex.findAll(html).map { it.groupValues[1] }.forEach { numbers.add(it) }
+            Regex("(?i)(?:player-option|dooplay_player_option|player_option)[-_]?(\\d+)").findAll(html)
+                .map { it.groupValues[1] }
+                .forEach { numbers.add(it) }
+            if (numbers.isEmpty()) numbers.addAll(listOf("1", "2", "3"))
+            val types = dataTypeRegex.find(html)?.groupValues?.getOrNull(1)?.let { listOf(it) } ?: inferTypes(pageUrl)
+            numbers.take(8).forEach { nume ->
+                types.forEach { type -> out.add(CgvIndoPlayerOption(global, nume, type, nume)) }
+            }
         }
+
+        if (out.isEmpty()) {
+            val post = globalPost
+                ?: jsPostRegex.find(html)?.groupValues?.getOrNull(1)
+                ?: dataPostRegex.find(html)?.groupValues?.getOrNull(1)
+            if (!post.isNullOrBlank()) {
+                inferTypes(pageUrl).forEach { type -> out.add(CgvIndoPlayerOption(post, "1", type)) }
+            }
+        }
+
+        Log.e(TAG, "AJAX player options globalPost=$globalPost count=${out.size} sample=${out.take(6)}")
         return out.distinctBy { "${it.post}|${it.nume}|${it.type}|${it.server}" }
+    }
+
+    private fun globalPostId(document: Document): String? {
+        val html = normalizedHtml(document)
+        val bodyClass = document.body()?.className().orEmpty()
+        return bodyPostRegex.find(bodyClass)?.groupValues?.getOrNull(1)
+            ?: document.selectFirst("article[id^=post-], div[id^=post-]")?.id()?.let { bodyPostRegex.find(it)?.groupValues?.getOrNull(1) }
+            ?: document.selectFirst("input[name=post], input[name=post_id], input[name=movie_id], [data-post], [data-postid]")?.let { el ->
+                listOf(el.attr("value"), el.attr("data-post"), el.attr("data-postid"), el.attr("data-id")).firstOrNull { it.isNotBlank() && it.all { ch -> ch.isDigit() } }
+            }
+            ?: bodyPostRegex.find(html)?.groupValues?.getOrNull(1)
+            ?: jsPostRegex.find(html)?.groupValues?.getOrNull(1)
+            ?: dataPostRegex.find(html)?.groupValues?.getOrNull(1)
+    }
+
+    private fun securityFields(document: Document): Map<String, String> {
+        val html = normalizedHtml(document)
+        val nonce = nonceRegex.find(html)?.groupValues?.getOrNull(1)
+            ?: document.selectFirst("input[name=nonce], input[name=security], input[name=_wpnonce], [data-nonce], [data-security]")?.let { el ->
+                listOf(el.attr("value"), el.attr("data-nonce"), el.attr("data-security")).firstOrNull { it.isNotBlank() }
+            }
+        return if (!nonce.isNullOrBlank()) mapOf("nonce" to nonce, "security" to nonce, "_wpnonce" to nonce) else emptyMap()
     }
 
     private fun inferTypes(pageUrl: String): List<String> {
@@ -302,7 +414,7 @@ object CgvIndoExtractor {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeaders, referer = referer).text }
+        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeadersFor(referer), referer = referer).text }
             .onFailure { Log.e(TAG, "custom packed GET failed $url: ${it.message}") }
             .getOrNull() ?: return false
         val normalized = CgvIndoUtils.decodeMaybe(html).replace("&lt;", "<").replace("&gt;", ">")
@@ -327,7 +439,7 @@ object CgvIndoExtractor {
         emitted: MutableSet<String>,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeaders, referer = referer).text }
+        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeadersFor(referer), referer = referer).text }
             .onFailure { Log.e(TAG, "streamtape GET failed $url: ${it.message}") }
             .getOrNull() ?: return false
         val direct = linkedSetOf<String>()
@@ -357,7 +469,7 @@ object CgvIndoExtractor {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val origin = CgvIndoUtils.originOf(url) ?: return false
-        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeaders, referer = referer).text }
+        val html = runCatching { app.get(url, headers = CgvIndoUtils.siteHeadersFor(referer), referer = referer).text }
             .onFailure { Log.e(TAG, "dood GET failed $url: ${it.message}") }
             .getOrNull() ?: return false
         val passPath = Regex("""(/pass_md5/[^'\"<>\s]+)""").find(html)?.groupValues?.getOrNull(1) ?: return false
