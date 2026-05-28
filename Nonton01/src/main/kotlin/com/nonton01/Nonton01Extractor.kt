@@ -111,8 +111,10 @@ object Nonton01Extractor {
                 ajaxCandidates
         )
         val direct = allCandidates.filter { isDirectMediaCandidate(it) }.distinct()
-        val embeds = allCandidates.filter { !isDirectMediaCandidate(it) && looksLikeEmbed(it) }.distinct()
-        Log.e(TAG, "captured page=$pageUrl depth=$depth ajax=${ajaxCandidates.size} all=${allCandidates.size} direct=${direct.size} embeds=${embeds.size}")
+        val embeds = allCandidates
+            .filter { !isDirectMediaCandidate(it) && shouldProbeAsEmbed(it, pageUrl) }
+            .distinct()
+        Log.e(TAG, "captured page=$pageUrl depth=$depth ajax=${ajaxCandidates.size} all=${allCandidates.size} direct=${direct.size} embeds=${embeds.size} sample=${embeds.take(8)}")
 
         for (url in direct.take(MAX_DIRECT_CANDIDATES)) {
             Log.e(TAG, "direct candidate: $url")
@@ -719,6 +721,28 @@ object Nonton01Extractor {
             (isDirectMediaCandidate(url) || isKnownExtractorHost(low) || looksLikeEmbed(url))
     }
 
+    private fun shouldProbeAsEmbed(url: String, pageUrl: String): Boolean {
+        val low = url.lowercase()
+        if (isDeniedUrl(low) || looksLikeDirectMp4(url) || looksLikeHls(url)) return false
+        if (!low.startsWith("http://") && !low.startsWith("https://")) return false
+        if (low == pageUrl.lowercase()) return false
+        val pageOrigin = originOf(pageUrl)
+        val urlOrigin = originOf(url)
+        val sameOrigin = pageOrigin != null && pageOrigin == urlOrigin
+
+        // Dooplay servers often return unknown iframe hosts. Do not require
+        // a known extractor domain here; probe external HTML player pages too.
+        return looksLikeEmbed(url) ||
+            isKnownExtractorHost(low) ||
+            !sameOrigin ||
+            looksLikeInternalPlayerUrl(low) ||
+            low.contains("player") ||
+            low.contains("embed") ||
+            low.contains("stream") ||
+            low.contains("server") ||
+            low.contains("source")
+    }
+
     private fun looksLikeEmbed(url: String): Boolean {
         val low = url.lowercase()
         return !isDeniedUrl(low) &&
@@ -776,13 +800,19 @@ object Nonton01Extractor {
         val pageOrigin = originOf(pageUrl)
         val low = embed.lowercase()
         if (embedOrigin == null || isDeniedUrl(low)) return false
+        if (!low.startsWith("http://") && !low.startsWith("https://")) return false
+        if (low == pageUrl.lowercase()) return false
         val sameOrigin = embedOrigin == pageOrigin
         val internalPlayer = looksLikeInternalPlayerUrl(low)
-        val externalPlayer = isKnownExtractorHost(low) || low.contains("/embed/") || low.contains("/player/")
+
+        // Same-site recursion is limited to explicit player/ajax pages to avoid
+        // crawling catalog/detail pages forever. External iframe hosts are allowed
+        // even when Cloudstream has no extractor, because many final streams are
+        // hidden one HTML layer deeper.
         return if (sameOrigin || Nonton01Utils.isSameHost(embed)) {
             internalPlayer
         } else {
-            externalPlayer || internalPlayer
+            true
         }
     }
 
