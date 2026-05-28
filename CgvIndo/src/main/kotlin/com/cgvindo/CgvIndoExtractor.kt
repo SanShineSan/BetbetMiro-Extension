@@ -14,6 +14,7 @@ import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
@@ -50,6 +51,12 @@ object CgvIndoExtractor {
     private val encodedUrlRegex = Regex("""https?%3A%2F%2F[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
     private val atobRegex = Regex("""(?i)atob\s*\(\s*['\"]([A-Za-z0-9+/=_-]{16,})['\"]\s*\)""")
     private val base64StringRegex = Regex("""['\"]([A-Za-z0-9+/=]{28,})['\"]""")
+    private val juicyCodesCallRegex = Regex(
+        """(?is)_juicycodes\s*\((.*?)\)\s*;"""
+    )
+    private val quotedLongStringRegex = Regex("""['\"]([A-Za-z0-9+/=_-]{24,})['\"]""")
+    private val juicyPingRouteRegex = Regex("""(?i)['\"]ping['\"]\s*:\s*['\"]([^'\"]+)['\"]""")
+
 
     private val dataPostRegex = Regex("""(?i)data-(?:post|id|movie|movieid|postid|movie_id|post_id)\s*=\s*['\"]?(\d+)""")
     private val dataNumeRegex = Regex("""(?i)data-(?:nume|server|episode|serverid)\s*=\s*['\"]?(\d+)""")
@@ -408,6 +415,9 @@ object CgvIndoExtractor {
                 extractDood(providerName, url, referer, emitted, callback)
             low.contains("streamtape") || low.contains("stape") ->
                 extractStreamTape(providerName, url, referer, emitted, callback)
+            low.contains("199.87.210.226") || low.contains("juicycodes") ||
+                low.contains("juicyapi") || low.contains("odading") ->
+                extractJuicyCodes(providerName, url, referer, emitted, subtitleCallback, callback)
             low.contains("filemoon") || low.contains("vidhide") || low.contains("vidguard") ||
                 low.contains("streamwish") || low.contains("filelions") || low.contains("streamruby") ||
                 low.contains("uqload") || low.contains("voe") || low.contains("mp4upload") ->
@@ -415,6 +425,137 @@ object CgvIndoExtractor {
             else -> false
         }
     }
+
+
+    private suspend fun extractJuicyCodes(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val html = runCatching {
+            app.get(url, headers = CgvIndoUtils.siteHeadersFor(referer), referer = referer).text
+        }.onFailure { Log.e(TAG, "juicy GET failed $url: ${it.message}") }.getOrNull() ?: return false
+
+        val candidates = linkedSetOf<String>()
+        val normalized = normalizedRawHtml(html)
+
+        // 1) The JuicyCodes page often stores player data in a huge _juicycodes("...") payload.
+        extractJuicyEncodedPayloads(url, normalized).forEach { payload ->
+            extractUrlsFromHtml(url, payload).forEach { candidates.add(it) }
+            normalizeUrl(url, payload)?.let { if (looksLikeMediaOrPlayer(it) || looksLikeEmbed(it)) candidates.add(it) }
+        }
+
+        // 2) window.juicyData exposes route hints such as /api/videos/.../ping. Probe them because
+        //    some installs return a JSON/HTML fragment containing the final player or HLS URL.
+        juicyPingRouteRegex.findAll(normalized)
+            .mapNotNull { normalizeUrl(url, it.groupValues[1].replace("\\/", "/")) }
+            .take(4)
+            .forEach { pingUrl ->
+                val pingText = runCatching {
+                    app.get(pingUrl, headers = CgvIndoUtils.ajaxHeaders(url), referer = url).text
+                }.onFailure { Log.e(TAG, "juicy ping failed $pingUrl: ${it.message}") }.getOrNull()
+                if (!pingText.isNullOrBlank()) {
+                    val decoded = CgvIndoUtils.decodeMaybe(pingText).replace("\\/", "/")
+                    Log.e(TAG, "juicy ping response url=$pingUrl body=${decoded.take(220)}")
+                    extractUrlsFromHtml(url, decoded).forEach { candidates.add(it) }
+                    ajaxPayloadUrls(url, decoded).forEach { candidates.add(it) }
+                }
+            }
+
+        // 3) Last resort: let the page execute inside WebView and intercept the final network request.
+        //    This is important because JuicyCodes/JWPlayer may only reveal the HLS URL after JS runs.
+        webViewJuicyCandidates(url, referer).forEach { candidates.add(it) }
+
+        val ordered = prioritizeCandidates(candidates.toList())
+        Log.e(TAG, "juicy candidates=${ordered.size} sample=${ordered.take(10)}")
+
+        var found = false
+        for (candidate in ordered.take(40)) {
+            val directFound = emitDirect(providerName, candidate, url, emitted, callback)
+            val extractorFound = if (!directFound) runExtractor(candidate, url, emitted, subtitleCallback, callback) else false
+            var recurseFound = false
+            if (!directFound && !extractorFound && canRecurseInto(candidate, url, 1)) {
+                recurseFound = resolvePage(providerName, CgvIndoSeeds.MAIN_URL, candidate, url, 2, emitted, subtitleCallback, callback)
+            }
+            found = found || directFound || extractorFound || recurseFound
+        }
+        return found
+    }
+
+    private fun extractJuicyEncodedPayloads(pageUrl: String, html: String): List<String> {
+        val out = linkedSetOf<String>()
+        juicyCodesCallRegex.findAll(html).forEach { call ->
+            quotedLongStringRegex.findAll(call.groupValues[1]).forEach { match ->
+                val raw = match.groupValues[1]
+                decodeJuicyString(raw).forEach { decoded ->
+                    if (decoded.contains("http", true) || decoded.contains("iframe", true) || decoded.contains("m3u8", true) || decoded.contains("file", true)) {
+                        out.add(decoded)
+                    }
+                    extractUrlsFromHtml(pageUrl, decoded).forEach { out.add(it) }
+                }
+            }
+        }
+        // Also scan all long strings on the page, because some installs split/rename the function.
+        quotedLongStringRegex.findAll(html).take(160).forEach { match ->
+            decodeJuicyString(match.groupValues[1]).forEach { decoded ->
+                if (decoded.contains("http", true) || decoded.contains("iframe", true) || decoded.contains("m3u8", true)) {
+                    out.add(decoded)
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    private fun decodeJuicyString(raw: String): List<String> {
+        val out = linkedSetOf<String>()
+        val cleaned = raw.trim().replace("-", "+").replace("_", "/")
+        val padded = cleaned + "=".repeat((4 - cleaned.length % 4) % 4)
+        listOf(raw, cleaned, padded).forEach { candidate ->
+            runCatching { String(Base64.decode(candidate, Base64.DEFAULT)) }.getOrNull()?.let { decoded ->
+                out.add(CgvIndoUtils.decodeMaybe(decoded).replace("\\/", "/"))
+            }
+        }
+        return out.toList()
+    }
+
+    private suspend fun webViewJuicyCandidates(url: String, referer: String): List<String> {
+        val out = linkedSetOf<String>()
+        val mediaRegex = Regex("""(?i).*(m3u8|mp4|videoplayback|get_video|master|playlist|hls|stream).*""")
+        val apiRegex = Regex("""(?i).*(/api/videos/|/api/streams/|/dl\?|player_api|source).*""")
+
+        suspend fun runIntercept(regex: Regex) {
+            val response = runCatching {
+                app.get(
+                    url,
+                    headers = CgvIndoUtils.siteHeadersFor(referer),
+                    referer = referer,
+                    interceptor = WebViewResolver(regex, timeout = 25_000L)
+                )
+            }.onFailure { Log.e(TAG, "juicy WebView intercept failed $url: ${it.message}") }.getOrNull() ?: return
+
+            normalizeUrl(url, response.url)?.let { captured ->
+                if (looksLikeMediaOrPlayer(captured) || looksLikeEmbed(captured)) out.add(captured)
+            }
+            val text = CgvIndoUtils.decodeMaybe(response.text).replace("\\/", "/")
+            extractUrlsFromHtml(url, text).forEach { out.add(it) }
+            ajaxPayloadUrls(url, text).forEach { out.add(it) }
+            Log.e(TAG, "juicy WebView captured responseUrl=${response.url} body=${text.take(220)}")
+        }
+
+        runIntercept(mediaRegex)
+        if (out.none { looksLikeDirectOrHls(it) }) runIntercept(apiRegex)
+        return out.toList()
+    }
+
+    private fun normalizedRawHtml(html: String): String = CgvIndoUtils.decodeMaybe(html)
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("\\/", "/")
 
     private suspend fun extractPackedPlayer(
         providerName: String,
@@ -647,7 +788,8 @@ object CgvIndoExtractor {
             "streamtape", "dood", "doodstream", "filemoon", "vidhide", "vidguard", "streamwish", "filelions", "streamruby",
             "mp4upload", "upstream", "mixdrop", "streamsb", "sbembed", "luluvdo", "voe", "uqload", "short.ink", "hydrax", "streamvid", "streamhide", "filegram", "fileditch", "vidmoly",
             "hglink", "hgcloud", "ghbrisk", "dhcplay", "streamcasthub", "dm21", "embed4me", "upns", "p2pplay", "4meplayer", "meplayer",
-            "dingtezuni", "dintezuvio", "minochinos", "mivalyo", "movearnpre", "ryderjet", "bingezove", "jeniusplay", "veev", "kinoger", "poophq"
+            "dingtezuni", "dintezuvio", "minochinos", "mivalyo", "movearnpre", "ryderjet", "bingezove", "jeniusplay", "veev", "kinoger", "poophq",
+            "199.87.210.226", "juicycodes", "juicyapi", "odading"
         ).any { it in low }
     }
 
