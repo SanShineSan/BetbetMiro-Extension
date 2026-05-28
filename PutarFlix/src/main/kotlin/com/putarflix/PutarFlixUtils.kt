@@ -108,22 +108,45 @@ internal object PutarFlixUtils {
     }
 
 
-    fun isDirectDownloadUrl(url: String): Boolean {
+    /**
+     * True only for URLs that ExoPlayer can reasonably consume directly.
+     * Do NOT include drive.google.com/uc or export=download here: those are
+     * landing/redirect pages and can cause infinite loading if emitted as video.
+     */
+    fun isFinalStreamUrl(url: String): Boolean {
         val lower = url.lowercase()
         val host = hostOf(lower).orEmpty()
         if (looksDirectVideo(lower)) return true
-        if ("googlevideo.com" in host || "googleusercontent.com" in host || "drive.usercontent.google.com" in host) return true
         if ("videoplayback" in lower) return true
+        if ("googlevideo.com" in host) return true
+        if ("googleusercontent.com" in host && "drive.google.com" !in host) return true
+        if ("drive.usercontent.google.com" in host) return true
+        return false
+    }
+
+    fun isDirectDownloadUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        val host = hostOf(lower).orEmpty()
+        if (isFinalStreamUrl(lower)) return true
         if (("download" in lower || "export=download" in lower || "uc?" in lower) && ("drive.google.com" in host || "filepress" in host)) return true
         return false
     }
 
+    fun isGoogleDriveLandingUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return "drive.google.com/file/d/" in lower ||
+            "drive.google.com/open?" in lower ||
+            "drive.google.com/uc?" in lower ||
+            "drive.google.com/uc?id=" in lower
+    }
+
     fun isHtmlLandingUrl(url: String): Boolean {
         val lower = url.lowercase()
+        if (isFinalStreamUrl(lower)) return false
         if (isPutarFlixUrl(lower)) return true
         if (isShortenerUrl(lower)) return true
         if (isFilePressUrl(lower)) return true
-        if ("drive.google.com/file/d/" in lower || "drive.google.com/open?" in lower) return true
+        if (isGoogleDriveLandingUrl(lower)) return true
         if (lower.endsWith(".html") || lower.endsWith(".php")) return true
         return false
     }

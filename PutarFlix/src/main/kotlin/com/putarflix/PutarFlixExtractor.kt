@@ -7,7 +7,10 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.nicehttp.RequestBodyTypes
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -55,7 +58,7 @@ internal object PutarFlixExtractor {
         if (startUrl.isBlank()) return false
 
         if (!PutarFlixUtils.isPutarFlixUrl(startUrl)) {
-            if (PutarFlixUtils.looksDirectVideo(startUrl) || PutarFlixUtils.isDirectDownloadUrl(startUrl)) {
+            if (PutarFlixUtils.looksDirectVideo(startUrl) || PutarFlixUtils.isFinalStreamUrl(startUrl)) {
                 return emitDirect(startUrl, PutarFlixSeeds.MAIN_URL, "PutarFlix Direct", callback)
             }
             return resolveServer(
@@ -332,7 +335,7 @@ internal object PutarFlixExtractor {
         if (depth > MAX_RESOLVE_DEPTH || fixedUrl in visited) return false
         visited += fixedUrl
 
-        if (PutarFlixUtils.looksDirectVideo(fixedUrl) || PutarFlixUtils.isDirectDownloadUrl(fixedUrl)) {
+        if (PutarFlixUtils.looksDirectVideo(fixedUrl) || PutarFlixUtils.isFinalStreamUrl(fixedUrl)) {
             return emitDirect(fixedUrl, referer, label, callback)
         }
 
@@ -355,6 +358,11 @@ internal object PutarFlixExtractor {
 
         val loadedWithLinks = safeLoadExtractor(fixedUrl, referer, subtitleCallback, callback)
         if (loadedWithLinks) return true
+
+        // Google Drive uc/file/open links are not directly playable. If Cloudstream's
+        // extractor did not emit a real stream above, do not pass the HTML landing
+        // page further into ExoPlayer.
+        if (PutarFlixUtils.isGoogleDriveLandingUrl(fixedUrl)) return false
 
         if (shouldSkipCandidate(fixedUrl, allowPlayerPage = true, allowShortener = true)) return false
 
@@ -414,30 +422,48 @@ internal object PutarFlixExtractor {
             }
         }
 
-        val endpoints = listOf(
+        val firstStepEndpoints = listOf(
             "$origin/api/file/downlaod/",
             "$origin/api/file/download/"
         )
-        val methods = listOf("publicDownlaod", "publicDownload", "download")
+        val firstStepMethods = listOf("publicDownlaod", "publicDownload", "download", "telegramDownload")
+        val secondStepEndpoints = listOf(
+            "$origin/api/file/downlaod2/",
+            "$origin/api/file/download2/"
+        )
 
-        for (endpoint in endpoints) {
-            for (method in methods) {
-                val response = safePostAjaxText(
+        val secondStepIds = linkedSetOf<String>()
+        for (endpoint in firstStepEndpoints) {
+            for (method in firstStepMethods) {
+                val response = safePostFilePressJsonText(
                     url = endpoint,
                     referer = url,
-                    data = mapOf(
-                        "id" to fileId,
-                        "method" to method
-                    )
+                    id = fileId,
+                    method = method
+                ) ?: safePostAjaxText(
+                    url = endpoint,
+                    referer = url,
+                    data = mapOf("id" to fileId, "method" to method)
                 ) ?: continue
 
-                servers += collectServersFromAjaxText(url, response, label.ifBlank { "FilePress" })
-                PutarFlixUtils.extractUrlsFromText(url, normalizeExtractText(response)).forEach { found ->
-                    val fixed = PutarFlixUtils.decodeKnownRedirect(found)
-                    if (!PutarFlixUtils.isHtmlLandingUrl(fixed)) {
-                        servers += PutarFlixServer(label.ifBlank { "FilePress" }, fixed, url, "filepress-api")
-                    }
-                }
+                collectFilePressResponseCandidates(url, response, label.ifBlank { "FilePress" }, servers, secondStepIds)
+            }
+        }
+
+        for (nextId in secondStepIds) {
+            for (endpoint in secondStepEndpoints) {
+                val response = safePostFilePressJsonText(
+                    url = endpoint,
+                    referer = url,
+                    id = nextId,
+                    method = "publicDownlaod"
+                ) ?: safePostAjaxText(
+                    url = endpoint,
+                    referer = url,
+                    data = mapOf("id" to nextId, "method" to "publicDownlaod")
+                ) ?: continue
+
+                collectFilePressResponseCandidates(url, response, label.ifBlank { "FilePress" }, servers, linkedSetOf())
             }
         }
 
@@ -461,6 +487,61 @@ internal object PutarFlixExtractor {
         }
         return false
     }
+
+    private fun collectFilePressResponseCandidates(
+        baseUrl: String,
+        response: String,
+        label: String,
+        servers: MutableSet<PutarFlixServer>,
+        secondStepIds: MutableSet<String>
+    ) {
+        val decoded = normalizeExtractText(response)
+
+        servers += collectServersFromAjaxText(baseUrl, decoded, label)
+
+        PutarFlixUtils.extractUrlsFromText(baseUrl, decoded).forEach { found ->
+            val fixed = PutarFlixUtils.decodeKnownRedirect(found)
+            if (!PutarFlixUtils.isHtmlLandingUrl(fixed) || PutarFlixUtils.isGoogleDriveLandingUrl(fixed)) {
+                servers += PutarFlixServer(label, fixed, baseUrl, "filepress-api-url")
+            }
+        }
+
+        extractJsonStringValues(decoded, "data").forEach { dataValue ->
+            val value = dataValue.trim()
+            when {
+                value.startsWith("http", true) -> {
+                    val fixed = PutarFlixUtils.decodeKnownRedirect(value)
+                    servers += PutarFlixServer(label, fixed, baseUrl, "filepress-api-data-url")
+                }
+                value.length > 8 && Regex("^[A-Za-z0-9_-]+$").matches(value) -> {
+                    secondStepIds += value
+                    servers += PutarFlixServer(
+                        label,
+                        "https://drive.google.com/file/d/$value/view",
+                        baseUrl,
+                        "filepress-drive-view"
+                    )
+                    servers += PutarFlixServer(
+                        label,
+                        "https://drive.google.com/uc?id=$value&export=download",
+                        baseUrl,
+                        "filepress-drive-uc"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun extractJsonStringValues(text: String, key: String): List<String> {
+        val quoted = Regex("""["']${Regex.escape(key)}["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+        val bare = Regex("""["']${Regex.escape(key)}["']\s*:\s*([A-Za-z0-9_-]{8,})""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+        return (quoted + bare).map { PutarFlixUtils.decodeUrlRepeated(it) }.distinct().toList()
+    }
+
 
     private fun shouldSkipCandidate(url: String, allowPlayerPage: Boolean, allowShortener: Boolean): Boolean {
         if (url.isBlank()) return true
@@ -545,6 +626,31 @@ internal object PutarFlixExtractor {
             }.getOrNull()
         }
     }
+
+    private suspend fun safePostFilePressJsonText(url: String, referer: String, id: String, method: String): String? {
+        val body = """{"id":"${escapeJson(id)}","method":"${escapeJson(method)}"}"""
+            .toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+        return withTimeoutOrNull(REQUEST_TIMEOUT_MS) {
+            runCatching {
+                app.post(
+                    url = url,
+                    referer = referer,
+                    timeout = REQUEST_TIMEOUT_MS,
+                    headers = mapOf(
+                        "Accept" to "application/json, text/javascript, */*; q=0.01",
+                        "Origin" to (PutarFlixUtils.originOf(referer) ?: PutarFlixSeeds.MAIN_URL),
+                        "X-Requested-With" to "XMLHttpRequest"
+                    ),
+                    requestBody = body
+                ).text
+            }.getOrNull()
+        }
+    }
+
+    private fun escapeJson(value: String): String {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+    }
+
 
     private suspend fun emitDirect(
         url: String,
