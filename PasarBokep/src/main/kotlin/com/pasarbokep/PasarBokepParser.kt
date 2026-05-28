@@ -56,9 +56,12 @@ object PasarBokepParser {
         val href = PasarBokepUtils.absoluteUrl(anchor.attr("href"), mainUrl) ?: return null
         val title = PasarBokepUtils.cleanText(
             block.selectFirst("h1, h2, h3, .entry-title, .post-title, .title")?.text()
+                ?.ifBlank { anchor.attr("title") }
+                ?.ifBlank { anchor.text() }
+                ?.ifBlank { block.selectFirst("img")?.attr("alt").orEmpty() }
                 ?: anchor.attr("title")
-                ?: anchor.text()
-                ?: block.selectFirst("img")?.attr("alt")
+                    .ifBlank { anchor.text() }
+                    .ifBlank { block.selectFirst("img")?.attr("alt").orEmpty() }
         ).ifBlank { PasarBokepUtils.titleFromUrl(href) }
 
         if (!PasarBokepUtils.isLikelyVideoPage(href, title, mainUrl)) return null
@@ -68,7 +71,9 @@ object PasarBokepParser {
     private fun parseAnchor(anchor: Element, mainUrl: String): PasarBokepCard? {
         val href = PasarBokepUtils.absoluteUrl(anchor.attr("href"), mainUrl) ?: return null
         val title = PasarBokepUtils.cleanText(
-            anchor.attr("title").ifBlank { anchor.text() }.ifBlank { anchor.selectFirst("img")?.attr("alt").orEmpty() }
+            anchor.attr("title")
+                .ifBlank { anchor.text() }
+                .ifBlank { anchor.selectFirst("img")?.attr("alt").orEmpty() }
         ).ifBlank { PasarBokepUtils.titleFromUrl(href) }
 
         if (!PasarBokepUtils.isLikelyVideoPage(href, title, mainUrl)) return null

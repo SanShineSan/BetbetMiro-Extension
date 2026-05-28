@@ -1,6 +1,11 @@
 package com.pasarbokep
 
 object PasarBokepSeeds {
+    /**
+     * Playable homepage sections only.
+     * Source also has Cerita/Komik menu branches, but those are article/photo pages,
+     * so they are intentionally excluded from Cloudstream video rows to avoid dead playback.
+     */
     val mainPage = listOf(
         PasarBokepCategory("Video Terbaru", "/"),
         PasarBokepCategory("Bokep Indo", "/category/bokep-indo/"),
@@ -9,13 +14,6 @@ object PasarBokepSeeds {
         PasarBokepCategory("Bokep Jilbab", "/category/bokep-jilbab/"),
         PasarBokepCategory("Bokep Jepang", "/category/bokep-jepang/"),
         PasarBokepCategory("Jepang Uncensored", "/category/bokep-jepang-uncensored/"),
-        PasarBokepCategory("Cerita Dewasa", "/category/cerita-dewasa/"),
-        PasarBokepCategory("Komik Hentai", "/category/komik-hentai/"),
-        PasarBokepCategory("Komik Hentai Berwarna", "/category/komik-hentai-berwarna/"),
-        PasarBokepCategory("Komik Hentai Naruto", "/category/komik-hentai-naruto/"),
-        PasarBokepCategory("Komik Hentai Tante", "/category/komik-hentai-tante/"),
-        PasarBokepCategory("Komik Hentai Mama", "/category/komik-hentai-mama/"),
-        PasarBokepCategory("Komik Hentai Guru", "/category/komik-hentai-guru/"),
     )
 
     val blockedPathHints = listOf(
@@ -29,6 +27,8 @@ object PasarBokepSeeds {
         "/register",
         "/tag/",
         "/category/",
+        "/blog-category/",
+        "/photos-category/",
         "/page/",
         "#",
     )
@@ -45,5 +45,11 @@ object PasarBokepSeeds {
         "random videos",
         "show more",
         "home",
+        "category:",
+        "photo category:",
+        "cerita dewasa",
+        "cerita sex",
+        "cerita selingkuh",
+        "komik hentai",
     )
 }

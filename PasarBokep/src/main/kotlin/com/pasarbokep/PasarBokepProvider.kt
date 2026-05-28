@@ -11,7 +11,6 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPage
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.SubtitleFile
@@ -36,7 +35,7 @@ class PasarBokepProvider : MainAPI() {
         val url = PasarBokepUtils.pagedUrl(request.data, page, mainUrl)
         val document = app.get(url, headers = PasarBokepUtils.headers, referer = mainUrl).document
         val list = PasarBokepParser.parseCards(document, this)
-        return newHomePageResponse(request.name, list, document.hasNextPage() || list.isNotEmpty())
+        return newHomePageResponse(request.name, list, hasNext = document.hasNextPage())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
