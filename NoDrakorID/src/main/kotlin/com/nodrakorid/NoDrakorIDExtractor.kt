@@ -1,6 +1,5 @@
 package com.nodrakorid
 
-import com.lagradost.cloudstream3.INFER_TYPE
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
@@ -331,7 +330,7 @@ internal object NoDrakorIDExtractor {
                     source = label.ifBlank { "NoDrakorID" },
                     name = label.ifBlank { "NoDrakorID" },
                     url = clean,
-                    type = INFER_TYPE
+                    type = ExtractorLinkType.VIDEO
                 ) {
                     this.referer = referer
                     this.quality = getQualityFromName(clean).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value
@@ -463,9 +462,9 @@ internal object NoDrakorIDExtractor {
 }
 
 open class NoDrakorIDHostExtractor : ExtractorApi() {
-    override val name = "NoDrakorID Host"
-    override val mainUrl = "https://example.com"
-    override val requiresReferer = true
+    override var name = "NoDrakorID Host"
+    override var mainUrl = "https://example.com"
+    override var requiresReferer = true
 
     override suspend fun getUrl(
         url: String,
@@ -485,7 +484,7 @@ open class NoDrakorIDHostExtractor : ExtractorApi() {
                 if (NoDrakorIDUtils.isHls(candidate)) {
                     M3u8Helper.generateM3u8(name, candidate, referer = pageUrl, headers = NoDrakorIDUtils.videoHeaders(pageUrl)).forEach(callback)
                 } else {
-                    callback(newExtractorLink(name, name, candidate, INFER_TYPE) {
+                    callback(newExtractorLink(name, name, candidate, ExtractorLinkType.VIDEO) {
                         this.referer = pageUrl
                         this.quality = getQualityFromName(candidate)
                         this.headers = NoDrakorIDUtils.videoHeaders(pageUrl)
@@ -499,81 +498,81 @@ open class NoDrakorIDHostExtractor : ExtractorApi() {
 }
 
 class NoDrakorIDJeniusplay : NoDrakorIDHostExtractor() {
-    override val name = "Jeniusplay"
-    override val mainUrl = "https://jeniusplay.com"
+    override var name = "Jeniusplay"
+    override var mainUrl = "https://jeniusplay.com"
 }
 
 class NoDrakorIDMajorplay : NoDrakorIDHostExtractor() {
-    override val name = "Majorplay"
-    override val mainUrl = "https://majorplay.xyz"
+    override var name = "Majorplay"
+    override var mainUrl = "https://majorplay.xyz"
 }
 
 class NoDrakorIDE2eMajorplay : NoDrakorIDHostExtractor() {
-    override val name = "E2eMajorplay"
-    override val mainUrl = "https://e2e.majorplay.xyz"
+    override var name = "E2eMajorplay"
+    override var mainUrl = "https://e2e.majorplay.xyz"
 }
 
 class NoDrakorIDM3u8Majorplay : NoDrakorIDHostExtractor() {
-    override val name = "M3u8Majorplay"
-    override val mainUrl = "https://m3u8.majorplay.xyz"
+    override var name = "M3u8Majorplay"
+    override var mainUrl = "https://m3u8.majorplay.xyz"
 }
 
 class NoDrakorIDBloggerVideo : NoDrakorIDHostExtractor() {
-    override val name = "BloggerVideo"
-    override val mainUrl = "https://www.blogger.com"
+    override var name = "BloggerVideo"
+    override var mainUrl = "https://www.blogger.com"
 }
 
 class NoDrakorIDGdplayer : NoDrakorIDHostExtractor() {
-    override val name = "Gdplayer"
-    override val mainUrl = "https://gdplayer.to"
+    override var name = "Gdplayer"
+    override var mainUrl = "https://gdplayer.to"
 }
 
 class NoDrakorIDAWSStream : NoDrakorIDHostExtractor() {
-    override val name = "AWSStream"
-    override val mainUrl = "https://awsstream.com"
+    override var name = "AWSStream"
+    override var mainUrl = "https://awsstream.com"
 }
 
 class NoDrakorIDStreamWish : StreamWishExtractor() {
-    override val name = "StreamWish"
-    override val mainUrl = "https://streamwish.to"
+    override var name = "StreamWish"
+    override var mainUrl = "https://streamwish.to"
 }
 
 class NoDrakorIDFileMoon : StreamWishExtractor() {
-    override val name = "FileMoon"
-    override val mainUrl = "https://filemoon.sx"
+    override var name = "FileMoon"
+    override var mainUrl = "https://filemoon.sx"
 }
 
 class NoDrakorIDHglink : StreamWishExtractor() {
-    override val name = "Hglink"
-    override val mainUrl = "https://hglink.to"
+    override var name = "Hglink"
+    override var mainUrl = "https://hglink.to"
 }
 
 class NoDrakorIDGhbrisk : StreamWishExtractor() {
-    override val name = "Ghbrisk"
-    override val mainUrl = "https://ghbrisk.com"
+    override var name = "Ghbrisk"
+    override var mainUrl = "https://ghbrisk.com"
 }
 
 class NoDrakorIDDhcplay : StreamWishExtractor() {
-    override val name = "Dhcplay"
-    override val mainUrl = "https://dhcplay.com"
+    override var name = "Dhcplay"
+    override var mainUrl = "https://dhcplay.com"
 }
 
 class NoDrakorIDDood : DoodLaExtractor() {
-    override val name = "Dood"
-    override val mainUrl = "https://doodstream.com"
+    override var name = "Dood"
+    override var mainUrl = "https://doodstream.com"
 }
 
 class NoDrakorIDStreamcasthub : VidStack() {
-    override val name = "Streamcasthub"
-    override val mainUrl = "https://streamcasthub.com"
+    override var name = "Streamcasthub"
+    override var mainUrl = "https://streamcasthub.com"
 }
 
 class NoDrakorIDDm21embed : VidStack() {
-    override val name = "Dm21embed"
-    override val mainUrl = "https://dm21embed.com"
+    override var name = "Dm21embed"
+    override var mainUrl = "https://dm21embed.com"
 }
 
 class NoDrakorIDMeplayer : VidStack() {
-    override val name = "Meplayer"
-    override val mainUrl = "https://meplayer.xyz"
+    override var name = "Meplayer"
+    override var mainUrl = "https://meplayer.xyz"
 }
