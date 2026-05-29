@@ -3,9 +3,15 @@ name: Export Gradle Cache
 on:
   workflow_dispatch:
   push:
+    paths:
+      - ".github/workflows/export-gradle-cache.yml"
+
+permissions:
+  contents: read
 
 jobs:
   export:
+    name: Export Gradle Cache
     runs-on: ubuntu-latest
 
     steps:
@@ -24,19 +30,38 @@ jobs:
       - name: Download Cloudstream jar
         run: |
           mkdir -p "$HOME/.gradle/caches/cloudstream/cloudstream"
-          curl -L --retry 3 --fail -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar" "https://github.com/recloudstream/cloudstream/releases/download/pre-release/classes.jar"
+          curl -L --retry 3 --fail             -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar"             "https://github.com/recloudstream/cloudstream/releases/download/pre-release/classes.jar"
+          ls -lah "$HOME/.gradle/caches/cloudstream/cloudstream"
 
       - name: Populate Gradle cache
-        run: ./gradlew :NoDrakorID:compileDebugKotlin --no-daemon || true
+        run: |
+          ./gradlew :NoDrakorID:compileDebugKotlin --no-daemon || true
 
       - name: Pack Gradle cache
         run: |
           mkdir -p gradle-cache-export
-          tar -czf gradle-cache-export/gradle-local-cache.tar.gz -C "$HOME" .gradle
+          tar -czf gradle-cache-export/gradle-local-cache.tar.gz             -C "$HOME"             .gradle
 
-      - name: Upload Gradle cache
+          ls -lah gradle-cache-export
+
+      - name: Pack Android SDK
+        run: |
+          mkdir -p android-sdk-export
+
+          tar -czf android-sdk-export/android-sdk-minimal.tar.gz             -C "$ANDROID_HOME"             platforms/android-35             build-tools/34.0.0             platform-tools             licenses
+
+          ls -lah android-sdk-export
+
+      - name: Upload Gradle cache artifact
         uses: actions/upload-artifact@v4
         with:
           name: gradle-local-cache
           path: gradle-cache-export/gradle-local-cache.tar.gz
+          retention-days: 3
+
+      - name: Upload Android SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sdk-minimal
+          path: android-sdk-export/android-sdk-minimal.tar.gz
           retention-days: 3
