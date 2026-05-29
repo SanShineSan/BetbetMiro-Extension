@@ -2,11 +2,12 @@ package com.sad25kag.alqanime
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 
@@ -127,9 +128,9 @@ class Alqanime : MainAPI() {
         val poster = document.selectFirst("div.thumb img")?.attr("src")
         val coverBg = document.selectFirst("div.ime img")?.attr("src")
         val trailerRaw = document.selectFirst("a.trailerbutton")?.attr("href")
-        val trailer = trailerRaw?.let { url ->
-            val videoId = Regex("[?&]v=([^&]+)").find(url)?.groupValues?.getOrNull(1)
-            if (videoId != null) "https://www.youtube.com/embed/$videoId" else url
+        val trailer = trailerRaw?.let { trailerUrl ->
+            val videoId = Regex("[?&]v=([^&]+)").find(trailerUrl)?.groupValues?.getOrNull(1)
+            if (videoId != null) "https://www.youtube.com/embed/$videoId" else trailerUrl
         }
         val description = document.select("div.entry-content > p")
             .filter { it.text().length > 10 }
@@ -162,6 +163,28 @@ class Alqanime : MainAPI() {
         val scoreText = document.selectFirst("strong:contains(Score)")?.text()
             ?.replace("Score", "")?.trim()
 
+        val episodes = parseLegacyEpisodes(document).ifEmpty {
+            parseModernDownloadEpisodes(document)
+        }
+
+        return newAnimeLoadResponse(title, url, type) {
+            this.japName = japName
+            engName = title
+            posterUrl = poster
+            backgroundPosterUrl = coverBg
+            this.year = year
+            this.duration = duration
+            addEpisodes(DubStatus.Subbed, episodes.reversed())
+            showStatus = status
+            plot = description
+            addTrailer(trailer, addRaw = true)
+            this.tags = listOfNotNull(*genres.toTypedArray(), studio, season)
+            addActors(actors)
+            this.score = Score.from10(scoreText?.toFloatOrNull())
+        }
+    }
+
+    private suspend fun parseLegacyEpisodes(document: Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
         for (col in document.select("div.sorattl.collapsible")) {
             val epTitle = col.selectFirst("h3")?.text()?.trim() ?: continue
@@ -198,16 +221,17 @@ class Alqanime : MainAPI() {
                                 val streamUrl = "https://pixeldrain.com/api/file/${file.id}"
                                 epMap.getOrPut(fileEpNum) { mutableListOf() }
                                     .add(EpisodeLink(streamUrl, fileQuality))
-                                if (!epThumbs.containsKey(fileEpNum))
+                                if (!epThumbs.containsKey(fileEpNum)) {
                                     epThumbs[fileEpNum] = "https://pixeldrain.com/api/file/${file.id}/thumbnail"
+                                }
                             }
                     } catch (_: Exception) { }
                 }
-                for ((epNum, links) in epMap.toSortedMap()) {
+                for ((episodeNumber, links) in epMap.toSortedMap()) {
                     episodes.add(newEpisode(links.toJson()) {
-                        this.name = "Episode $epNum"
-                        this.episode = epNum
-                        this.posterUrl = epThumbs[epNum]
+                        this.name = "Episode $episodeNumber"
+                        this.episode = episodeNumber
+                        this.posterUrl = epThumbs[episodeNumber]
                     })
                 }
             }
@@ -217,7 +241,8 @@ class Alqanime : MainAPI() {
                 for (tr in contentDiv.select("tr")) {
                     val quality = tr.selectFirst("div.res")?.text()?.trim() ?: continue
                     for (a in tr.select("div.slink a")) {
-                        linkList.add(EpisodeLink(a.attr("href"), quality))
+                        val href = a.attr("href")
+                        if (isValidDownloadUrl(href)) linkList.add(EpisodeLink(href, quality))
                     }
                 }
                 if (linkList.isNotEmpty()) {
@@ -228,22 +253,93 @@ class Alqanime : MainAPI() {
                 }
             }
         }
+        return episodes
+    }
 
-        return newAnimeLoadResponse(title, url, type) {
-            this.japName = japName
-            engName = title
-            posterUrl = poster
-            backgroundPosterUrl = coverBg
-            this.year = year
-            this.duration = duration
-            addEpisodes(DubStatus.Subbed, episodes.reversed())
-            showStatus = status
-            plot = description
-            addTrailer(trailer, addRaw = true)
-            this.tags = listOfNotNull(*genres.toTypedArray(), studio, season)
-            addActors(actors)
-            this.score = Score.from10(scoreText?.toFloatOrNull())
+    private fun parseModernDownloadEpisodes(document: Document): List<Episode> {
+        val episodes = mutableListOf<Episode>()
+        val seenEpisodeNumbers = mutableSetOf<Int>()
+
+        for (header in document.select("h3")) {
+            val epTitle = header.text().trim()
+            if (!epTitle.contains("Episode", ignoreCase = true) || epTitle.contains("Komentar", ignoreCase = true)) continue
+
+            val epNum = Regex("Episode\\s*(\\d+)", RegexOption.IGNORE_CASE)
+                .find(epTitle)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+            if (!seenEpisodeNumbers.add(epNum)) continue
+
+            val links = mutableListOf<EpisodeLink>()
+            var currentQuality = ""
+            var sibling = header.nextElementSibling()
+
+            while (true) {
+                val current = sibling ?: break
+                val tagName = current.tagName().lowercase()
+                val text = current.text().trim()
+
+                if (tagName == "h3" || tagName == "h2" || text.contains("Komentar", ignoreCase = true)) break
+
+                val qualityFromBlock = extractQuality(text)
+                if (qualityFromBlock.isNotBlank()) currentQuality = qualityFromBlock
+
+                val rows = current.select("tr, p, li, div")
+                    .filter { it.select("a[href]").isNotEmpty() }
+                    .ifEmpty { listOf(current) }
+
+                for (row in rows) {
+                    val rowQuality = extractQuality(row.text()).ifBlank { currentQuality }
+                    if (rowQuality.isNotBlank()) currentQuality = rowQuality
+
+                    for (a in row.select("a[href]")) {
+                        val href = a.attr("href")
+                        if (!isValidDownloadUrl(href)) continue
+
+                        val quality = rowQuality.ifBlank { currentQuality }.ifBlank { a.text().trim() }
+                        links.add(EpisodeLink(href, quality))
+                    }
+                }
+
+                sibling = current.nextElementSibling()
+            }
+
+            if (links.isNotEmpty()) {
+                episodes.add(newEpisode(links.distinctBy { it.url }.toJson()) {
+                    this.name = epTitle
+                    this.episode = epNum
+                })
+            }
         }
+
+        return episodes
+    }
+
+    private fun extractQuality(text: String): String {
+        return Regex("\\b(\\d{3,4})p\\b", RegexOption.IGNORE_CASE)
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { "${it}p" }
+            ?: ""
+    }
+
+    private fun isValidDownloadUrl(url: String): Boolean {
+        val clean = url.trim()
+        if (clean.isBlank() || clean == "#" || clean.equals("none", true)) return false
+        if (clean.startsWith("javascript", true) || clean.startsWith("mailto:", true)) return false
+
+        val lower = clean.lowercase()
+        return !lower.contains("facebook.com") &&
+            !lower.contains("twitter.com") &&
+            !lower.contains("x.com/") &&
+            !lower.contains("whatsapp") &&
+            !lower.contains("pinterest") &&
+            !lower.contains("forms.gle") &&
+            !lower.contains("saweria") &&
+            !lower.contains("youtube.com") &&
+            !lower.contains("youtu.be") &&
+            !lower.contains("/tag/") &&
+            !lower.contains("/studio/") &&
+            !lower.contains("/season/")
     }
 
     override suspend fun loadLinks(
@@ -252,43 +348,120 @@ class Alqanime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val links = parseJson<List<EpisodeLink>>(data)
+        val links = runCatching { parseJson<List<EpisodeLink>>(data) }
+            .getOrElse { listOf(EpisodeLink(data, "")) }
+        var emitted = false
+
         links.amap { (rawUrl, quality) ->
             val resolvedUrl = resolveUrl(rawUrl)
-            val qualityInt = quality.fixQuality()
+            if (!isValidDownloadUrl(resolvedUrl)) return@amap
 
-            if (resolvedUrl.contains("pixeldrain.com/api/file/")) {
-                callback(newExtractorLink("Pixeldrain", "Pixeldrain", resolvedUrl) {
+            val qualityInt = quality.fixQuality()
+            val pixeldrainListId = Regex("pixeldrain\\.com/l/([A-Za-z0-9]+)", RegexOption.IGNORE_CASE)
+                .find(resolvedUrl)?.groupValues?.getOrNull(1)
+            if (pixeldrainListId != null) {
+                if (emitPixeldrainList(pixeldrainListId, qualityInt, callback)) emitted = true
+                return@amap
+            }
+
+            val pixeldrainFileId = Regex("pixeldrain\\.com/(?:u|file)/([A-Za-z0-9]+)", RegexOption.IGNORE_CASE)
+                .find(resolvedUrl)?.groupValues?.getOrNull(1)
+            val pixeldrainDirect = when {
+                resolvedUrl.contains("pixeldrain.com/api/file/", true) -> resolvedUrl
+                pixeldrainFileId != null -> "https://pixeldrain.com/api/file/$pixeldrainFileId"
+                else -> null
+            }
+            if (pixeldrainDirect != null) {
+                callback(newExtractorLink("Pixeldrain", "Pixeldrain", pixeldrainDirect) {
                     this.referer = "https://pixeldrain.com/"
                     this.quality = qualityInt
                 })
+                emitted = true
                 return@amap
             }
 
             val collected = mutableListOf<ExtractorLink>()
-            loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) { collected.add(it) }
+            runCatching {
+                loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) { collected.add(it) }
+            }
+            if (collected.isEmpty() && rawUrl != resolvedUrl) {
+                runCatching {
+                    loadExtractor(rawUrl, "$mainUrl/", subtitleCallback) { collected.add(it) }
+                }
+            }
+
             collected.forEach { link ->
                 callback(newExtractorLink(link.source, link.name, link.url, link.type) {
                     this.referer = link.referer
-                    this.quality = qualityInt
+                    this.quality = if (qualityInt == Qualities.Unknown.value) link.quality else qualityInt
                     this.headers = link.headers
                     this.extractorData = link.extractorData
                 })
+                emitted = true
             }
         }
-        return true
+
+        return emitted
+    }
+
+    private suspend fun emitPixeldrainList(
+        listId: String,
+        fallbackQuality: Int,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var emitted = false
+        val apiJson = runCatching {
+            app.get("https://pixeldrain.com/api/list/$listId").parsedSafe<PixeldrainList>()
+        }.getOrNull()
+
+        apiJson?.files
+            ?.filter { it.mimeType.startsWith("video/") }
+            ?.sortedBy { it.name }
+            ?.forEach { file ->
+                val streamUrl = "https://pixeldrain.com/api/file/${file.id}"
+                val fileQuality = Regex("(\\d{3,4})p", RegexOption.IGNORE_CASE)
+                    .find(file.name)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.let { "${it}p" }
+                    ?.fixQuality()
+                    ?: fallbackQuality
+
+                callback(newExtractorLink("Pixeldrain", "Pixeldrain", streamUrl) {
+                    this.referer = "https://pixeldrain.com/"
+                    this.quality = fileQuality
+                })
+                emitted = true
+            }
+
+        return emitted
     }
 
     private fun resolveUrl(url: String): String {
-        if (url.contains("ouo.io")) {
-            val sParam = Regex("[?&]s=([^&]+)").find(url)?.groupValues?.getOrNull(1)
+        val clean = url.trim()
+            .replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("\\u003A", ":")
+            .replace("\\u0026", "&")
+            .replace("\\u003D", "=")
+            .replace("&amp;", "&")
+            .replace("&#038;", "&")
+        if (clean.isBlank()) return ""
+
+        if (clean.contains("ouo.io")) {
+            val sParam = Regex("[?&]s=([^&]+)").find(clean)?.groupValues?.getOrNull(1)
             if (sParam != null) return URLDecoder.decode(sParam, "UTF-8")
         }
-        if (url.contains("acefile.co/f/")) {
-            val id = Regex("/f/(\\w+)").find(url)?.groupValues?.getOrNull(1)
+        if (clean.contains("acefile.co/f/")) {
+            val id = Regex("/f/([^/?#]+)").find(clean)?.groupValues?.getOrNull(1)
             if (id != null) return "https://acefile.co/player/$id"
         }
-        return url
+
+        return when {
+            clean.startsWith("//") -> "https:$clean"
+            clean.startsWith("/") -> fixUrl(clean)
+            else -> clean
+        }
     }
 
     private fun String.fixQuality(): Int = when {
