@@ -75,9 +75,7 @@ class CamWh : MainAPI() {
         "$mainUrl/categories/newest-strip-videos/" to "Newest Strip Videos",
         "$mainUrl/categories/latest-record/" to "Latest Record",
         "$mainUrl/categories/naked/" to "Naked",
-        "$mainUrl/categories/cam-girl/" to "Cam Girl",
-        "$mainUrl/categories/nude-leaks/" to "Nude Leaks",
-        "$mainUrl/categories/porn/" to "Porn"
+        "$mainUrl/categories/cam-girl/" to "Cam Girl"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
