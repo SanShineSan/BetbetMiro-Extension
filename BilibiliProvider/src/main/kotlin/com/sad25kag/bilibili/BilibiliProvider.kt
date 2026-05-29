@@ -145,10 +145,6 @@ class BilibiliProvider : MainAPI() {
 
         // Dub / bahasa populer di Bilibili TV
         "search:indonesian dub" to "Dub Indonesia",
-        "search:english dub" to "Dub Inggris",
-        "search:hindi dub" to "Dub Hindi",
-        "search:tagalog dub" to "Dub Tagalog",
-        "search:thai dub" to "Dub Thailand",
     )
 
     override suspend fun getMainPage(
