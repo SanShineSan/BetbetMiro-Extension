@@ -762,6 +762,9 @@ class Anoboy : MainAPI() {
         val discoveredUrls = linkedSetOf<String>()
         val queuedUrls = ArrayDeque<Pair<String, String>>()
         val crawledUrls = mutableSetOf<String>()
+        val queuedHostCounts = mutableMapOf<String, Int>()
+        val extractorHostCounts = mutableMapOf<String, Int>()
+        val emittedLinkKeys = linkedSetOf<String>()
         var emitted = false
 
         fun cleanCandidate(raw: String?): String {
@@ -804,6 +807,26 @@ class Anoboy : MainAPI() {
             }.getOrElse {
                 runCatching { fixUrl(clean) }.getOrNull()
             }
+        }
+
+        fun hostKey(url: String): String {
+            return runCatching {
+                URI(url).host.orEmpty().removePrefix("www.").lowercase()
+            }.getOrDefault("")
+        }
+
+        fun isSpammyExtractorHost(url: String): Boolean {
+            val host = hostKey(url)
+            return host.contains("mp4upload")
+        }
+
+        fun canonicalLinkKey(link: String): String {
+            return runCatching {
+                val uri = URI(link)
+                val host = uri.host.orEmpty().removePrefix("www.").lowercase()
+                val path = uri.path.orEmpty().trimEnd('/').lowercase()
+                "$host$path"
+            }.getOrDefault(link.substringBefore("?").trimEnd('/').lowercase())
         }
 
         fun isBadUrl(url: String): Boolean {
@@ -912,6 +935,13 @@ class Anoboy : MainAPI() {
         fun queueUrl(raw: String?, base: String) {
             val resolved = resolveUrl(raw, base) ?: return
             if (isBadUrl(resolved)) return
+
+            val host = hostKey(resolved)
+            if (isSpammyExtractorHost(resolved)) {
+                val count = queuedHostCounts.getOrDefault(host, 0)
+                if (count >= 2) return
+                queuedHostCounts[host] = count + 1
+            }
 
             if (discoveredUrls.add(resolved)) {
                 queuedUrls.add(resolved to base)
@@ -1034,10 +1064,18 @@ class Anoboy : MainAPI() {
             extractUrlsFromText(doc.html(), baseUrl)
         }
 
+        fun callbackOnce(link: ExtractorLink) {
+            val key = "${link.source.lowercase()}|${canonicalLinkKey(link.url)}"
+            if (!emittedLinkKeys.add(key)) return
+            if (emittedLinkKeys.size > 12) return
+            emitted = true
+            callback(link)
+        }
+
         suspend fun emitDirect(link: String, referer: String): Boolean {
             if (!isDirectMedia(link) || isBadUrl(link)) return false
 
-            callback(
+            callbackOnce(
                 newExtractorLink(
                     source = name,
                     name = name,
@@ -1074,8 +1112,15 @@ class Anoboy : MainAPI() {
 
             if (emitDirect(link, referer)) return true
 
+            if (isSpammyExtractorHost(link)) {
+                val host = hostKey(link)
+                val count = extractorHostCounts.getOrDefault(host, 0)
+                if (count >= 1) return false
+                extractorHostCounts[host] = count + 1
+            }
+
             return runCatching {
-                loadExtractor(link, referer, subtitleCallback, callback)
+                loadExtractor(link, referer, subtitleCallback, ::callbackOnce)
             }.getOrDefault(false)
         }
 
@@ -1106,7 +1151,7 @@ class Anoboy : MainAPI() {
         }
 
         var safety = 0
-        while (queuedUrls.isNotEmpty() && safety++ < 80) {
+        while (queuedUrls.isNotEmpty() && safety++ < 35) {
             val (next, referer) = queuedUrls.removeFirst()
 
             if (isBadUrl(next)) continue
@@ -1133,8 +1178,11 @@ class Anoboy : MainAPI() {
                 )
             }.getOrNull() ?: continue
 
-            val nestedText = response.text
-            extractFromDoc(next, response.document)
+            val contentLength = response.headers["Content-Length"]?.toLongOrNull()
+            if (contentLength != null && contentLength > 5_000_000L) continue
+
+            val nestedText = runCatching { response.text }.getOrNull() ?: continue
+            extractFromDoc(next, Jsoup.parse(nestedText, next))
             extractUrlsFromText(nestedText, next)
         }
 
