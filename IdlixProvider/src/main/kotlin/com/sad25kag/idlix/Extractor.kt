@@ -45,7 +45,8 @@ class Jeniusplay : ExtractorApi() {
         document.select("script").forEach { script ->
             if (script.data().contains("eval(function(p,a,c,k,e,d)")) {
                 val subData =
-                    getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],")
+                    getAndUnpack(script.data()).substringAfter("\"tracks\": [").substringBefore("],")
+                        .ifBlank { getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],") }
                 AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
                     subtitleCallback.invoke(
                         newSubtitleFile(

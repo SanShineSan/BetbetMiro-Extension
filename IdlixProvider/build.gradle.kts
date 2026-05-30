@@ -1,9 +1,9 @@
-version = 25
+version = 26
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Idlix provider using the current API catalogue and play-session flow, with refreshed homepage rows, genre/country/year/network categories, metadata, subtitles, and HLS playback."
+    description = "Idlix provider using the current z2.idlixku.com API catalogue and play-session flow, with refreshed homepage rows, genre/country/year/network categories, metadata, subtitles, and HLS playback."
 
     /**
      * Status int as the following:
@@ -22,5 +22,5 @@ cloudstream {
     )
 
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=z1.idlixku.com&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=z2.idlixku.com&sz=%size%"
 }

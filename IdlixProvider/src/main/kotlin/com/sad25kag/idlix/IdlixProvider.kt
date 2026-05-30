@@ -20,7 +20,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDate
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -37,11 +36,12 @@ import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URI
 import java.net.URLEncoder
 import java.text.Normalizer
 
 class IdlixProvider : MainAPI() {
-    override var mainUrl = base64Decode("aHR0cHM6Ly96MS5pZGxpeGt1LmNvbQ==")
+    override var mainUrl = "https://z2.idlixku.com"
     override var name = "Idlix"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -86,6 +86,17 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/browse?page=%d&limit=36&sort=latest&genre=war" to "War",
         "$mainUrl/api/browse?page=%d&limit=36&sort=latest&genre=western" to "Western",
 
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=indonesia" to "Indonesia",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=south-korea" to "South Korea",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=japan" to "Japan",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=china" to "China",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=thailand" to "Thailand",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=united-states" to "United States",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=united-kingdom" to "United Kingdom",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=india" to "India",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=philippines" to "Philippines",
+        "$mainUrl/api/browse?page=%d&limit=36&sort=latest&country=france" to "France",
+
         "$mainUrl/api/browse?page=%d&limit=36&sort=latest&year=2026" to "2026",
         "$mainUrl/api/browse?page=%d&limit=36&sort=latest&year=2025" to "2025",
         "$mainUrl/api/browse?page=%d&limit=36&sort=latest&year=2024" to "2024",
@@ -117,8 +128,8 @@ class IdlixProvider : MainAPI() {
             request.data
         }
 
-        val response = app.get(url, headers = apiHeaders, timeout = 10000L)
-        val parsed = response.parsedSafe<ApiResponse>()
+        val parsed = app.get(url, headers = apiHeaders, referer = mainUrl, timeout = 10000L)
+            .parsedSafe<ApiResponse>()
             ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
         val fallbackType = when {
@@ -153,8 +164,8 @@ class IdlixProvider : MainAPI() {
 
         val encoded = URLEncoder.encode(keyword, "UTF-8")
         val url = "$mainUrl/api/search?q=$encoded&page=${page.coerceAtLeast(1)}&limit=12"
-        val response = app.get(url, headers = apiHeaders, timeout = 10000L)
-        val parsed = response.parsedSafe<SearchApiResponse>() ?: return null
+        val parsed = app.get(url, headers = apiHeaders, referer = mainUrl, timeout = 10000L)
+            .parsedSafe<SearchApiResponse>() ?: return null
 
         val results = parsed.results
             .mapNotNull { it.toSearchResponse() }
@@ -164,8 +175,8 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url, headers = apiHeaders, timeout = 10000L)
-        val data = response.parsedSafe<DetailResponse>()
+        val data = app.get(url, headers = apiHeaders, referer = mainUrl, timeout = 10000L)
+            .parsedSafe<DetailResponse>()
             ?: throw ErrorLoadingException("Invalid IDLIX API response")
 
         val title = data.title?.takeIf { it.isNotBlank() } ?: "Unknown"
@@ -331,6 +342,7 @@ class IdlixProvider : MainAPI() {
         val playResponse = app.get(
             "$mainUrl/api/watch/play-info/${parsed.type}/${parsed.id}",
             headers = headers,
+            referer = mainUrl,
             timeout = 10000L,
         )
 
@@ -351,21 +363,24 @@ class IdlixProvider : MainAPI() {
             "$mainUrl/api/watch/session/claim",
             headers = headers,
             cookies = cookies,
+            referer = mainUrl,
             requestBody = """{"gateToken":"${playInfo.gateToken}"}"""
                 .toRequestBody("application/json".toMediaType()),
             timeout = 10000L,
         ).parsedSafe<RedeemRes>() ?: return false
 
+        val redeemUrl = claimResponse.redeemUrl.fixAgainstMainUrl() ?: return false
         val iframeResponse = app.post(
-            claimResponse.redeemUrl,
+            redeemUrl,
             headers = headers,
             cookies = cookies,
+            referer = mainUrl,
             requestBody = """{"claim":"${claimResponse.claim}"}"""
                 .toRequestBody("application/json".toMediaType()),
             timeout = 10000L,
         ).parsedSafe<Iframe>() ?: return false
 
-        val streamUrl = iframeResponse.url?.takeIf { it.isNotBlank() }
+        val streamUrl = iframeResponse.url?.takeIf { it.isNotBlank() }?.fixAgainstMainUrl()
         var delivered = false
 
         if (!streamUrl.isNullOrBlank()) {
@@ -373,12 +388,15 @@ class IdlixProvider : MainAPI() {
                 source = name,
                 streamUrl = streamUrl,
                 referer = mainUrl,
-            ).forEach(callback)
-            delivered = true
+                headers = mapOf("Referer" to mainUrl, "Origin" to mainUrl),
+            ).forEach { link ->
+                callback(link)
+                delivered = true
+            }
         }
 
         iframeResponse.subtitles.forEach { subtitle ->
-            val path = subtitle.path?.takeIf { it.isNotBlank() } ?: return@forEach
+            val path = subtitle.path?.takeIf { it.isNotBlank() }?.fixAgainstMainUrl() ?: return@forEach
             subtitleCallback(
                 newSubtitleFile(
                     subtitle.label?.takeIf { it.isNotBlank() } ?: subtitle.lang ?: "Subtitle",
@@ -448,6 +466,14 @@ class IdlixProvider : MainAPI() {
 
     private fun String.tmdbPoster(size: String): String {
         return if (startsWith("http", true)) this else "https://image.tmdb.org/t/p/$size$this"
+    }
+
+    private fun String.fixAgainstMainUrl(): String? {
+        val value = trim()
+        if (value.isBlank()) return null
+        if (value.startsWith("//")) return "https:$value"
+        if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
+        return runCatching { URI(mainUrl).resolve(value).toString() }.getOrNull()
     }
 }
 
