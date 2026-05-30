@@ -375,7 +375,6 @@ class AnimeMovies : MainAPI() {
 
         return newAnimeSearchResponse(title.removeEpisodeSuffix(), targetUrl, inferType(container.text(), epNum ?: 0, targetUrl)) {
             posterUrl = poster
-            addSub(epNum)
         }
     }
 
