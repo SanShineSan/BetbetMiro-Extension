@@ -222,14 +222,15 @@ class AnimeMovies : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val startUrl = fixUrl(data, mainUrl) ?: return false
-        val visited = linkedSetOf<String>()
         val emitted = linkedSetOf<String>()
         var found = false
 
         suspend fun emitPlayable(url: String, referer: String, source: String = name): Boolean {
             val fixed = fixUrl(url, referer) ?: return false
             if (!fixed.isPlayableMedia()) return false
-            if (!emitted.add(fixed.substringBefore("#"))) return false
+
+            val key = fixed.substringBefore("#")
+            if (!emitted.add(key)) return false
 
             if (fixed.contains(".m3u8", true)) {
                 val links = try {
@@ -239,7 +240,9 @@ class AnimeMovies : MainAPI() {
                 }
 
                 links.forEach { link ->
-                    if (emitted.add(link.url.substringBefore("#"))) callback(link)
+                    if (emitted.add(link.url.substringBefore("#"))) {
+                        callback(link)
+                    }
                 }
 
                 if (links.isNotEmpty()) return true
@@ -259,11 +262,13 @@ class AnimeMovies : MainAPI() {
             return true
         }
 
-        suspend fun tryExtractor(url: String, referer: String): Boolean {
-            var localFound = false
+        suspend fun emitExtractor(url: String, referer: String): Boolean {
+            val fixed = fixUrl(url, referer) ?: return false
+            if (fixed.isNoiseUrl()) return false
 
+            var localFound = false
             try {
-                loadExtractor(url, referer, subtitleCallback) { link ->
+                loadExtractor(fixed, referer, subtitleCallback) { link ->
                     val key = link.url.substringBefore("#")
                     if (emitted.add(key)) {
                         localFound = true
@@ -276,52 +281,95 @@ class AnimeMovies : MainAPI() {
             return localFound
         }
 
-        suspend fun resolve(url: String, referer: String, depth: Int = 0): Boolean {
-            val fixed = fixUrl(url, referer) ?: return false
-            if (depth > 4 || !visited.add(fixed)) return false
-            if (fixed.isNoiseUrl()) return false
-
-            if (fixed.isPlayableMedia()) return emitPlayable(fixed, referer)
-
-            var localFound = false
-            if (tryExtractor(fixed, referer)) localFound = true
-
-            val response = try {
-                app.get(fixed, headers = headers + mapOf("Referer" to referer), referer = referer)
-            } catch (_: Throwable) {
-                return localFound
-            }
-
-            val document = response.document
-            val html = normalizeHtml(response.text.ifBlank { document.html() })
-
-            collectSubtitles(document, fixed, subtitleCallback)
-
-            extractDirectMedia(html, fixed).forEach { media ->
-                if (emitPlayable(media, fixed)) localFound = true
-            }
-
-            val embeds = linkedSetOf<String>()
-            collectElementLinks(document, fixed).forEach { embeds.add(it) }
-            extractIframeLinks(html, fixed).forEach { embeds.add(it) }
-            extractEmbedLinks(html, fixed).forEach { embeds.add(it) }
-            extractBase64Links(html, fixed).forEach { embeds.add(it) }
-
-            embeds
-                .filterNot { it.isNoiseUrl() }
-                .forEach { embed ->
-                    if (embed.isPlayableMedia()) {
-                        if (emitPlayable(embed, fixed)) localFound = true
-                    } else if (resolve(embed, fixed, depth + 1)) {
-                        localFound = true
-                    }
-                }
-
-            return localFound
+        val watchUrl = if (isWatchUrl(startUrl)) {
+            startUrl
+        } else {
+            firstWatchUrl(startUrl) ?: startUrl
         }
 
-        if (resolve(startUrl, "$mainUrl/")) found = true
+        val response = try {
+            app.get(watchUrl, headers = headers + mapOf("Referer" to mainUrl), referer = mainUrl)
+        } catch (_: Throwable) {
+            return false
+        }
+
+        val document = response.document
+        val html = normalizeHtml(response.text.ifBlank { document.html() })
+
+        collectSubtitles(document, watchUrl, subtitleCallback)
+
+        val candidates = linkedSetOf<String>()
+
+        // AnimeMovies stores playback on /watch/ pages. Keep extraction focused to player/embed areas only.
+        document.select(
+            "#player iframe[src], #player iframe[data-src], .player iframe[src], .player iframe[data-src], " +
+                "[class*=player] iframe[src], [class*=player] iframe[data-src], [id*=player] iframe[src], [id*=player] iframe[data-src], " +
+                "iframe[src], iframe[data-src], embed[src], video[src], video source[src], source[src], " +
+                "[data-url], [data-src], [data-embed], [data-iframe], [data-link], [data-file], [data-video], [data-player]"
+        ).forEach { element ->
+            listOf(
+                "data-src",
+                "data-url",
+                "data-embed",
+                "data-iframe",
+                "data-link",
+                "data-file",
+                "data-video",
+                "data-player",
+                "src",
+                "href"
+            ).forEach { attr ->
+                val raw = element.attr(attr)
+                if (raw.isNotBlank()) decodePossibleUrl(raw, watchUrl)?.let { candidates.add(it) }
+            }
+        }
+
+        // Limit script scan to player-relevant scripts only; avoid recursive crawling and junk ad links.
+        document.select("script").forEach { script ->
+            val scriptText = normalizeHtml(script.data().ifBlank { script.html() })
+            if (
+                scriptText.contains("iframe", true) ||
+                scriptText.contains("embed", true) ||
+                scriptText.contains("player", true) ||
+                scriptText.contains(".m3u8", true) ||
+                scriptText.contains(".mp4", true) ||
+                scriptText.contains("source", true) ||
+                scriptText.contains("file", true) ||
+                scriptText.contains("atob", true)
+            ) {
+                extractDirectMedia(scriptText, watchUrl).forEach { candidates.add(it) }
+                extractIframeLinks(scriptText, watchUrl).forEach { candidates.add(it) }
+                extractEmbedLinks(scriptText, watchUrl).forEach { candidates.add(it) }
+                extractBase64Links(scriptText, watchUrl).forEach { candidates.add(it) }
+            }
+        }
+
+        extractDirectMedia(html, watchUrl).forEach { candidates.add(it) }
+
+        candidates
+            .filterNot { it.isNoiseUrl() }
+            .distinct()
+            .forEach { candidate ->
+                if (candidate.isPlayableMedia()) {
+                    if (emitPlayable(candidate, watchUrl)) found = true
+                } else {
+                    if (emitExtractor(candidate, watchUrl)) found = true
+                }
+            }
+
         return found
+    }
+
+    private suspend fun firstWatchUrl(animeUrl: String): String? {
+        val document = try {
+            app.get(animeUrl, headers = headers + mapOf("Referer" to mainUrl), referer = mainUrl).document
+        } catch (_: Throwable) {
+            return null
+        }
+
+        return document.selectFirst("a[href*='/watch/']")
+            ?.attr("href")
+            ?.let { fixUrl(it, animeUrl) }
     }
 
     private fun parseListing(document: Document): List<SearchResponse> {
@@ -341,11 +389,11 @@ class AnimeMovies : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val container = closest("article, .card, .item, .anime, .anime-card, .episode-card, .swiper-slide, .grid, li, div") ?: this
         val anchor = when {
             `is`("a[href]") -> this
-            else -> container.selectFirst("a[href*='/anime/'], a[href*='/watch/'], a[href]")
+            else -> selectFirst("a[href*='/anime/'], a[href*='/watch/'], a[href]")
         } ?: return null
+        val container = anchor.bestCardContainer()
 
         val href = fixUrl(anchor.attr("href"), mainUrl) ?: return null
         if (!isContentUrl(href)) return null
@@ -394,6 +442,22 @@ class AnimeMovies : MainAPI() {
         }
 
         return episodes.values.sortedBy { it.episode ?: 9999 }
+    }
+
+    private fun Element.bestCardContainer(): Element {
+        var current: Element? = this
+        repeat(7) {
+            val node = current ?: return this
+            if (
+                node.selectFirst("img[src], img[data-src], img[srcset]") != null &&
+                node.select("a[href*='/anime/'], a[href*='/watch/']").size <= 6
+            ) {
+                return node
+            }
+            current = node.parent()
+        }
+
+        return closest("article, .anime-card, .episode-card, .card, .item, .swiper-slide, li") ?: this
     }
 
     private fun collectElementLinks(document: Document, baseUrl: String): List<String> {
@@ -541,13 +605,25 @@ class AnimeMovies : MainAPI() {
     }
 
     private fun inferType(text: String, episodeCountOrEpisode: Int, url: String): TvType {
-        val lower = "$text $url".lowercase(Locale.ROOT)
+        val lower = text.lowercase(Locale.ROOT)
+        val path = try {
+            URI(url).path.orEmpty().lowercase(Locale.ROOT)
+        } catch (_: Throwable) {
+            ""
+        }
+
+        val hasEpisodeSignal = episodeCountOrEpisode > 0 ||
+            lower.contains(" episode") ||
+            lower.contains(" eps") ||
+            lower.contains("tv") ||
+            lower.contains("ongoing") ||
+            lower.contains("completed") ||
+            path.contains("/watch/")
 
         return when {
-            lower.contains("movie") -> TvType.AnimeMovie
             lower.contains("ova") -> TvType.OVA
-            lower.contains("ona") -> TvType.OVA
-            episodeCountOrEpisode <= 1 && lower.contains("movie") -> TvType.AnimeMovie
+            lower.contains("ona") -> TvType.Anime
+            Regex("""\\b(movie|film)\\b""").containsMatchIn(lower) && !hasEpisodeSignal -> TvType.AnimeMovie
             else -> TvType.Anime
         }
     }
@@ -645,7 +721,7 @@ class AnimeMovies : MainAPI() {
             val element = document.selectFirst(selector) ?: return@forEach
 
             if (element.tagName().equals("meta", true)) {
-                fixUrl(element.attr("content"), baseUrl)?.takeIf { it.isImageLike() }?.let { return it }
+                fixUrl(element.attr("content"), baseUrl)?.let { normalizeImageUrl(it) }?.takeIf { it.isImageLike() }?.let { return it }
             } else {
                 element.imageUrl(baseUrl)?.let { return it }
             }
@@ -665,6 +741,7 @@ class AnimeMovies : MainAPI() {
 
         return candidates
             .mapNotNull { fixUrl(it, baseUrl) }
+            .map { normalizeImageUrl(it) }
             .firstOrNull { it.isImageLike() && !it.isAdImage() }
     }
 
@@ -676,7 +753,27 @@ class AnimeMovies : MainAPI() {
             ?.groupValues
             ?.getOrNull(2)
             ?.let { fixUrl(it, baseUrl) }
+            ?.let { normalizeImageUrl(it) }
             ?.takeIf { it.isImageLike() && !it.isAdImage() }
+    }
+
+    private fun normalizeImageUrl(url: String): String {
+        val fixed = url.replace("&amp;", "&")
+
+        if (fixed.contains("/_next/image", true) && fixed.contains("url=", true)) {
+            val rawTarget = fixed.substringAfter("url=", "")
+                .substringBefore("&")
+                .trim()
+
+            if (rawTarget.isNotBlank()) {
+                val decoded = urlDecode(rawTarget)
+                if (decoded.startsWith("http", true) || decoded.startsWith("//")) {
+                    return decoded
+                }
+            }
+        }
+
+        return fixed
     }
 
     private fun fixUrl(value: String?, baseUrl: String): String? {
@@ -791,6 +888,7 @@ class AnimeMovies : MainAPI() {
             lower.contains(".png") ||
             lower.contains(".webp") ||
             lower.contains("/_next/image") ||
+            lower.contains("wp-content/uploads") ||
             lower.contains("image")
     }
 

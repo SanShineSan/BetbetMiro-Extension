@@ -1,9 +1,9 @@
-version = 7
+version = 8
 
 cloudstream {
     authors = listOf("sad25kag", "BetbetMiro")
     language = "id"
-    description = "Provider AnimeMovies dengan homepage, genre, search, detail, episode, dan loadLinks mengikuti struktur animemovies.org terbaru."
+    description = "Provider AnimeMovies dengan cover Next.js asli, tipe anime valid, episode detail, dan loadLinks terarah mengikuti struktur animemovies.org terbaru."
     status = 1
     tvTypes = listOf(
         "Anime",
