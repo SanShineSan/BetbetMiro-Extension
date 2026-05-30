@@ -629,7 +629,7 @@ class DubbindoProvider : MainAPI() {
         }
 
         return Regex("""["'](?:src|file|url)["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .findAll(data.replace("\/", "/").replace("&amp;", "&"))
+            .findAll(data.replace("""\/""", "/").replace("&amp;", "&"))
             .mapNotNull { match ->
                 val src = match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
                     ?: return@mapNotNull null
@@ -686,7 +686,7 @@ class DubbindoProvider : MainAPI() {
     }
 
     private fun String.cleanTitle(): String {
-        return replace(Regex("""\s+"""), " ")
+        return replace(Regex("""""\s+"""""), " ")
             .replace("&amp;", "&")
             .trim()
     }
