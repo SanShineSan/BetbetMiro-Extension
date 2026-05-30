@@ -1,10 +1,10 @@
-version = 3
+version = 4
 
 cloudstream {
     authors = listOf("BetbetMiro")
     language = "id"
     description = "Provider CloudStream untuk Dracinema - drama China, Korea, dan short drama subtitle Indonesia."
-    status = 3
+    status = 1
 
     tvTypes = listOf(
         "AsianDrama",
