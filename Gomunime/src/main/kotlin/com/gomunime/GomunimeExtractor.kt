@@ -47,7 +47,7 @@ object GomunimeExtractor {
         val visited = linkedSetOf<String>()
         val emitted = linkedSetOf<String>()
 
-        suspend fun emit(link: ExtractorLink) {
+        fun emit(link: ExtractorLink) {
             val key = link.url.substringBefore("?token=").substringBefore("&token=")
             if (emitted.add(key)) callback(link)
         }
@@ -61,7 +61,7 @@ object GomunimeExtractor {
         url: String,
         referer: String,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: suspend (ExtractorLink) -> Unit,
+        callback: (ExtractorLink) -> Unit,
         visited: MutableSet<String>,
         depth: Int
     ): Boolean {
@@ -78,15 +78,25 @@ object GomunimeExtractor {
         }
 
         // Let Cloudstream extractor try first for real embed pages.
-        var found = runCatching {
-            loadExtractor(normalizedUrl, referer, subtitleCallback) { link ->
-                callback(link)
+        var found = false
+        try {
+            if (
+                loadExtractor(normalizedUrl, referer, subtitleCallback) { link ->
+                    found = true
+                    callback(link)
+                }
+            ) {
+                found = true
             }
-        }.getOrDefault(false)
+        } catch (_: Throwable) {
+            // Continue with local parser fallback.
+        }
 
-        val document = runCatching {
+        val document = try {
             app.get(normalizedUrl, headers = GomunimeUtils.headers, referer = referer).document
-        }.getOrNull() ?: return found
+        } catch (_: Throwable) {
+            return found
+        }
 
         collectSubtitles(normalizedUrl, document, subtitleCallback)
 
@@ -120,19 +130,21 @@ object GomunimeExtractor {
         sourceName: String,
         candidate: GomunimeMediaCandidate,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: suspend (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
         var emitted = false
 
         if (candidate.isHls || candidate.url.contains(".m3u8", true)) {
-            val links = runCatching {
+            val links = try {
                 generateM3u8(
                     source = sourceName,
                     streamUrl = candidate.url,
                     referer = candidate.referer,
                     headers = GomunimeUtils.headers
                 )
-            }.getOrDefault(emptyList())
+            } catch (_: Throwable) {
+                emptyList()
+            }
 
             links.forEach { link ->
                 emitted = true
@@ -157,12 +169,14 @@ object GomunimeExtractor {
             return true
         }
 
-        val extracted = runCatching {
+        val extracted = try {
             loadExtractor(candidate.url, candidate.referer, subtitleCallback) { link ->
                 emitted = true
                 callback(link)
             }
-        }.getOrDefault(false)
+        } catch (_: Throwable) {
+            false
+        }
 
         return emitted || extracted
     }
