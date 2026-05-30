@@ -101,9 +101,9 @@ class AnimeMovies : MainAPI() {
             .trim('-')
 
         val urls = listOf(
+            "$mainUrl/search?q=$encoded",
             "$mainUrl/anime?search=$encoded",
             "$mainUrl/anime?q=$encoded",
-            "$mainUrl/search?q=$encoded",
             "$mainUrl/?s=$encoded",
             "$mainUrl/anime"
         )
@@ -194,7 +194,7 @@ class AnimeMovies : MainAPI() {
                 ?.replace(",", ".")
                 ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
 
-        val episodes = parseEpisodes(document, fixedUrl)
+        val episodes = parseEpisodes(document, fixedUrl).ifEmpty { parseEpisodesFromText(document, fixedUrl) }
         val type = inferType(text, episodes.size, fixedUrl)
 
         return newAnimeLoadResponse(title, fixedUrl, type) {
@@ -395,13 +395,36 @@ class AnimeMovies : MainAPI() {
         return episodes.values.sortedBy { it.episode ?: 9999 }
     }
 
+
+
+    private fun isAnimeUrl(url: String): Boolean = Regex("""https?://[^/]+/anime/[^/?#]+""").containsMatchIn(url)
+
+    private fun isWatchUrl(url: String): Boolean = Regex("""https?://[^/]+/watch/[^/?#]+""").containsMatchIn(url)
+
+    private fun parseEpisodesFromText(document: Document, baseUrl: String): List<Episode> {
+        val episodes = linkedMapOf<String, Episode>()
+        val text = document.html()
+        Regex("""https?://[^\s\"'<>]+/watch/[^\s\"'<>]+""")
+            .findAll(text)
+            .map { it.value }
+            .distinct()
+            .forEachIndexed { index, href ->
+                val epNum = episodeNumber(href) ?: (index + 1)
+                episodes[href] = newEpisode(href) {
+                    name = "Episode $epNum"
+                    episode = epNum
+                }
+            }
+        return episodes.values.sortedBy { it.episode ?: 9999 }
+    }
+
     private fun collectElementLinks(document: Document, baseUrl: String): List<String> {
         val links = linkedSetOf<String>()
 
         document.select(
             "iframe[src], iframe[data-src], embed[src], video[src], video source[src], source[src], " +
                 "a[href*='embed'], a[href*='player'], a[href*='stream'], a[href*='drive'], a[href*='gofile'], a[href*='dood'], " +
-                "a[href*='streamtape'], a[href*='filemoon'], a[href*='vidhide'], a[href*='vidguard'], a[href*='voe'], " +
+                "a[href*='streamtape'], a[href*='filemoon'], a[href*='vidhide'], a[href*='vidguard'], a[href*='voe'], a[href*='yourupload'], a[href*='desufiles'], a[href*='dropfile'], " +
                 "a[href*='mp4upload'], a[href*='uqload'], a[href*='krakenfiles'], a[href*='filelions'], a[href*='.mp4'], a[href*='.m3u8'], " +
                 "[data-url], [data-src], [data-embed], [data-iframe], [data-link], [data-file], [data-video], [data-player]"
         ).forEach { element ->
@@ -443,12 +466,12 @@ class AnimeMovies : MainAPI() {
     private fun extractEmbedLinks(html: String, baseUrl: String): List<String> {
         val links = linkedSetOf<String>()
 
-        Regex("""(?i)"(?:embed_url|iframe_url|player_url|url|src|file|source)"\s*:\s*"([^"]+)"""")
+        Regex("""(?i)"(?:embed_url|iframe_url|player_url|stream_url|download_url|video_url|url|src|file|source)"\s*:\s*"([^"]+)"""")
             .findAll(html)
             .mapNotNull { decodePossibleUrl(it.groupValues[1], baseUrl) }
             .forEach { links.add(it) }
 
-        Regex("""(?i)(?:embed_url|iframe_url|player_url|url|src|file|source)\s*[:=]\s*['"]([^'"]+)['"]""")
+        Regex("""(?i)(?:embed_url|iframe_url|player_url|stream_url|download_url|video_url|url|src|file|source)\s*[:=]\s*['"]([^'"]+)['"]""")
             .findAll(html)
             .mapNotNull { decodePossibleUrl(it.groupValues[1], baseUrl) }
             .forEach { links.add(it) }
@@ -835,6 +858,14 @@ class AnimeMovies : MainAPI() {
             lower.contains("googlesyndication") ||
             lower.contains("youtube.com") ||
             lower.contains("youtu.be") ||
+            lower.contains("/login") ||
+            lower.contains("/register") ||
+            lower.contains("/genre") ||
+            lower.contains("/jadwal") ||
+            lower.contains("/tentang") ||
+            lower.contains("/kontak") ||
+            lower.contains("/dmca") ||
+            lower.contains("/kebijakan-privasi") ||
             lower.endsWith(".css") ||
             lower.endsWith(".js") ||
             lower.endsWith(".ico") ||
@@ -860,13 +891,10 @@ class AnimeMovies : MainAPI() {
     }
 
     private val listingSelector = listOf(
-        "article",
-        ".anime-card",
-        ".episode-card",
-        ".card",
-        ".item",
-        ".swiper-slide",
-        ".grid a[href]",
+        "section a[href*='/anime/']",
+        "article a[href*='/anime/']",
+        ".grid a[href*='/anime/']",
+        ".swiper-slide a[href*='/anime/']",
         "a[href*='/anime/']",
         "a[href*='/watch/']"
     ).joinToString(", ")
