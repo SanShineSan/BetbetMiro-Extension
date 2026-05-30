@@ -34,7 +34,17 @@ object GomunimeUtils {
                 .replace("\\u0026", "&")
         )
 
-        if (raw.isBlank() || raw == "#" || raw.equals("null", true) || raw.startsWith("javascript:", true)) return null
+        if (
+            raw.isBlank() ||
+            raw == "#" ||
+            raw.equals("null", true) ||
+            raw.startsWith("about:", true) ||
+            raw.startsWith("blob:", true) ||
+            raw.startsWith("data:", true) ||
+            raw.startsWith("intent:", true) ||
+            raw.startsWith("javascript:", true)
+        ) return null
+
         if (raw.startsWith("//")) return "https:$raw"
         if (raw.startsWith("http://") || raw.startsWith("https://")) return raw
         if (raw.startsWith("/")) return baseUrl.trimEnd('/') + raw
@@ -61,15 +71,26 @@ object GomunimeUtils {
         val uri = runCatching { URI(normalized) }.getOrNull() ?: return false
         val host = uri.host.orEmpty()
         if (!host.contains("gomunime", ignoreCase = true)) return false
+
         val path = uri.path.orEmpty().trim('/')
         if (path.isBlank()) return false
-        if (path in setOf("home", "ongoing", "tamat", "movies", "top", "download-app")) return false
-        if (path.startsWith("genre/") || path.startsWith("genres/")) return false
-        if (path.startsWith("status/") || path.startsWith("type/")) return false
-        if (path.startsWith("koleksi/") || path.startsWith("download")) return false
-        if (path.startsWith("tag/") || path.startsWith("year/") || path.startsWith("page/")) return false
-        if (normalized.contains("?s=")) return false
+
+        val blockedExact = setOf(
+            "home", "ongoing", "tamat", "movies", "top", "download-app",
+            "search", "privacy-policy", "dmca", "contact", "about"
+        )
+        if (path in blockedExact) return false
+
+        val blockedPrefixes = listOf(
+            "genre/", "genres/", "status/", "type/", "koleksi/",
+            "download", "tag/", "year/", "page/", "category/",
+            "author/", "wp-", "feed", "search/"
+        )
+        if (blockedPrefixes.any { path.startsWith(it) }) return false
+
+        if (normalized.contains("?s=") || normalized.contains("&s=")) return false
         if (normalized.contains("/wp-") || normalized.contains("/feed")) return false
+
         return true
     }
 
@@ -141,6 +162,7 @@ object GomunimeUtils {
         return Regex("""(?i)(?:episode|eps|ep)\s*[-:_]?\s*(\d{1,4})""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""(?i)-episode-(\d{1,4})""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""(?i)/(?:[^/?#]*-)?episode-(\d{1,4})(?:[/?#-]|$)""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Regex("""(?i)(?:-|/)(\d{1,4})(?:-sub-indo|-subtitle-indonesia|/?$)""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     fun typeFromText(value: String?): com.lagradost.cloudstream3.TvType {

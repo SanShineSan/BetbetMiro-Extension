@@ -81,7 +81,11 @@ object GomunimeParser {
 
         val text = cleanText(anchor.text())
         val image = anchor.selectFirst("img") ?: anchor.parent()?.selectFirst("img")
-        val hasItemSignal = href.contains("-episode-", true) || text.contains("Tonton", true) || text.contains("Episode", true) || text.contains("★") || image != null
+        val hasItemSignal = href.contains("-episode-", true) ||
+            text.contains("Tonton", true) ||
+            text.contains("Episode", true) ||
+            text.contains("★") ||
+            image != null
         if (!hasItemSignal) return null
 
         val title = cleanAnimeTitle(text.ifBlank { image?.attr("alt") }, href)
@@ -182,9 +186,25 @@ object GomunimeParser {
 
     private fun parseEpisodes(api: MainAPI, document: Document, fallbackUrl: String): List<Episode> {
         val seen = linkedSetOf<String>()
-        val episodes = document.select(
-            "a[href*='episode-'], .eplister a[href], .episodes a[href], .episode-list a[href], a[href]:contains(Episode)"
-        ).mapNotNull { a ->
+        val selectors = listOf(
+            "a[href*='episode-']",
+            "a[href*='-eps-']",
+            "a[href*='/episode/']",
+            "a[href*='?episode=']",
+            "a[href]:contains(Episode)",
+            ".eplister a[href]",
+            ".episodes a[href]",
+            ".episode-list a[href]",
+            ".episodelist a[href]",
+            ".episode a[href]",
+            ".eps a[href]",
+            ".daftar-episode a[href]",
+            ".list-episode a[href]",
+            "[class*=episode] a[href]",
+            "[id*=episode] a[href]"
+        ).joinToString(", ")
+
+        val episodes = document.select(selectors).mapNotNull { a ->
             val href = absoluteUrl(api.mainUrl, a.attr("href")) ?: return@mapNotNull null
             if (!isAnimeDetailUrl(href)) return@mapNotNull null
             if (!seen.add(href.substringBefore("#"))) return@mapNotNull null
@@ -192,13 +212,17 @@ object GomunimeParser {
             val text = cleanText(a.text())
             val epNum = episodeNumber(text) ?: episodeNumber(href)
 
+            // Only keep links that look like episode pages, not generic anime detail links.
+            val lower = "$href $text".lowercase()
+            if (epNum == null && !lower.contains("episode") && !lower.contains("eps")) return@mapNotNull null
+
             api.newEpisode(href) {
                 this.name = "Episode ${epNum ?: text}".trim()
                 this.episode = epNum
             }
         }
 
-        return episodes.ifEmpty {
+        return episodes.sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name }).ifEmpty {
             val epNum = episodeNumber(fallbackUrl)
             listOf(
                 api.newEpisode(fallbackUrl) {
@@ -222,7 +246,7 @@ object GomunimeParser {
         val hasEpisodeSlug = Regex("""(?i)-episode-\d+""").containsMatchIn(url)
         val hasEpisodeTitle = Regex("""(?i)\bepisode\s+\d+\b""").containsMatchIn(title)
         val hasPlayerSignal = document.select(
-            "select.mirror option, .mirror option, #player, #player-div, .player-embed, .anime_video_body iframe, iframe[src*='drive'], iframe[src*='gdrive'], iframe[src*='btube']"
+            "select.mirror option, .mirror option, #player, #player-div, .player-embed, .anime_video_body iframe, iframe[src*='drive'], iframe[src*='gdrive'], iframe[src*='btube'], iframe[src*='googlevideo']"
         ).isNotEmpty()
         return hasEpisodeSlug || hasEpisodeTitle || (hasPlayerSignal && hasEpisodeTitle)
     }
@@ -256,7 +280,7 @@ object GomunimeParser {
     private fun isValidTitle(title: String): Boolean {
         if (title.isBlank() || title.length < 3) return false
         val lower = title.lowercase()
-        if (lower in setOf("home", "info", "play", "genre", "download app", "lihat semua", "semua")) return false
+        if (lower in setOf("home", "info", "play", "genre", "download app", "lihat semua", "semua", "search", "pencarian")) return false
         if (lower.contains("gomu nime")) return false
         if (lower.contains("update tiap hari")) return false
         if (lower.matches(Regex("^[0-9]+$"))) return false
