@@ -541,13 +541,16 @@ class DubbindoProvider : MainAPI() {
             "User-Agent" to USER_AGENT
         )
 
-        val videos = tryParseJson<List<Video>>(data)
-        if (videos != null) {
+        val videos = parseVideoList(data)
+        if (videos.isNotEmpty()) {
             var delivered = false
+            val emitted = linkedSetOf<String>()
 
             videos.forEach { video ->
-                val rawSrc = video.src ?: return@forEach
+                val rawSrc = video.src?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
                 val src = resolveVideoUrl(rawSrc)
+                if (!emitted.add(src.substringBefore("?X-Amz-Signature"))) return@forEach
+
                 val quality = qualityFromString(video.res ?: src)
 
                 if (isDirectVideo(src, video.type)) {
@@ -584,6 +587,64 @@ class DubbindoProvider : MainAPI() {
         }
 
         return false
+    }
+
+
+    private fun parseVideoList(data: String): List<Video> {
+        val mapList = tryParseJson<List<Map<String, Any?>>>(data)
+        if (mapList != null) {
+            return mapList.mapNotNull { item ->
+                val src = item["src"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                    ?: item["file"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                    ?: item["url"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+
+                Video(
+                    src = fixUrlNull(src) ?: src,
+                    res = item["res"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                        ?: item["label"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                        ?: item["quality"]?.toString()?.trim()?.takeIf { it.isNotBlank() },
+                    type = item["type"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                )
+            }.distinctBy { it.src }
+        }
+
+        val objectData = tryParseJson<Map<String, Any?>>(data)
+        if (objectData != null) {
+            val src = objectData["src"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                ?: objectData["file"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                ?: objectData["url"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+
+            if (!src.isNullOrBlank()) {
+                return listOf(
+                    Video(
+                        src = fixUrlNull(src) ?: src,
+                        res = objectData["res"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                            ?: objectData["label"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                            ?: objectData["quality"]?.toString()?.trim()?.takeIf { it.isNotBlank() },
+                        type = objectData["type"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                    )
+                )
+            }
+        }
+
+        return Regex("""["'](?:src|file|url)["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(data.replace("\/", "/").replace("&amp;", "&"))
+            .mapNotNull { match ->
+                val src = match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                Video(
+                    src = fixUrlNull(src) ?: src,
+                    res = src.detectQuality()?.toString(),
+                    type = when {
+                        src.contains(".m3u8", true) -> "application/x-mpegURL"
+                        src.contains(".mpd", true) -> "application/dash+xml"
+                        else -> "video/mp4"
+                    }
+                )
+            }
+            .distinctBy { it.src }
+            .toList()
     }
 
     private fun isDirectVideo(url: String, type: String?): Boolean {
