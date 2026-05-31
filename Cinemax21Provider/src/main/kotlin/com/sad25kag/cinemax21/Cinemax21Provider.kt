@@ -1,13 +1,22 @@
 package com.sad25kag.cinemax21
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
+import com.lagradost.cloudstream3.metaproviders.TmdbProvider
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeCinemaOS
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeDrama
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeKisskh 
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeMoviebox
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeMoviebox2 
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeGomovies
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeIdlix
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeKisskh
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeMapple
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeMoviebox
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeMoviebox2
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokePlayer4U
+import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeRiveStream
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeSuperembed
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeVidfast
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeVidlink
@@ -16,20 +25,8 @@ import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeVidsrccc
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeVixsrc
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeWatchsomuch
 import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeWyzie
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeXprime
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeCinemaOS
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokePlayer4U
-import com.sad25kag.cinemax21.Cinemax21ProviderExtractor.invokeRiveStream
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.metaproviders.TmdbProvider
-import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.ExtractorLink
 import java.net.URLEncoder
+import org.json.JSONObject
 
 open class Cinemax21Provider : TmdbProvider() {
     override var name = "CineMax21"
@@ -59,7 +56,7 @@ open class Cinemax21Provider : TmdbProvider() {
         private const val apiKey = "b030404650f279792a8d3287232358e3"
 
         const val gomoviesAPI = "https://gomovies-online.cam"
-        const val idlixAPI = "https://tv10.idlixku.com" 
+        const val idlixAPI = "https://tv10.idlixku.com"
         const val vidsrcccAPI = "https://vidsrc.cc"
         const val vidSrcAPI = "https://vidsrc.net"
         const val xprimeAPI = "https://backend.xprime.tv"
@@ -97,7 +94,6 @@ open class Cinemax21Provider : TmdbProvider() {
         "$tmdbAPI/tv/top_rated?api_key=$apiKey&region=US&without_genres=16" to "Top Rated TV Shows",
         "$tmdbAPI/discover/movie?api_key=$apiKey&sort_by=popularity.desc&primary_release_date.gte=2020-01-01&without_genres=16" to "Popular Movies (2020+)",
         "$tmdbAPI/discover/tv?api_key=$apiKey&sort_by=popularity.desc&first_air_date.gte=2020-01-01&without_genres=16" to "Popular TV Shows (2020+)",
-
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_original_language=id&without_genres=16&sort_by=popularity.desc" to "Indonesian Movies",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_original_language=id&without_genres=16&sort_by=popularity.desc" to "Indonesian Series",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_original_language=id&with_genres=27&without_genres=16&sort_by=popularity.desc" to "Indonesian Horror",
@@ -109,14 +105,12 @@ open class Cinemax21Provider : TmdbProvider() {
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_original_language=ko&sort_by=popularity.desc&without_genres=16" to "Korean Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_original_language=zh&sort_by=popularity.desc&without_genres=16" to "Chinese Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_original_language=ja&sort_by=popularity.desc&without_genres=16" to "Japanese Movies",
-
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=213&sort_by=popularity.desc&first_air_date.gte=2020-01-01&without_genres=16" to "Netflix Originals",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_watch_providers=8&watch_region=US&sort_by=popularity.desc&primary_release_date.gte=2020-01-01&without_genres=16" to "Netflix Movies",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=49&sort_by=popularity.desc&first_air_date.gte=2020-01-01&without_genres=16" to "HBO Originals",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_watch_providers=384|1899&watch_region=US&sort_by=popularity.desc&primary_release_date.gte=2020-01-01&without_genres=16" to "HBO Movies",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_networks=2739&sort_by=popularity.desc&without_genres=16" to "Disney+ Series",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_watch_providers=337&watch_region=US&sort_by=popularity.desc&without_genres=16" to "Disney+ Movies",
-
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=28&sort_by=popularity.desc&without_genres=16" to "Action Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=12&sort_by=popularity.desc&without_genres=16" to "Adventure Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=35&sort_by=popularity.desc&without_genres=16" to "Comedy Movies",
@@ -131,7 +125,6 @@ open class Cinemax21Provider : TmdbProvider() {
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=53&sort_by=popularity.desc&without_genres=16" to "Thriller Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=10752&sort_by=popularity.desc&without_genres=16" to "War Movies",
         "$tmdbAPI/discover/movie?api_key=$apiKey&with_genres=37&sort_by=popularity.desc&without_genres=16" to "Western Movies",
-
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=10759&sort_by=popularity.desc&without_genres=16" to "Action & Adventure TV",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=35&sort_by=popularity.desc&without_genres=16" to "Comedy TV",
         "$tmdbAPI/discover/tv?api_key=$apiKey&with_genres=80&sort_by=popularity.desc&without_genres=16" to "Crime TV",
@@ -151,6 +144,90 @@ open class Cinemax21Provider : TmdbProvider() {
     private fun getOriImageUrl(link: String?): String? {
         if (link == null) return null
         return if (link.startsWith("/")) "https://image.tmdb.org/t/p/original/$link" else link
+    }
+
+    private fun JSONObject.putNullable(name: String, value: Any?) {
+        if (value != null) put(name, value)
+    }
+
+    private fun JSONObject.optIntNullable(name: String): Int? {
+        return if (has(name) && !isNull(name)) optInt(name) else null
+    }
+
+    private fun JSONObject.optStringNullable(name: String): String? {
+        return if (has(name) && !isNull(name)) optString(name).takeIf { it.isNotBlank() } else null
+    }
+
+    private fun Data.toJson(): String {
+        return JSONObject().apply {
+            putNullable("id", id)
+            putNullable("type", type)
+            putNullable("aniId", aniId)
+            putNullable("malId", malId)
+        }.toString()
+    }
+
+    private fun LinkData.toJson(): String {
+        return JSONObject().apply {
+            putNullable("id", id)
+            putNullable("imdbId", imdbId)
+            putNullable("tvdbId", tvdbId)
+            putNullable("type", type)
+            putNullable("season", season)
+            putNullable("episode", episode)
+            putNullable("aniId", aniId)
+            putNullable("animeId", animeId)
+            putNullable("title", title)
+            putNullable("year", year)
+            putNullable("orgTitle", orgTitle)
+            put("isAnime", isAnime)
+            putNullable("airedYear", airedYear)
+            putNullable("lastSeason", lastSeason)
+            putNullable("epsTitle", epsTitle)
+            putNullable("jpTitle", jpTitle)
+            putNullable("date", date)
+            putNullable("airedDate", airedDate)
+            put("isAsian", isAsian)
+            put("isBollywood", isBollywood)
+            put("isCartoon", isCartoon)
+        }.toString()
+    }
+
+    private fun parseData(json: String): Data {
+        val obj = JSONObject(json)
+        return Data(
+            id = obj.optIntNullable("id"),
+            type = obj.optStringNullable("type"),
+            aniId = obj.optStringNullable("aniId"),
+            malId = obj.optIntNullable("malId"),
+        )
+    }
+
+    private fun parseLinkData(json: String): LinkData {
+        val obj = JSONObject(json)
+        return LinkData(
+            id = obj.optIntNullable("id"),
+            imdbId = obj.optStringNullable("imdbId"),
+            tvdbId = obj.optIntNullable("tvdbId"),
+            type = obj.optStringNullable("type"),
+            season = obj.optIntNullable("season"),
+            episode = obj.optIntNullable("episode"),
+            aniId = obj.optStringNullable("aniId"),
+            animeId = obj.optStringNullable("animeId"),
+            title = obj.optStringNullable("title"),
+            year = obj.optIntNullable("year"),
+            orgTitle = obj.optStringNullable("orgTitle"),
+            isAnime = obj.optBoolean("isAnime", false),
+            airedYear = obj.optIntNullable("airedYear"),
+            lastSeason = obj.optIntNullable("lastSeason"),
+            epsTitle = obj.optStringNullable("epsTitle"),
+            jpTitle = obj.optStringNullable("jpTitle"),
+            date = obj.optStringNullable("date"),
+            airedDate = obj.optStringNullable("airedDate"),
+            isAsian = obj.optBoolean("isAsian", false),
+            isBollywood = obj.optBoolean("isBollywood", false),
+            isCartoon = obj.optBoolean("isCartoon", false),
+        )
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -216,7 +293,7 @@ open class Cinemax21Provider : TmdbProvider() {
                 }
                 Data(id = id, type = type)
             } else {
-                parseJson<Data>(url)
+                parseData(url)
             }
         } catch (e: Exception) {
             throw ErrorLoadingException("Invalid URL or JSON data: ${e.message}")
@@ -238,7 +315,6 @@ open class Cinemax21Provider : TmdbProvider() {
         val orgTitle = res.originalTitle ?: res.originalName ?: return null
         val releaseDate = res.releaseDate ?: res.firstAirDate
         val year = releaseDate?.split("-")?.first()?.toIntOrNull()
-        
         val genres = res.genres?.mapNotNull { it.name }
 
         val isCartoon = genres?.contains("Animation") ?: false
@@ -300,7 +376,7 @@ open class Cinemax21Provider : TmdbProvider() {
                             this.season = eps.seasonNumber
                             this.episode = eps.episodeNumber
                             this.posterUrl = getImageUrl(eps.stillPath)
-                            this.score = Score.from10(eps.voteAverage) 
+                            this.score = Score.from10(eps.voteAverage)
                             this.description = eps.overview
                         }.apply {
                             this.addDate(eps.airDate)
@@ -383,7 +459,7 @@ open class Cinemax21Provider : TmdbProvider() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        val res = parseJson<LinkData>(data)
+        val res = parseLinkData(data)
 
         runAllAsync(
             {
