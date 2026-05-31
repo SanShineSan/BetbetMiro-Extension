@@ -1,27 +1,20 @@
 // use an integer for version numbers
-version = 2
-
+version = 8
 
 cloudstream {
-    // All of these properties are optional, you can safely remove them
-
     description = "Animexin — Streaming Donghua Subtitle Indonesia"
     language    = "id"
     authors = listOf("BetbetMiro")
 
     /**
-    * Status int as the following:
-    * 0: Down
-    * 1: Ok
-    * 2: Slow
-    * 3: Beta only
-    * */
-    status = 1 // will be 3 if unspecified
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+     */
+    status = 1
 
-    // List of video source types. Users are able to filter for extensions in a given category.
-    // You can find a list of available types here:
-    // https://recloudstream.github.io/cloudstream/html/app/com.lagradost.cloudstream3/-tv-type/index.html
     tvTypes = listOf("AnimeMovie","Anime","Cartoon")
     iconUrl = "https://animexin.dev/wp-content/uploads/2020/06/animexinv1.png"
-
 }
