@@ -74,7 +74,7 @@ class AnimeIndo : MainAPI() {
         val document = app.get(buildPageUrl(request.data, page)).document
 
         val candidates = document.select(
-            ".listupd article, .list-anime-parent > *, .animepost, .bs, .bsx, .post, article, " +
+            ".list-anime, .listupd article, .list-anime-parent > *, .animepost, .bs, .bsx, .post, article, " +
                 ".latest a[href], table.otable tr, .item, .ml-item, .movie"
         )
 
@@ -149,7 +149,13 @@ class AnimeIndo : MainAPI() {
         val card = bestCard()
         val link = when {
             tagName().equals("a", true) && hasAttr("href") -> this
-            else -> card.select("a[href]").firstOrNull { a -> isValidContentUrl(a.attr("href")) }
+            card.hasClass("list-anime") -> card.parent()?.takeIf { it.tagName().equals("a", true) && it.hasAttr("href") }
+            card.tagName().equals("tr", true) -> card.selectFirst("td.videsc a[href]")
+                ?: card.select("a[href]").firstOrNull { a -> isValidContentUrl(a.attr("href")) }
+            else -> card.select("a[href]").firstOrNull { a ->
+                isValidContentUrl(a.attr("href")) && a.text().trim().isNotBlank()
+            } ?: card.parent()?.takeIf { it.tagName().equals("a", true) && it.hasAttr("href") }
+                ?: card.select("a[href]").firstOrNull { a -> isValidContentUrl(a.attr("href")) }
                 ?: card.selectFirst("a[href]")
         } ?: return null
 
@@ -159,9 +165,9 @@ class AnimeIndo : MainAPI() {
 
         val fixedHref = fixUrl(href)
         val rawTitle = link.attr("title").ifBlank {
-            link.selectFirst("p, h2, h3, .title, .entry-title, td.videsc a")?.text()?.trim().orEmpty()
+            card.selectFirst("td.videsc > a[href], .list-anime p, p, h2, h3, .title, .entry-title")?.text()?.trim().orEmpty()
         }.ifBlank {
-            link.selectFirst("img")?.attr("alt")?.trim().orEmpty()
+            (card.selectFirst("img") ?: link.selectFirst("img"))?.attr("alt")?.trim().orEmpty()
         }.ifBlank {
             link.text().trim()
         }.ifBlank {
@@ -246,12 +252,12 @@ class AnimeIndo : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$mainUrl/?s=$encodedQuery").document
+        val encodedQuery = URLEncoder.encode(query, "UTF-8").replace("+", "-")
+        val document = app.get("$mainUrl/search/$encodedQuery/").document
         val results = mutableListOf<AnimeIndoItem>()
 
         document.select(
-            ".listupd article, .list-anime-parent > *, .animepost, .bs, .bsx, article, .post, " +
+            ".list-anime, .listupd article, .list-anime-parent > *, .animepost, .bs, .bsx, article, .post, " +
                 ".latest a[href], table.otable tr, .item, .ml-item, main a[href]"
         ).forEach { element ->
             val item = element.toAnimeIndoItem(requireContentUrl = true) ?: return@forEach
@@ -417,11 +423,11 @@ class AnimeIndo : MainAPI() {
         val document = app.get(data).document
         val serverUrls = mutableListOf<String>()
 
-        document.select("iframe[src], iframe[data-src], source[src], video[src]").forEach { element ->
+        document.select("#tontonin[src], iframe[src], iframe[data-src], source[src], video[src]").forEach { element ->
             addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
         }
 
-        document.select("[data-video], [data-url], [data-iframe], [data-src], a[href]").forEach { element ->
+        document.select("a.server[data-video], [data-video], [data-url], [data-iframe], [data-src], a[href]").forEach { element ->
             addServerUrl(serverUrls, element.attr("data-video"))
             addServerUrl(serverUrls, element.attr("data-url"))
             addServerUrl(serverUrls, element.attr("data-iframe"))
@@ -455,7 +461,20 @@ class AnimeIndo : MainAPI() {
         var found = false
 
         distinctServers.forEach { fullUrl ->
-            if (fullUrl.contains("btube3.php", true) || fullUrl.contains("b-tube", true)) {
+            if (fullUrl.contains("yup.php", true)) {
+                try {
+                    val playerDoc = app.get(fullUrl, referer = data).document
+                    val iframe = playerDoc.selectFirst("#mediaplayer[src], iframe[src]")?.attr("src")
+                    val iframeUrl = cleanPlayerUrl(iframe)
+                    if (!iframeUrl.isNullOrBlank()) {
+                        loadExtractor(iframeUrl, fullUrl, subtitleCallback) {
+                            found = true
+                            callback(it)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            } else if (fullUrl.contains("btube3.php", true) || fullUrl.contains("b-tube", true)) {
                 try {
                     val playerDoc = app.get(fullUrl, referer = data).document
                     val videoSrc = playerDoc.selectFirst("source[src], video[src]")?.attr("src")
