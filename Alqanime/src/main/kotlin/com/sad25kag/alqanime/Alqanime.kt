@@ -2,12 +2,13 @@ package com.sad25kag.alqanime
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.net.URLDecoder
 
 class Alqanime : MainAPI() {
@@ -40,7 +41,7 @@ class Alqanime : MainAPI() {
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language" to "en-US,en;q=0.5",
-        "Referer" to mainUrl,
+        "Referer" to mainUrl
     )
 
     override val mainPage = mainPageOf(
@@ -83,7 +84,7 @@ class Alqanime : MainAPI() {
         "$mainUrl/tag/sports/page/%d/" to "Sports",
         "$mainUrl/tag/supernatural/page/%d/" to "Supernatural",
         "$mainUrl/tag/thriller/page/%d/" to "Thriller",
-        "$mainUrl/tag/vampire/page/%d/" to "Vampire",
+        "$mainUrl/tag/vampire/page/%d/" to "Vampire"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -94,13 +95,16 @@ class Alqanime : MainAPI() {
     }
 
     private fun Element.toSearchResult(): AnimeSearchResponse? {
-        val href = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val title = this.selectFirst(".ntitle")?.text()?.trim() ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
-        val typeText = this.selectFirst(".typez")?.text()?.trim() ?: ""
-        val epNum = this.selectFirst("a")?.attr("title")
-            ?.let { Regex("Episode\\s*\\((\\d+)\\)", RegexOption.IGNORE_CASE).find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
-        val rating = this.selectFirst("div.numscore")?.text()?.trim()
+        val href = fixUrlNull(selectFirst("a")?.attr("href")) ?: return null
+        val title = selectFirst(".ntitle")?.text()?.trim() ?: return null
+        val posterUrl = fixUrlNull(selectFirst("img")?.attr("src"))
+        val typeText = selectFirst(".typez")?.text()?.trim() ?: ""
+        val epNum = selectFirst("a")?.attr("title")
+            ?.let {
+                Regex("Episode\\s*\\((\\d+)\\)", RegexOption.IGNORE_CASE)
+                    .find(it)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            }
+        val rating = selectFirst("div.numscore")?.text()?.trim()
         return newAnimeSearchResponse(title, href, getType(typeText)) {
             this.posterUrl = posterUrl
             addDubStatus("Sub Indo", epNum)
@@ -127,14 +131,16 @@ class Alqanime : MainAPI() {
         val poster = document.selectFirst("div.thumb img")?.attr("src")
         val coverBg = document.selectFirst("div.ime img")?.attr("src")
         val trailerRaw = document.selectFirst("a.trailerbutton")?.attr("href")
-        val trailer = trailerRaw?.let { url ->
-            val videoId = Regex("[?&]v=([^&]+)").find(url)?.groupValues?.getOrNull(1)
-            if (videoId != null) "https://www.youtube.com/embed/$videoId" else url
+        val trailer = trailerRaw?.let { trailerUrl ->
+            val videoId = Regex("[?&]v=([^&]+)").find(trailerUrl)?.groupValues?.getOrNull(1)
+            if (videoId != null) "https://www.youtube.com/embed/$videoId" else trailerUrl
         }
+
         val description = document.select("div.entry-content > p")
             .filter { it.text().length > 10 }
             .joinToString("\n\n") { it.text().trim() }
             .ifBlank { null }
+
         val genres = document.select("div.genxed a").map { it.text() }
 
         val speMap = document.select("div.spe > span").associate { span ->
@@ -157,25 +163,30 @@ class Alqanime : MainAPI() {
         val duration = Regex("(\\d+)\\s*min").find(
             speMap.entries.find { it.key.contains("Durasi", true) }?.value ?: ""
         )?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val actors = document.select("div.spe span:contains(Casts) a.casts")
-            .map { Actor(it.text()) }
+        val actors = document.select("div.spe span:contains(Casts) a.casts").map { Actor(it.text()) }
         val scoreText = document.selectFirst("strong:contains(Score)")?.text()
             ?.replace("Score", "")?.trim()
 
         val episodes = mutableListOf<Episode>()
+
         for (col in document.select("div.sorattl.collapsible")) {
             val epTitle = col.selectFirst("h3")?.text()?.trim() ?: continue
             if (epTitle.equals("Batch", ignoreCase = true)) continue
+
             val epNum = Regex("Episode\\s*(\\d+)", RegexOption.IGNORE_CASE)
                 .find(epTitle)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
             val contentDiv = col.nextElementSibling()
-                ?.takeIf { it.hasClass("content") } ?: continue
+                ?.takeIf { it.hasClass("content") }
+                ?: continue
 
             val pixeldrainFolderIds = mutableListOf<String>()
+
             for (tr in contentDiv.select("tr")) {
                 for (a in tr.select("div.slink a")) {
                     val resolved = resolveUrl(a.attr("href"))
-                    val listId = Regex("pixeldrain\\.com/l/([A-Za-z0-9]+)").find(resolved)?.groupValues?.get(1)
+                    val listId = Regex("pixeldrain\\.com/l/([A-Za-z0-9]+)")
+                        .find(resolved)?.groupValues?.getOrNull(1)
                     if (listId != null) pixeldrainFolderIds.add(listId)
                 }
             }
@@ -183,6 +194,7 @@ class Alqanime : MainAPI() {
             if (pixeldrainFolderIds.isNotEmpty()) {
                 val epMap = mutableMapOf<Int, MutableList<EpisodeLink>>()
                 val epThumbs = mutableMapOf<Int, String>()
+
                 for (listId in pixeldrainFolderIds) {
                     try {
                         val apiJson = app.get("https://pixeldrain.com/api/list/$listId")
@@ -191,23 +203,28 @@ class Alqanime : MainAPI() {
                             ?.filter { it.mimeType.startsWith("video/") }
                             ?.sortedBy { it.name }
                             ?.forEach { file ->
-                                val fileEpNum = Regex("(?:_|-)0*(\\d+)(?:_|-)").find(file.name)
-                                    ?.groupValues?.get(1)?.toIntOrNull() ?: return@forEach
+                                val fileEpNum = Regex("(?:_|-)0*(\\d+)(?:_|-)")
+                                    .find(file.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                                    ?: return@forEach
                                 val fileQuality = Regex("(\\d{3,4})p", RegexOption.IGNORE_CASE)
-                                    .find(file.name)?.groupValues?.get(1) ?: ""
+                                    .find(file.name)?.groupValues?.getOrNull(1) ?: ""
                                 val streamUrl = "https://pixeldrain.com/api/file/${file.id}"
                                 epMap.getOrPut(fileEpNum) { mutableListOf() }
                                     .add(EpisodeLink(streamUrl, fileQuality))
-                                if (!epThumbs.containsKey(fileEpNum))
-                                    epThumbs[fileEpNum] = "https://pixeldrain.com/api/file/${file.id}/thumbnail"
+                                if (!epThumbs.containsKey(fileEpNum)) {
+                                    epThumbs[fileEpNum] =
+                                        "https://pixeldrain.com/api/file/${file.id}/thumbnail"
+                                }
                             }
-                    } catch (_: Exception) { }
+                    } catch (_: Exception) {
+                    }
                 }
-                for ((epNum, links) in epMap.toSortedMap()) {
-                    episodes.add(newEpisode(links.toJson()) {
-                        this.name = "Episode $epNum"
-                        this.episode = epNum
-                        this.posterUrl = epThumbs[epNum]
+
+                for ((episodeNumber, links) in epMap.toSortedMap()) {
+                    episodes.add(newEpisode(links.toEpisodeJson()) {
+                        this.name = "Episode $episodeNumber"
+                        this.episode = episodeNumber
+                        this.posterUrl = epThumbs[episodeNumber]
                     })
                 }
             }
@@ -220,8 +237,9 @@ class Alqanime : MainAPI() {
                         linkList.add(EpisodeLink(a.attr("href"), quality))
                     }
                 }
+
                 if (linkList.isNotEmpty()) {
-                    episodes.add(newEpisode(linkList.toJson()) {
+                    episodes.add(newEpisode(linkList.toEpisodeJson()) {
                         this.name = epTitle
                         this.episode = epNum
                     })
@@ -252,66 +270,281 @@ class Alqanime : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val links = runCatching {
-            parseJson<List<Map<String, Any?>>>(data).mapNotNull { item ->
-                val rawUrl = item["url"]?.toString()?.trim().orEmpty()
-                val quality = item["quality"]?.toString()?.trim().orEmpty()
-                if (rawUrl.isBlank()) null else EpisodeLink(rawUrl, quality)
-            }
-        }.getOrNull() ?: return false
-
+        val links = parseEpisodeLinks(data)
         if (links.isEmpty()) return false
 
         var emitted = false
+        val emittedUrls = linkedSetOf<String>()
 
-        links.amap { linkData ->
+        fun markEmit(link: ExtractorLink) {
+            if (emittedUrls.add(link.url.substringBefore("#"))) {
+                callback(link)
+                emitted = true
+            }
+        }
+
+        fun emitDirect(
+            source: String,
+            url: String,
+            quality: Int,
+            referer: String,
+            headers: Map<String, String> = commonHeaders + mapOf("Referer" to referer)
+        ): Boolean {
+            val fixedUrl = url.cleanEscaped().replace(".txt", ".m3u8")
+            if (!fixedUrl.isPlayableMediaUrl()) return false
+            val type = if (fixedUrl.contains(".m3u8", true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
+            }
+            markEmit(newExtractorLink(source, source, fixedUrl, type) {
+                this.referer = referer
+                this.quality = quality
+                this.headers = headers
+            })
+            return true
+        }
+
+        for (linkData in links) {
             val resolvedUrl = resolveUrl(linkData.url)
-            if (resolvedUrl.isBlank()) return@amap
+            if (resolvedUrl.isBlank()) continue
 
             val qualityInt = linkData.quality.fixQuality()
 
             if (resolvedUrl.contains("pixeldrain.com/api/file/", true)) {
-                callback(newExtractorLink("Pixeldrain", "Pixeldrain", resolvedUrl) {
+                markEmit(newExtractorLink("Pixeldrain", "Pixeldrain", resolvedUrl) {
                     this.referer = "https://pixeldrain.com/"
                     this.quality = qualityInt
                 })
-                emitted = true
-                return@amap
+                continue
             }
 
-            val collected = mutableListOf<ExtractorLink>()
+            if (resolvedUrl.contains("mediafire.com", true)) {
+                if (tryMediafire(resolvedUrl, qualityInt, ::markEmit)) continue
+            }
+
+            if (resolvedUrl.contains("acefile.co", true)) {
+                if (tryAcefile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
+            }
+
+            val directFromUrl = emitDirect(
+                source = name,
+                url = resolvedUrl,
+                quality = qualityInt,
+                referer = "$mainUrl/"
+            )
+            if (directFromUrl) continue
+
             try {
-                loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) { collected.add(it) }
+                loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) { link ->
+                    markEmit(newExtractorLink(link.source, link.name, link.url, link.type) {
+                        this.referer = link.referer
+                        this.quality = qualityInt
+                        this.headers = link.headers
+                        this.extractorData = link.extractorData
+                    })
+                }
             } catch (_: Exception) {
-            }
-
-            collected.forEach { link ->
-                callback(newExtractorLink(link.source, link.name, link.url, link.type) {
-                    this.referer = link.referer
-                    this.quality = qualityInt
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                })
-                emitted = true
             }
         }
 
         return emitted
     }
 
-    private fun resolveUrl(url: String): String {
-        val cleanUrl = url.trim()
-            .replace("&amp;", "&")
-            .replace("&#038;", "&")
+    private suspend fun tryMediafire(
+        url: String,
+        quality: Int,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val response = runCatching {
+            app.get(
+                url,
+                headers = commonHeaders + mapOf("Referer" to "$mainUrl/"),
+                referer = "$mainUrl/",
+                timeout = 20000L
+            )
+        }.getOrNull() ?: return false
 
+        val document = response.document
+        val html = response.text.cleanEscaped()
+        val candidates = linkedSetOf<String>()
+
+        document.select(
+            "a#downloadButton[href], a.input.popsok[href], a[aria-label*=Download][href], " +
+                "a[href*=download][href*=mediafire], a[href*=mediafire][href*=download]"
+        ).forEach { element ->
+            fixUrlNull(element.attr("href"))?.let { candidates.add(it.cleanEscaped()) }
+        }
+
+        Regex("""https?://download[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .map { it.value.cleanEscaped() }
+            .forEach { candidates.add(it) }
+
+        Regex("""(?i)(?:href|url)\s*[:=]\s*["']([^"']*download[^"']*mediafire[^"']*)["']""")
+            .findAll(html)
+            .mapNotNull { it.groupValues.getOrNull(1)?.cleanEscaped() }
+            .forEach { fixUrlNull(it)?.let(candidates::add) }
+
+        for (candidate in candidates) {
+            val fixed = candidate.cleanEscaped()
+            if (!fixed.contains("mediafire.com", true) && !fixed.contains("download", true)) continue
+            callback(newExtractorLink("MediaFire", "MediaFire", fixed, ExtractorLinkType.VIDEO) {
+                this.referer = url
+                this.quality = quality
+                this.headers = commonHeaders + mapOf("Referer" to url)
+            })
+            return true
+        }
+
+        return false
+    }
+
+    private suspend fun tryAcefile(
+        url: String,
+        quality: Int,
+        callback: (ExtractorLink) -> Unit,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): Boolean {
+        val pages = linkedSetOf<String>()
+        val pageQueue = mutableListOf<String>()
+        fun addPage(page: String) {
+            if (pages.add(page)) pageQueue.add(page)
+        }
+
+        addPage(url)
+
+        val id = Regex("""acefile\.co/(?:f|player)/(\w+)""", RegexOption.IGNORE_CASE)
+            .find(url)?.groupValues?.getOrNull(1)
+
+        if (id != null) {
+            addPage("https://acefile.co/f/$id")
+            addPage("https://acefile.co/player/$id")
+        }
+
+        var emitted = false
+        var index = 0
+
+        while (index < pageQueue.size) {
+            val pageUrl = pageQueue[index++]
+            val response = runCatching {
+                app.get(
+                    pageUrl,
+                    headers = commonHeaders + mapOf("Referer" to "$mainUrl/"),
+                    referer = "$mainUrl/",
+                    timeout = 20000L
+                )
+            }.getOrNull() ?: continue
+
+            val document = response.document
+            val html = response.text.cleanEscaped()
+            val referer = pageUrl
+
+            document.select("iframe[src], embed[src]").forEach { iframe ->
+                normalizeUrl(iframe.attr("src"), pageUrl)?.let { addPage(it) }
+            }
+
+            val directLinks = collectPlayableUrls(document, html, pageUrl)
+            for (direct in directLinks) {
+                val type = if (direct.contains(".m3u8", true)) {
+                    ExtractorLinkType.M3U8
+                } else {
+                    ExtractorLinkType.VIDEO
+                }
+                callback(newExtractorLink("AceFile", "AceFile", direct, type) {
+                    this.referer = referer
+                    this.quality = quality
+                    this.headers = commonHeaders + mapOf("Referer" to referer)
+                })
+                emitted = true
+            }
+
+            if (emitted) return true
+
+            runCatching {
+                loadExtractor(pageUrl, "$mainUrl/", subtitleCallback) { link ->
+                    callback(newExtractorLink(link.source, link.name, link.url, link.type) {
+                        this.referer = link.referer
+                        this.quality = quality
+                        this.headers = link.headers
+                        this.extractorData = link.extractorData
+                    })
+                    emitted = true
+                }
+            }
+        }
+
+        return emitted
+    }
+
+    private fun collectPlayableUrls(
+        document: org.jsoup.nodes.Document,
+        html: String,
+        baseUrl: String
+    ): List<String> {
+        val results = linkedSetOf<String>()
+
+        document.select("video[src], video source[src], source[src], a[href]").forEach { element ->
+            val raw = element.attr("src").ifBlank { element.attr("href") }
+            normalizeUrl(raw, baseUrl)?.cleanEscaped()?.takeIf { it.isPlayableMediaUrl() }?.let(results::add)
+        }
+
+        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .map { it.value.cleanEscaped() }
+            .forEach { results.add(it) }
+
+        Regex("""https?%3A%2F%2F[^"'\\\s<>]+?(?:%2Em3u8|%2Emp4|%2Ewebm)[^"'\\\s<>]*""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .map {
+                runCatching { URLDecoder.decode(it.value, "UTF-8") }.getOrDefault(it.value)
+            }
+            .map { it.cleanEscaped() }
+            .forEach { results.add(it) }
+
+        Regex("""(?i)(?:file|src|source|url|video)\s*[:=]\s*["']([^"']+)["']""")
+            .findAll(html)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .mapNotNull { normalizeUrl(it, baseUrl) }
+            .map { it.cleanEscaped() }
+            .filter { it.isPlayableMediaUrl() }
+            .forEach { results.add(it) }
+
+        return results.toList()
+    }
+
+    private fun normalizeUrl(url: String?, baseUrl: String = mainUrl): String? {
+        val clean = url.cleanEscaped()
+        if (clean.isBlank() || clean == "#" || clean.startsWith("javascript:", true)) return null
+        return when {
+            clean.startsWith("http", true) -> clean
+            clean.startsWith("//") -> "https:$clean"
+            clean.startsWith("/") -> {
+                val origin = runCatching {
+                    val uri = URI(baseUrl)
+                    "${uri.scheme}://${uri.host}"
+                }.getOrDefault(mainUrl)
+                origin + clean
+            }
+            else -> runCatching { URI(baseUrl).resolve(clean).toString() }
+                .getOrElse { fixUrl(clean) }
+        }
+    }
+
+    private fun resolveUrl(url: String): String {
+        val cleanUrl = url.cleanEscaped()
         if (cleanUrl.isBlank() || cleanUrl == "#") return ""
 
-        if (cleanUrl.contains("ouo.io", true)) {
+        if (cleanUrl.contains("ouo.io", true) || cleanUrl.contains("ouo.press", true)) {
             val sParam = Regex("[?&]s=([^&]+)")
                 .find(cleanUrl)
                 ?.groupValues
                 ?.getOrNull(1)
-            if (sParam != null) return URLDecoder.decode(sParam, "UTF-8")
+            if (sParam != null) {
+                return runCatching { URLDecoder.decode(sParam, "UTF-8") }
+                    .getOrDefault(sParam)
+                    .cleanEscaped()
+            }
         }
 
         if (cleanUrl.contains("acefile.co/f/", true)) {
@@ -325,13 +558,62 @@ class Alqanime : MainAPI() {
         return fixUrl(cleanUrl)
     }
 
+    private fun parseEpisodeLinks(data: String): List<EpisodeLink> {
+        return runCatching {
+            val array = JSONArray(data)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val rawUrl = item.optString("url").trim()
+                    val quality = item.optString("quality").trim()
+                    if (rawUrl.isNotBlank()) add(EpisodeLink(rawUrl, quality))
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun List<EpisodeLink>.toEpisodeJson(): String {
+        val array = JSONArray()
+        forEach { link ->
+            array.put(
+                JSONObject()
+                    .put("url", link.url)
+                    .put("quality", link.quality)
+            )
+        }
+        return array.toString()
+    }
+
     private fun String.fixQuality(): Int = when {
-        this.contains("2160", true) -> Qualities.P2160.value
-        this.contains("1080", true) -> Qualities.P1080.value
-        this.contains("720", true) -> Qualities.P720.value
-        this.contains("480", true) -> Qualities.P480.value
-        this.contains("360", true) -> Qualities.P360.value
+        contains("2160", true) -> Qualities.P2160.value
+        contains("1080", true) -> Qualities.P1080.value
+        contains("720", true) -> Qualities.P720.value
+        contains("480", true) -> Qualities.P480.value
+        contains("360", true) -> Qualities.P360.value
         else -> Qualities.Unknown.value
+    }
+
+    private fun String.cleanEscaped(): String {
+        return trim()
+            .replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("\\u003A", ":")
+            .replace("\\u0026", "&")
+            .replace("\\u003D", "=")
+            .replace("&amp;", "&")
+            .replace("&#038;", "&")
+            .replace("&quot;", "\"")
+            .replace("\\\"", "\"")
+            .trim('"', '\'', ',', ';')
+            .trim()
+    }
+
+    private fun String.isPlayableMediaUrl(): Boolean {
+        val lower = lowercase()
+        return lower.contains(".m3u8") ||
+            lower.contains(".mp4") ||
+            lower.contains(".webm") ||
+            lower.contains("/api/file/")
     }
 
     data class EpisodeLink(
