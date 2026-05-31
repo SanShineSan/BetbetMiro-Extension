@@ -12,7 +12,7 @@ import org.jsoup.nodes.Element
 
 class Animasu : MainAPI() {
 
-    override var mainUrl = "https://v0.animasu.app"
+    override var mainUrl = "https://v1.animasu.top"
     override var name = "Animasu"
     override val hasMainPage = true
     override var lang = "id"
@@ -207,7 +207,7 @@ class Animasu : MainAPI() {
             null
         }
 
-        val rawTags = table?.select("span:contains(Genre:) a, span:contains(Tipe Karakter:) a")
+        val rawTags = table?.select("span:contains(Genre:) a")
             ?.map { it.text().trim() } ?: emptyList()
 
         return newAnimeLoadResponse(

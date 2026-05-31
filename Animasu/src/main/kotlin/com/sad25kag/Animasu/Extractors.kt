@@ -1,9 +1,5 @@
 package com.sad25kag.Animasu
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.DeserializationFeature
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.extractors.Filesim
@@ -12,13 +8,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONObject
 
-
-private val animasuJsonMapper = jacksonObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-
-private inline fun <reified T> parseJsonSafe(json: String?): T? {
-    if (json.isNullOrBlank()) return null
-    return runCatching { animasuJsonMapper.readValue<T>(json) }.getOrNull()
+private fun String?.toJsonObjectOrNull(): JSONObject? {
+    if (this.isNullOrBlank()) return null
+    return runCatching { JSONObject(this) }.getOrNull()
 }
 
 class Archivd : ExtractorApi() {
@@ -34,21 +28,18 @@ class Archivd : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
 
-        val res = app.get(url).document
-
         val json =
-            res.selectFirst("div#app")
+            app.get(url).document
+                .selectFirst("div#app")
                 ?.attr("data-page")
 
-        if (json.isNullOrBlank()) return
-
-        val video =
-            parseJsonSafe<Sources>(json)
-                ?.props
-                ?.datas
-                ?.data
-                ?.link
-                ?.media
+        val video = json.toJsonObjectOrNull()
+            ?.optJSONObject("props")
+            ?.optJSONObject("datas")
+            ?.optJSONObject("data")
+            ?.optJSONObject("link")
+            ?.optString("media")
+            ?.takeIf { it.isNotBlank() }
 
         if (video.isNullOrBlank()) return
 
@@ -63,31 +54,6 @@ class Archivd : ExtractorApi() {
             }
         )
     }
-
-    data class Link(
-        @JsonProperty("media")
-        val media: String? = null,
-    )
-
-    data class Data(
-        @JsonProperty("link")
-        val link: Link? = null,
-    )
-
-    data class Datas(
-        @JsonProperty("data")
-        val data: Data? = null,
-    )
-
-    data class Props(
-        @JsonProperty("datas")
-        val datas: Datas? = null,
-    )
-
-    data class Sources(
-        @JsonProperty("props")
-        val props: Props? = null,
-    )
 }
 
 class Newuservideo : ExtractorApi() {
@@ -132,54 +98,46 @@ class Newuservideo : ExtractorApi() {
             ).text
 
         val json =
-            "VIDEO_CONFIG\\s?=\\s?(\\{.*?\\})"
-                .toRegex()
+            Regex("""VIDEO_CONFIG\s?=\s?(\{.*?\})""", RegexOption.DOT_MATCHES_ALL)
                 .find(doc)
                 ?.groupValues
-                ?.get(1)
-                ?: "VIDEO_CONFIG\\s?=\\s?(.*)"
-                    .toRegex()
+                ?.getOrNull(1)
+                ?: Regex("""VIDEO_CONFIG\s?=\s?(.*)""", RegexOption.DOT_MATCHES_ALL)
                     .find(doc)
                     ?.groupValues
-                    ?.get(1)
+                    ?.getOrNull(1)
+                    ?.substringBefore("</script>")
+                    ?.trim()
+                    ?.trimEnd(';')
 
-        parseJsonSafe<Sources>(json)
-            ?.streams
-            ?.map {
+        val streams = json.toJsonObjectOrNull()
+            ?.optJSONArray("streams")
+            ?: return
 
-                callback.invoke(
-                    newExtractorLink(
-                        this.name,
-                        this.name,
-                        it.playUrl ?: return@map,
-                        INFER_TYPE
-                    ) {
+        for (i in 0 until streams.length()) {
+            val stream = streams.optJSONObject(i) ?: continue
+            val playUrl = stream.optString("play_url").takeIf { it.isNotBlank() } ?: continue
+            val formatId = stream.optInt("format_id", -1)
 
-                        this.referer = "$mainUrl/"
+            callback.invoke(
+                newExtractorLink(
+                    this.name,
+                    this.name,
+                    playUrl,
+                    INFER_TYPE
+                ) {
+                    this.referer = "$mainUrl/"
 
-                        this.quality =
-                            when (it.formatId) {
-                                18 -> Qualities.P360.value
-                                22 -> Qualities.P720.value
-                                else -> Qualities.Unknown.value
-                            }
-                    }
-                )
-            }
+                    this.quality =
+                        when (formatId) {
+                            18 -> Qualities.P360.value
+                            22 -> Qualities.P720.value
+                            else -> Qualities.Unknown.value
+                        }
+                }
+            )
+        }
     }
-
-    data class Streams(
-        @JsonProperty("play_url")
-        val playUrl: String? = null,
-
-        @JsonProperty("format_id")
-        val formatId: Int? = null,
-    )
-
-    data class Sources(
-        @JsonProperty("streams")
-        val streams: ArrayList<Streams>? = null,
-    )
 }
 
 class Vidhidepro : Filesim() {

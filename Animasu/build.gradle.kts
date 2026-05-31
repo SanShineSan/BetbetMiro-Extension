@@ -1,4 +1,4 @@
-version = 14
+version = 16
 
 
 cloudstream {
@@ -22,5 +22,5 @@ cloudstream {
         "Anime",
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://v0.animasu.app&size=%size%"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://v1.animasu.top&size=%size%"
 }
