@@ -1,17 +1,14 @@
 package com.sad25kag.anoboy
 
-import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import java.net.URI
-import java.net.URLDecoder
 import java.net.URLEncoder
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class Anoboy : MainAPI() {
-    override var mainUrl = "https://anoboy.be"
+    override var mainUrl = "https://ww1.anoboy.boo"
     override var name = "AnoBoy"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -26,25 +23,29 @@ class Anoboy : MainAPI() {
 
     override val mainPage = mainPageOf(
         "" to "Update Terbaru",
-        "anime/?order=update&status=ongoing&type=tv" to "Anime Ongoing",
-        "anime/?order=update&status=&type=movie" to "Movie",
-        "anime/?order=update&status=&type=ona" to "ONA",
-        "anime/?order=update&status=&type=ova" to "OVA",
-        "genres/donghua/" to "Donghua",
-        "genres/action/" to "Action",
-        "genres/adventure/" to "Adventure",
-        "genres/comedy/" to "Comedy",
-        "genres/drama/" to "Drama",
-        "genres/fantasy/" to "Fantasy",
-        "genres/horror/" to "Horror",
-        "genres/isekai/" to "Isekai",
-        "genres/martial-arts/" to "Martial Arts",
-        "genres/romance/" to "Romance",
-        "genres/school/" to "School",
-        "genres/shounen/" to "Shounen",
-        "genres/slice-of-life/" to "Slice of Life",
-        "genres/sports/" to "Sports",
-        "genres/supernatural/" to "Supernatural"
+        "category/anime/ongoing/" to "Anime Ongoing",
+        "anime-list/" to "Anime List",
+        "category/donghua/" to "Donghua",
+        "category/anime-movie/" to "Movie",
+        "category/tokusatsu/" to "Tokusatsu",
+        "category/live-action-movie/" to "Live Action",
+        "category/studio-ghibli/" to "Studio Ghibli",
+        "category/rekomended/" to "Rekomendasi",
+        "category/action/" to "Action",
+        "category/adventure/" to "Adventure",
+        "category/comedy/" to "Comedy",
+        "category/demons/" to "Demons",
+        "category/drama/" to "Drama",
+        "category/ecchi/" to "Ecchi",
+        "category/fantasy/" to "Fantasy",
+        "category/horror/" to "Horror",
+        "category/martial-arts/" to "Martial Arts",
+        "category/romance/" to "Romance",
+        "category/school/" to "School",
+        "category/shounen/" to "Shounen",
+        "category/slice-of-life/" to "Slice of Life",
+        "category/sports/" to "Sports",
+        "category/supernatural/" to "Supernatural"
     )
 
     private data class CardData(
@@ -91,11 +92,55 @@ class Anoboy : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$mainUrl/?s=$encodedQuery", headers = defaultHeaders()).document
+        val queryWords = query.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
 
-        return collectCards(document)
-            .distinctBy { it.url }
-            .map { it.toSearchResponse() }
+        suspend fun parseSearchPage(url: String): List<CardData> {
+            val document = runCatching {
+                app.get(url, headers = defaultHeaders()).document
+            }.getOrNull() ?: return emptyList()
+
+            return collectCards(document)
+                .filter { card ->
+                    queryWords.isEmpty() || queryWords.all { word -> card.title.lowercase().contains(word) }
+                }
+                .distinctBy { it.url }
+        }
+
+        val searchResults = parseSearchPage("$mainUrl/?s=$encodedQuery")
+        if (searchResults.isNotEmpty()) return searchResults.map { it.toSearchResponse() }
+
+        val slug = query
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), "-")
+            .trim('-')
+
+        if (slug.isNotBlank()) {
+            val directAnime = runCatching {
+                val directUrl = "$mainUrl/anime/$slug/"
+                val document = app.get(directUrl, headers = defaultHeaders()).document
+                val title = document.selectFirst("h1.entry-title, h1, h2.entry-title, .pagetitle h1")
+                    ?.text()
+                    ?.trim()
+                    .orEmpty()
+                if (title.isNotBlank()) {
+                    CardData(
+                        title = cleanTitle(title),
+                        url = directUrl,
+                        poster = document.selectFirst(".sisi.entry-content img, .deskripsi img, div.bigcontent img, article img")
+                            ?.imageAttr()
+                            ?.let { fixUrlNull(it) },
+                        type = TvType.Anime,
+                        episode = null
+                    )
+                } else {
+                    null
+                }
+            }.getOrNull()
+
+            if (directAnime != null) return listOf(directAnime.toSearchResponse())
+        }
+
+        return parseSearchPage("$mainUrl/anime-list/").map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -132,13 +177,7 @@ class Anoboy : MainAPI() {
                 .joinToString("\n") { it.text() }
                 .trim()
 
-        val episodeList = parseEpisodeList(document, fixedUrl)
-        val serverEpisodes = buildServerEpisodes(document, fixedUrl)
-        val episodes = when {
-            episodeList.isNotEmpty() -> episodeList
-            serverEpisodes.isNotEmpty() -> serverEpisodes
-            else -> emptyList()
-        }
+        val episodes = parseEpisodeList(document, fixedUrl)
 
         val tags = document.select(
             "a[href*='/category/'], .genres a, .genre-info a, .info-content a[href*='/category/']"
@@ -180,17 +219,12 @@ class Anoboy : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val decoded = decodeEpisodeData(data)
-        val startUrl = decoded.second
-        val startReferer = decoded.first ?: mainUrl
-
-        val discovered = linkedSetOf<String>()
-        val queue = ArrayDeque<Pair<String, String>>()
-        val crawled = mutableSetOf<String>()
+        val (embeddedReferer, requestData) = decodeEpisodeData(data)
+        val referer = embeddedReferer ?: mainUrl
         val emittedKeys = linkedSetOf<String>()
         var emitted = false
 
-        fun emitOnce(link: ExtractorLink) {
+        fun callbackOnce(link: ExtractorLink) {
             val key = "${link.source.lowercase()}|${canonicalLink(link.url)}"
             if (emittedKeys.add(key)) {
                 emitted = true
@@ -198,78 +232,84 @@ class Anoboy : MainAPI() {
             }
         }
 
-        fun queueUrl(raw: String?, base: String) {
-            val resolved = resolvePlayerUrl(raw, base) ?: return
-            if (isBadUrl(resolved)) return
-            if (!isPlayerCandidate(resolved)) return
-            if (discovered.add(resolved)) queue.add(resolved to base)
+        suspend fun processCandidate(raw: String?, baseUrl: String = requestData) {
+            val url = resolvePlayerUrl(raw, baseUrl) ?: return
+            if (!isPlayerCandidate(url)) return
+
+            if (isDirectMedia(url)) {
+                emitDirect(url, referer, ::callbackOnce)
+            } else {
+                try {
+                    loadExtractor(url, referer, subtitleCallback, ::callbackOnce)
+                } catch (_: Exception) {
+                }
+            }
         }
 
-        if (startUrl.startsWith("multi::")) {
-            startUrl.removePrefix("multi::")
+        if (requestData.startsWith("multi::")) {
+            requestData.removePrefix("multi::")
                 .split("||")
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
-                .forEach { queueUrl(it, startReferer) }
+                .forEach { processCandidate(it, referer) }
         } else {
-            queueUrl(startUrl, startReferer)
-
-            val startDoc = runCatching {
+            val page = runCatching {
                 app.get(
-                    startUrl,
-                    referer = startReferer,
-                    headers = defaultHeaders(startReferer),
+                    requestData,
+                    referer = referer,
+                    headers = defaultHeaders(referer),
                     timeout = 20L
                 ).document
             }.getOrNull()
 
-            if (startDoc != null) {
-                extractFromDocument(startDoc, startUrl, ::queueUrl)
-            }
-        }
-
-        var safety = 0
-        while (queue.isNotEmpty() && safety++ < 45) {
-            val (next, referer) = queue.removeFirst()
-            if (isBadUrl(next)) continue
-
-            if (isDirectMedia(next)) {
-                emitDirect(next, referer, ::emitOnce)
-                continue
+            if (page != null) {
+                collectPlayerCandidates(page)
+                    .forEach { processCandidate(it, requestData) }
             }
 
-            if (!crawled.add(next)) continue
-
-            val extracted = runCatching {
-                loadExtractor(next, referer, subtitleCallback, ::emitOnce)
-            }.getOrDefault(false)
-
-            if (extracted && emitted) continue
-
-            val response = runCatching {
-                app.get(
-                    next,
-                    referer = referer,
-                    headers = defaultHeaders(referer),
-                    timeout = 20L
-                )
-            }.getOrNull() ?: continue
-
-            val contentLength = response.headers["Content-Length"]?.toLongOrNull()
-            if (contentLength != null && contentLength > 5_000_000L) continue
-
-            val body = runCatching { response.text }.getOrNull() ?: continue
-            val nestedDoc = Jsoup.parse(body, next)
-
-            extractFromDocument(nestedDoc, next, ::queueUrl)
-            extractFromText(body, next, ::queueUrl)
+            processCandidate(requestData, referer)
         }
-
-        discovered
-            .filter { isDirectMedia(it) }
-            .forEach { direct -> emitDirect(direct, startReferer, ::emitOnce) }
 
         return emitted
+    }
+
+    private fun collectPlayerCandidates(document: Document): List<String> {
+        val candidates = linkedSetOf<String>()
+
+        document.select(
+            "iframe[src], iframe[data-src], iframe[data-litespeed-src], iframe[data-lazy-src], " +
+                "video[src], video[data-src], source[src], embed[src], object[data]"
+        ).forEach { element ->
+            candidates.add(element.iframeAttr().orEmpty())
+            candidates.add(element.attr("src"))
+            candidates.add(element.attr("data-src"))
+            candidates.add(element.attr("data-litespeed-src"))
+            candidates.add(element.attr("data-lazy-src"))
+            candidates.add(element.attr("data"))
+        }
+
+        document.select(
+            "#fplay [data-video], #fplay [data-src], #fplay [data-url], #fplay [data-iframe], " +
+                ".player [data-video], .player [data-src], .player [data-url], .player [data-iframe], " +
+                ".server [data-video], .server [data-src], .server [data-url], .server [data-iframe]"
+        ).forEach { element ->
+            candidates.add(element.attr("data-video"))
+            candidates.add(element.attr("data-src"))
+            candidates.add(element.attr("data-url"))
+            candidates.add(element.attr("data-iframe"))
+        }
+
+        document.select(
+            "a[href*='gofile.io'], a[href*='mp4upload.com'], a[href*='mir.cr'], " +
+                "a[href*='ranoz.gg'], a[href*='.mp4'], a[href*='.m3u8']"
+        ).forEach { element ->
+            candidates.add(element.attr("href"))
+        }
+
+        return candidates
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 
     private fun collectCards(document: Document): List<CardData> {
@@ -284,7 +324,6 @@ class Anoboy : MainAPI() {
             ".latest a[href]",
             ".listupd a[href]",
             ".topten .serieslist li",
-            ".serieslist li",
             ".result li"
         ).joinToString(", ")
 
@@ -374,138 +413,6 @@ class Anoboy : MainAPI() {
             .sortedBy { it.episode ?: Int.MAX_VALUE }
     }
 
-    private fun buildServerEpisodes(document: Document, referer: String): List<Episode> {
-        val urls = linkedSetOf<String>()
-        fun add(raw: String?) {
-            val resolved = resolvePlayerUrl(raw, referer) ?: return
-            if (isBadUrl(resolved)) return
-            if (!isPlayerCandidate(resolved)) return
-            urls.add(resolved)
-        }
-
-        document.select(
-            "iframe[src], iframe[data-src], iframe[data-litespeed-src], source[src], video[src], embed[src], object[data]"
-        ).forEach { element ->
-            add(element.iframeAttr())
-            add(element.attr("src"))
-            add(element.attr("data-src"))
-            add(element.attr("data-litespeed-src"))
-            add(element.attr("data"))
-        }
-
-        document.select(
-            "a[data-video], a[data-src], a[data-url], a[data-iframe], [data-video], [data-src], [data-url], [data-iframe], option[value]"
-        ).forEach { element ->
-            add(element.attr("data-video"))
-            add(element.attr("data-src"))
-            add(element.attr("data-url"))
-            add(element.attr("data-iframe"))
-            add(element.attr("value"))
-        }
-
-        extractFromText(document.html(), referer) { raw, base -> add(resolvePlayerUrl(raw, base)) }
-
-        if (urls.isEmpty()) return emptyList()
-
-        val episodeNumber = parseEpisodeNumber(document.location()) ?: parseEpisodeNumber(document.title()) ?: 1
-        val payload = if (urls.size == 1) urls.first() else "multi::" + urls.joinToString("||")
-
-        return listOf(
-            newEpisode(encodeEpisodeData(referer, payload)) {
-                name = "Episode $episodeNumber"
-                episode = episodeNumber
-            }
-        )
-    }
-
-    private fun extractFromDocument(
-        document: Document,
-        baseUrl: String,
-        queueUrl: (String?, String) -> Unit
-    ) {
-        document.select(
-            "iframe[src], iframe[data-src], iframe[data-litespeed-src], iframe[data-lazy-src], " +
-                "source[src], video[src], video[data-src], embed[src], object[data]"
-        ).forEach { element ->
-            queueUrl(element.iframeAttr(), baseUrl)
-            queueUrl(element.attr("src"), baseUrl)
-            queueUrl(element.attr("data-src"), baseUrl)
-            queueUrl(element.attr("data-litespeed-src"), baseUrl)
-            queueUrl(element.attr("data-lazy-src"), baseUrl)
-            queueUrl(element.attr("data"), baseUrl)
-        }
-
-        document.select(
-            "a[href], button, [data-video], [data-src], [data-url], [data-iframe], [data-embed], [data-file], [data-link], option[value]"
-        ).forEach { element ->
-            queueUrl(element.attr("href"), baseUrl)
-            queueUrl(element.attr("data-video"), baseUrl)
-            queueUrl(element.attr("data-src"), baseUrl)
-            queueUrl(element.attr("data-url"), baseUrl)
-            queueUrl(element.attr("data-iframe"), baseUrl)
-            queueUrl(element.attr("data-embed"), baseUrl)
-            queueUrl(element.attr("data-file"), baseUrl)
-            queueUrl(element.attr("data-link"), baseUrl)
-            queueUrl(element.attr("value"), baseUrl)
-
-            val value = element.attr("value")
-            if (value.isNotBlank()) {
-                runCatching {
-                    val decoded = decodeBase64String(value.replace("\\s".toRegex(), ""))
-                    if (decoded.isNotBlank()) {
-                        extractFromText(decoded, baseUrl, queueUrl)
-                        val decodedDoc = Jsoup.parse(decoded, baseUrl)
-                        decodedDoc.select("iframe[src], source[src], video[src], a[href]").forEach { nested ->
-                            queueUrl(nested.iframeAttr(), baseUrl)
-                            queueUrl(nested.attr("src"), baseUrl)
-                            queueUrl(nested.attr("href"), baseUrl)
-                        }
-                    }
-                }
-            }
-        }
-
-        extractFromText(document.html(), baseUrl, queueUrl)
-    }
-
-    private fun extractFromText(
-        text: String,
-        baseUrl: String,
-        queueUrl: (String?, String) -> Unit
-    ) {
-        val cleaned = text
-            .replace("\\/", "/")
-            .replace("\\u002F", "/")
-            .replace("\\u003A", ":")
-            .replace("\\u0026", "&")
-            .replace("\\u003D", "=")
-            .replace("&amp;", "&")
-
-        Regex("""https?://[^"'<>\\\s]+""", RegexOption.IGNORE_CASE)
-            .findAll(cleaned)
-            .forEach { queueUrl(it.value, baseUrl) }
-
-        Regex("""//[^"'<>\\\s]+\.(?:m3u8|mp4|webm|mkv)(?:\?[^"'<>\\\s]*)?""", RegexOption.IGNORE_CASE)
-            .findAll(cleaned)
-            .forEach { queueUrl("https:${it.value}", baseUrl) }
-
-        Regex(
-            """(?:file|src|url|source|video|data-video|data-src|data-url|hls|hlsUrl|hls_url|stream|streamUrl|stream_url)\s*[:=]\s*["']([^"']+)["']""",
-            RegexOption.IGNORE_CASE
-        ).findAll(cleaned).forEach { queueUrl(it.groupValues[1], baseUrl) }
-
-        Regex("""["']((?:/uploads/|/embed/|/player/|/api/|/stream/)[^"']+)["']""", RegexOption.IGNORE_CASE)
-            .findAll(cleaned)
-            .forEach { queueUrl(it.groupValues[1], baseUrl) }
-
-        Regex("""https?%3A%2F%2F[^"'<>\\\s]+""", RegexOption.IGNORE_CASE)
-            .findAll(cleaned)
-            .forEach { match ->
-                val decoded = runCatching { URLDecoder.decode(match.value, "UTF-8") }.getOrDefault(match.value)
-                queueUrl(decoded, baseUrl)
-            }
-    }
-
     private suspend fun emitDirect(
         link: String,
         referer: String,
@@ -551,14 +458,14 @@ class Anoboy : MainAPI() {
         }
 
         return fixed
-            .replace("https://ww1.anoboy.boo", mainUrl, ignoreCase = true)
-            .replace("http://ww1.anoboy.boo", mainUrl, ignoreCase = true)
             .replace("https://www1.anoboy.boo", mainUrl, ignoreCase = true)
             .replace("http://www1.anoboy.boo", mainUrl, ignoreCase = true)
-            .replace("https://anoboy.watch", mainUrl, ignoreCase = true)
-            .replace("http://anoboy.watch", mainUrl, ignoreCase = true)
+            .replace("https://anoboy.be", mainUrl, ignoreCase = true)
+            .replace("http://anoboy.be", mainUrl, ignoreCase = true)
             .replace("https://www.anoboy.be", mainUrl, ignoreCase = true)
             .replace("http://www.anoboy.be", mainUrl, ignoreCase = true)
+            .replace("https://anoboy.watch", mainUrl, ignoreCase = true)
+            .replace("http://anoboy.watch", mainUrl, ignoreCase = true)
     }
 
     private fun resolvePlayerUrl(raw: String?, base: String): String? {
@@ -602,20 +509,28 @@ class Anoboy : MainAPI() {
     }
 
     private fun isContentUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        return lower.startsWith(mainUrl.lowercase()) &&
-            !lower.contains("/category/") &&
-            !lower.contains("/genres/") &&
-            !lower.contains("/tag/") &&
-            !lower.contains("/season/") &&
-            !lower.contains("/studio/") &&
-            !lower.contains("/anime-list") &&
-            !lower.contains("/az-list") &&
-            !lower.contains("/anime/?") &&
-            !lower.contains("?order=") &&
-            !lower.contains("?status=") &&
-            !lower.contains("?type=") &&
-            !lower.contains("/page/")
+        val lower = normalizeAnoboyUrl(url).lowercase()
+        val path = runCatching { URI(lower).path.orEmpty() }.getOrDefault(lower)
+        val slug = path.trimEnd('/').substringAfterLast('/')
+
+        if (!lower.startsWith(mainUrl.lowercase())) return false
+        if (
+            path.contains("/category/") ||
+            path.contains("/genre/") ||
+            path.contains("/tag/") ||
+            path.contains("/season/") ||
+            path.contains("/studio/") ||
+            path.contains("/anime-list") ||
+            path.contains("/donghua-list") ||
+            path.contains("/page/") ||
+            lower.contains("?order=") ||
+            lower.contains("?status=") ||
+            lower.contains("?type=")
+        ) return false
+
+        return slug.contains("episode-") ||
+            slug.contains("-subtitle-indonesia") ||
+            Regex("/20\\d{2}/\\d{2}/[a-z0-9-]+/?$").containsMatchIn(path)
     }
 
     private fun isPlayerCandidate(url: String): Boolean {
@@ -624,41 +539,10 @@ class Anoboy : MainAPI() {
         if (isBadUrl(url)) return false
         if (isDirectMedia(url)) return true
 
-        return lower.contains("/uploads/") ||
-            lower.contains("mirrored.to") ||
-            lower.contains("adsbatch") ||
-            lower.contains("acbatch") ||
-            lower.contains("yupbatch") ||
-            lower.contains("yup/data.php") ||
-            lower.contains("adsbatch720.php") ||
-            lower.contains("stream.php") ||
-            lower.contains("embed.php") ||
-            lower.contains("/api/") ||
-            lower.contains("/player/") ||
-            lower.contains("/iframe/") ||
-            lower.contains("blogger.com/video.g") ||
-            lower.contains("blogger.com/_/bloggervideoplayerui") ||
-            lower.contains("blogger.googleusercontent.com") ||
-            lower.contains("video-downloads.googleusercontent.com") ||
-            lower.contains("googlevideo.com/videoplayback") ||
-            lower.contains("youtube.googleapis.com/embed") ||
-            lower.contains("youtube.com/embed") ||
-            lower.contains("viiwbpyl.com/h/") ||
-            lower.contains("viiwbpyl.com/embed") ||
-            lower.contains("yourupload.com/") ||
-            lower.contains("streamtape") ||
-            lower.contains("dood") ||
-            lower.contains("filemoon") ||
-            lower.contains("vidhide") ||
-            lower.contains("vidguard") ||
-            lower.contains("voe.sx") ||
-            lower.contains("mixdrop") ||
-            lower.contains("mp4upload") ||
-            lower.contains("short.icu") ||
-            lower.contains("abyss.to") ||
-            lower.contains("abysscdn") ||
-            lower.contains("ok.ru") ||
-            lower.contains("drive.google.com")
+        return lower.contains("gofile.io") ||
+            lower.contains("mp4upload.com") ||
+            lower.contains("mir.cr") ||
+            lower.contains("ranoz.gg")
     }
 
     private fun isBadUrl(url: String): Boolean {
@@ -712,7 +596,8 @@ class Anoboy : MainAPI() {
             path.endsWith(".mov") ||
             path.endsWith(".ts") ||
             lower.contains("googlevideo.com/videoplayback") ||
-            lower.contains("redirector.googlevideo.com/videoplayback")
+            lower.contains("redirector.googlevideo.com/videoplayback") ||
+            (lower.contains("gofile.io") && lower.contains("/download/"))
     }
 
     private fun isM3u8Media(url: String): Boolean {
@@ -786,25 +671,6 @@ class Anoboy : MainAPI() {
         } else {
             null to data
         }
-    }
-
-    private fun decodeBase64String(value: String): String {
-        val clean = value.trim()
-        val candidates = listOf(
-            clean,
-            clean.replace('-', '+').replace('_', '/'),
-            clean + "=".repeat((4 - clean.length % 4) % 4),
-            clean.replace('-', '+').replace('_', '/') + "=".repeat((4 - clean.length % 4) % 4)
-        ).distinct()
-
-        for (candidate in candidates) {
-            val decoded = runCatching {
-                String(Base64.decode(candidate, Base64.DEFAULT), Charsets.UTF_8)
-            }.getOrNull()
-            if (!decoded.isNullOrBlank()) return decoded
-        }
-
-        return ""
     }
 
     private fun defaultHeaders(referer: String = mainUrl): Map<String, String> {
