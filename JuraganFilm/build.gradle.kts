@@ -1,9 +1,9 @@
-version = 13
+version = 14
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "JuraganFilm provider with current IDLIX API catalog, session-based playback resolver, subtitles, and Majorplay/Jeniusplay fallback extractors."
+    description = "JuraganFilm provider for tv44.juragan.film with HTML catalog parsing, search, detail metadata, episode parsing, direct MP4/HLS links, subtitles, and extractor fallback support."
 
     /**
      * Status int as the following:
@@ -22,5 +22,5 @@ cloudstream {
     )
 
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=z1.idlixku.com&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=tv44.juragan.film&sz=%size%"
 }
