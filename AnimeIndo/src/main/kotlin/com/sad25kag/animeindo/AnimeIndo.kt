@@ -18,6 +18,15 @@ class AnimeIndo : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Movie)
 
+    private data class AnimeIndoItem(
+        val title: String,
+        val url: String,
+        val sourceUrl: String,
+        val tvType: TvType,
+        val poster: String?,
+        val episodeNumber: Int?
+    )
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Episode Terbaru",
         "$mainUrl/movie/" to "Movie",
@@ -69,15 +78,22 @@ class AnimeIndo : MainAPI() {
                 ".latest a[href], table.otable tr, .item, .ml-item, .movie"
         )
 
-        val home = candidates.mapNotNull { it.toAnimeIndoSearchResult(preferMovie = isMovie, requireContentUrl = true) }
-            .distinctBy { it.url }
-            .filterNot { it.name.isBlank() }
+        val items = mutableListOf<AnimeIndoItem>()
+        candidates.forEach { element ->
+            val item = element.toAnimeIndoItem(preferMovie = isMovie, requireContentUrl = true) ?: return@forEach
+            if (items.none { it.url == item.url }) {
+                items.add(resolveMissingPoster(item))
+            }
+        }
 
         val hasNext = document.selectFirst(
             "a.next, a[rel=next], .pagination a[href*='/page/${page + 1}/'], a[href*='/page/${page + 1}/']"
         ) != null
 
-        return newHomePageResponse(listOf(HomePageList(request.name, home, isHorizontalImages = isMovie)), hasNext)
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, items.map { it.toSearchResponse() }, isHorizontalImages = isMovie)),
+            hasNext
+        )
     }
 
     private fun Element.imageAttr(): String? {
@@ -126,10 +142,10 @@ class AnimeIndo : MainAPI() {
             (!fixed.substringAfter(mainUrl, "").trim('/').contains("/") && slug.length > 3)
     }
 
-    private fun Element.toAnimeIndoSearchResult(
+    private fun Element.toAnimeIndoItem(
         preferMovie: Boolean = false,
         requireContentUrl: Boolean = true
-    ): SearchResponse? {
+    ): AnimeIndoItem? {
         val card = bestCard()
         val link = when {
             tagName().equals("a", true) && hasAttr("href") -> this
@@ -164,10 +180,49 @@ class AnimeIndo : MainAPI() {
             else -> TvType.Anime
         }
 
-        return newAnimeSearchResponse(title, resultUrl, tvType) {
-            posterUrl = poster
+        return AnimeIndoItem(
+            title = cleanupEpisodeTitle(title, episodeNumber, fixedHref),
+            url = resultUrl,
+            sourceUrl = fixedHref,
+            tvType = tvType,
+            poster = poster,
+            episodeNumber = episodeNumber
+        )
+    }
+
+    private fun AnimeIndoItem.toSearchResponse(): SearchResponse {
+        return newAnimeSearchResponse(title, url, tvType) {
+            posterUrl = poster ?: "$mainUrl/wp-content/uploads/2026/01/cropped-animeindo-1.png"
             episodeNumber?.let { addSub(it) }
         }
+    }
+
+    private suspend fun resolveMissingPoster(item: AnimeIndoItem): AnimeIndoItem {
+        if (!item.poster.isNullOrBlank()) return item
+
+        val candidates = listOf(item.sourceUrl, item.url).distinct()
+        candidates.forEach { pageUrl ->
+            try {
+                val page = app.get(pageUrl).document
+                val poster = page.selectFirst(
+                    "div.detail img, td.vithumb img, .thumb img, .poster img, .entry-content img, main img, article img"
+                )?.imageAttr()?.let { fixUrlNull(it) }
+                if (!poster.isNullOrBlank()) return item.copy(poster = poster)
+            } catch (_: Exception) {
+            }
+        }
+
+        return item
+    }
+
+    private fun cleanupEpisodeTitle(title: String, episodeNumber: Int?, sourceUrl: String): String {
+        if (episodeNumber == null || !isEpisodeUrl(sourceUrl)) return title
+        return title
+            .replace(Regex("(?i)\\s*episode\\s*$episodeNumber(?:\\.0)?\\s*$"), "")
+            .replace(Regex("\\s+$episodeNumber\\s*$"), "")
+            .trim()
+            .takeIf { it.length >= 2 && !isBlockedTitle(it) }
+            ?: title
     }
 
     private fun isEpisodeUrl(url: String): Boolean {
@@ -193,12 +248,19 @@ class AnimeIndo : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val document = app.get("$mainUrl/?s=$encodedQuery").document
-        return document.select(
+        val results = mutableListOf<AnimeIndoItem>()
+
+        document.select(
             ".listupd article, .list-anime-parent > *, .animepost, .bs, .bsx, article, .post, " +
                 ".latest a[href], table.otable tr, .item, .ml-item, main a[href]"
-        ).mapNotNull { it.toAnimeIndoSearchResult(requireContentUrl = true) }
-            .distinctBy { it.url }
-            .filterNot { it.url.trimEnd('/') == mainUrl }
+        ).forEach { element ->
+            val item = element.toAnimeIndoItem(requireContentUrl = true) ?: return@forEach
+            if (item.url.trimEnd('/') != mainUrl && results.none { it.url == item.url }) {
+                results.add(item)
+            }
+        }
+
+        return results.map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -217,16 +279,22 @@ class AnimeIndo : MainAPI() {
 
         val document = if (animeUrl == url) initialDocument else app.get(animeUrl).document
 
+        val fallbackTitle = if (episodePage) {
+            normalizeTitle(initialDocument.selectFirst("h1.title, h1.entry-title, h1, h2")?.text().orEmpty())
+                .replace(Regex("(?i)\\s*episode\\s*\\d+.*$"), "")
+                .trim()
+                .takeIf { it.isNotBlank() && !isBlockedTitle(it) }
+        } else {
+            null
+        }
+
         val title = document.selectFirst("h1.title, h2.title, h1.entry-title, h1, h2, .entry-title")
             ?.text()
             ?.trim()
             ?.removePrefix("#")
             ?.let { normalizeTitle(it) }
             ?.takeIf { it.isNotBlank() && !isBlockedTitle(it) }
-            ?: if (episodePage) normalizeTitle(
-                initialDocument.selectFirst("h1.title, h1.entry-title, h1, h2")?.text().orEmpty()
-            ).replace(Regex("(?i)\\s*episode\\s*\\d+.*$"), "").trim().takeIf { it.isNotBlank() }
-            else null
+            ?: fallbackTitle
             ?: throw ErrorLoadingException("Judul tidak ditemukan")
 
         val poster = document.selectFirst("div.detail img, td.vithumb img, .thumb img, .poster img, main img, article img")
@@ -278,18 +346,66 @@ class AnimeIndo : MainAPI() {
         }
     }
 
-    private fun addServerUrl(serverUrls: MutableList<String>, rawUrl: String?) {
-        val url = rawUrl?.trim()?.takeIf { it.isNotBlank() } ?: return
-        if (url == "#" || url.startsWith("javascript:", true)) return
-        serverUrls.add(url)
+    private fun cleanPlayerUrl(rawUrl: String?): String? {
+        val cleaned = rawUrl
+            ?.trim()
+            ?.replace("&amp;", "&")
+            ?.replace("\\/", "/")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        if (cleaned == "#" || cleaned.startsWith("javascript:", true) || cleaned.startsWith("mailto:", true)) {
+            return null
+        }
+
+        return when {
+            cleaned.startsWith("//") -> "https:$cleaned"
+            cleaned.startsWith("/") -> "$mainUrl$cleaned"
+            else -> cleaned
+        }.substringBefore("#").trim()
     }
 
-    private fun String.toFullPlayerUrl(): String {
-        return when {
-            startsWith("//") -> "https:$this"
-            startsWith("/") -> "$mainUrl$this"
-            else -> this
-        }
+    private fun isPlayableServerUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        if (lower.startsWith(mainUrl.lowercase()) && !lower.contains("btube3.php")) return false
+        if (
+            lower.contains("/anime/") ||
+            lower.contains("/genres/") ||
+            lower.contains("/genre/") ||
+            lower.contains("/tag/") ||
+            lower.contains("disclaimer") ||
+            lower.contains("privacy")
+        ) return false
+
+        return listOf(
+            "btube3.php",
+            "xtwap.top",
+            "gdplayer",
+            "gdriveplayer",
+            "drive.google",
+            "mp4upload",
+            "yup",
+            "dailymotion",
+            "ok.ru",
+            "filemoon",
+            "streamtape",
+            "streamwish",
+            "dood",
+            "vidhide",
+            "sendvid",
+            "blogger",
+            "m3u8",
+            ".mp4",
+            "/embed/",
+            "/player/",
+            "/iframe/"
+        ).any { lower.contains(it) }
+    }
+
+    private fun addServerUrl(serverUrls: MutableList<String>, rawUrl: String?) {
+        val url = cleanPlayerUrl(rawUrl) ?: return
+        if (!isPlayableServerUrl(url)) return
+        serverUrls.add(url)
     }
 
     override suspend fun loadLinks(
@@ -305,25 +421,36 @@ class AnimeIndo : MainAPI() {
             addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
         }
 
-        document.select("a.server[data-video], [data-video], [data-url], [data-iframe], a[href]").forEach { element ->
+        document.select("[data-video], [data-url], [data-iframe], [data-src], a[href]").forEach { element ->
             addServerUrl(serverUrls, element.attr("data-video"))
             addServerUrl(serverUrls, element.attr("data-url"))
             addServerUrl(serverUrls, element.attr("data-iframe"))
-            addServerUrl(serverUrls, element.attr("href"))
+            addServerUrl(serverUrls, element.attr("data-src"))
+
+            val href = element.attr("href")
+            val label = element.text()
+            if (
+                label.contains("download", true) ||
+                label.contains("gdrive", true) ||
+                label.contains("mp4", true) ||
+                label.contains("b-tube", true) ||
+                label.contains("cepat", true) ||
+                isPlayableServerUrl(cleanPlayerUrl(href).orEmpty())
+            ) {
+                addServerUrl(serverUrls, href)
+            }
         }
 
         val html = document.html()
-        Regex("""(?i)(?:src|file|url)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|xtwap|gdriveplayer|gdplayer|mp4upload|yup)[^"']*)["']""")
+        Regex("""(?i)(?:src|file|url|href)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|xtwap|gdriveplayer|gdplayer|mp4upload|yup|dailymotion|ok\.ru)[^"']*)["']""")
             .findAll(html)
-            .forEach { addServerUrl(serverUrls, it.groupValues[1].replace("\\/", "/")) }
+            .forEach { addServerUrl(serverUrls, it.groupValues[1]) }
 
-        val distinctServers = serverUrls
-            .map { it.toFullPlayerUrl() }
-            .distinct()
-            .filterNot {
-                it.contains("/anime/", true) || it.contains("/genres/", true) ||
-                    it.contains("disclaimer", true) || it.contains("privacy", true)
-            }
+        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+(?:m3u8|mp4|embed|player|btube3|xtwap|gdriveplayer|gdplayer|mp4upload|yup|dailymotion|ok\.ru)[^"'<>\s]*""")
+            .findAll(html)
+            .forEach { addServerUrl(serverUrls, it.value) }
+
+        val distinctServers = serverUrls.distinct()
 
         var found = false
 
@@ -372,7 +499,7 @@ class AnimeIndo : MainAPI() {
             }
         }
 
-        return found || distinctServers.isNotEmpty()
+        return found
     }
 }
 
