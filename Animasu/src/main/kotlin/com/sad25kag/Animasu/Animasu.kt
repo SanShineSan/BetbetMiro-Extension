@@ -254,43 +254,188 @@ class Animasu : MainAPI() {
     ): Boolean {
 
         val document = app.get(data).document
+        val candidates = linkedSetOf<Pair<String, String?>>()
 
-        document.select(".mobius > .mirror > option")
-            .mapNotNull {
+        document.select("#pembed iframe[src], .player-embed iframe[src]").forEach { iframe ->
+            normalizeIframeUrl(iframe.attr("src"))?.let { candidates.add(it to "Default") }
+        }
 
-                val value = it.attr("value")
+        document.select(".mobius > .mirror > option, .mobius select.mirror option").forEach { option ->
+            val value = option.attr("value")
+            if (value.isBlank()) return@forEach
 
-                if (value.isBlank()) {
-                    return@mapNotNull null
-                }
+            val decoded = runCatching { base64Decode(value) }.getOrNull() ?: return@forEach
+            val iframeSrc = Jsoup.parse(decoded).selectFirst("iframe[src]")?.attr("src") ?: return@forEach
+            normalizeIframeUrl(iframeSrc)?.let { candidates.add(it to option.text()) }
+        }
 
-                val decoded =
-                    base64Decode(value)
-                        ?: return@mapNotNull null
+        var hasLinks = false
 
-                val iframeSrc =
-                    Jsoup.parse(decoded)
-                        .select("iframe")
-                        .attr("src")
-
-                if (iframeSrc.isBlank()) {
-                    return@mapNotNull null
-                }
-
-                fixUrl(iframeSrc) to it.text()
-            }
-            .amap { (iframe, quality) ->
-
+        candidates.forEach { (iframe, quality) ->
+            val emitted = if (iframe.contains("blogger.com/video.g", ignoreCase = true)) {
+                emitBloggerVideo(iframe, quality, data, callback)
+            } else {
                 loadFixedExtractor(
                     iframe,
                     quality,
-                    "$mainUrl/",
+                    data,
                     subtitleCallback,
                     callback
                 )
             }
 
+            if (emitted) hasLinks = true
+        }
+
+        return hasLinks
+    }
+
+    private fun normalizeIframeUrl(url: String?): String? {
+        val raw = url
+            ?.replace("&amp;", "&")
+            ?.trim()
+            ?.trim('"', '\'', ' ')
+            ?: return null
+
+        if (raw.isBlank() || raw == "#" || raw.startsWith("javascript:", true)) return null
+
+        return when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http://") || raw.startsWith("https://") -> raw
+            else -> fixUrl(raw)
+        }
+    }
+
+    private suspend fun emitBloggerVideo(
+        url: String,
+        quality: String?,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+
+        val videos = extractBloggerDirectVideos(url, referer)
+        if (videos.isEmpty()) return false
+
+        videos.forEach { videoUrl ->
+            callback.invoke(
+                newExtractorLink(
+                    "Blogger",
+                    "Blogger ${quality.orEmpty()}".trim(),
+                    videoUrl,
+                    ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = "https://www.blogger.com/"
+                    this.quality = qualityFromBloggerUrl(videoUrl).takeIf { it != Qualities.Unknown.value }
+                        ?: getIndexQuality(quality)
+                    this.headers = mapOf("Referer" to "https://www.blogger.com/")
+                }
+            )
+        }
+
         return true
+    }
+
+    private suspend fun extractBloggerDirectVideos(url: String, referer: String): List<String> {
+        val token = Regex("""[?&]token=([^&]+)""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return emptyList()
+
+        val page = runCatching {
+            app.get(
+                url,
+                referer = referer,
+                headers = mapOf(
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+            )
+        }.getOrNull() ?: return emptyList()
+
+        val html = page.text
+        val cookies = page.cookies
+        val fSid = Regex("""FdrFJe":"(-?\d+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return emptyList()
+        val bl = Regex("""cfb2h":"([^"]+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return emptyList()
+        val hl = Regex("""lang="([^"]+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.ifBlank { null }
+            ?: "id"
+
+        val rpcId = "WcwnYd"
+        val reqId = (System.currentTimeMillis() % 90000L + 10000L).toString()
+        val payload = """[[["$rpcId","[\"$token\",null,0]",null,"generic"]]]"""
+        val apiUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
+            "?rpcids=$rpcId&source-path=%2Fvideo.g&f.sid=$fSid&bl=$bl&hl=$hl&_reqid=$reqId&rt=c"
+
+        val response = runCatching {
+            app.post(
+                apiUrl,
+                data = mapOf("f.req" to payload),
+                referer = url,
+                cookies = cookies,
+                headers = mapOf(
+                    "Origin" to "https://www.blogger.com",
+                    "Accept" to "*/*",
+                    "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
+                    "X-Same-Domain" to "1"
+                )
+            ).text
+        }.getOrNull() ?: return emptyList()
+
+        val decoded = decodeBloggerEscapes(response)
+
+        return Regex("""https://[^\s"'\\]+""")
+            .findAll(decoded)
+            .map { it.value }
+            .filter { it.contains("googlevideo.com/videoplayback", ignoreCase = true) }
+            .map { decodeBloggerEscapes(it) }
+            .distinct()
+            .toList()
+    }
+
+    private fun decodeBloggerEscapes(input: String): String {
+        var output = input
+        repeat(2) {
+            output = Regex("""\\u([0-9a-fA-F]{4})""").replace(output) { match ->
+                match.groupValues[1].toInt(16).toChar().toString()
+            }
+        }
+
+        return output
+            .replace("\\/", "/")
+            .replace("\\u003d", "=")
+            .replace("\\u0026", "&")
+            .replace("\\=", "=")
+            .replace("\\&", "&")
+            .replace("\\\"", "\"")
+    }
+
+    private fun qualityFromBloggerUrl(url: String): Int {
+        val itag = Regex("""[?&]itag=(\d+)""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+        return when (itag) {
+            37, 96, 137, 248, 299 -> Qualities.P1080.value
+            22, 59, 136, 247, 298 -> Qualities.P720.value
+            18, 134, 244 -> Qualities.P360.value
+            135 -> Qualities.P480.value
+            36 -> Qualities.P240.value
+            17 -> Qualities.P144.value
+            else -> Qualities.Unknown.value
+        }
     }
 
     private suspend fun loadFixedExtractor(
@@ -299,13 +444,17 @@ class Animasu : MainAPI() {
         referer: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ) {
+    ): Boolean {
+
+        var emitted = false
 
         loadExtractor(
             url,
             referer,
             subtitleCallback
         ) { link ->
+
+            emitted = true
 
             runBlocking {
 
@@ -335,6 +484,8 @@ class Animasu : MainAPI() {
                 )
             }
         }
+
+        return emitted
     }
 
     private fun getIndexQuality(str: String?): Int {
