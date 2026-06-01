@@ -3,7 +3,6 @@ package com.sad25kag.dramaid
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -12,6 +11,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
+import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.util.Base64
@@ -66,7 +66,7 @@ class DramaIdHalahgan : ExtractorApi() {
             ).text
         }.getOrNull() ?: return null
 
-        return (tryParseJson<Source>(response)?.url
+        return (runCatching { JSONObject(response).optString("url").takeIf { it.isNotBlank() } }.getOrNull()
             ?: Regex(""""url"\s*:\s*"([^"]+)"""")
                 .find(response)
                 ?.groupValues
@@ -119,7 +119,6 @@ class DramaIdHalahgan : ExtractorApi() {
         )
     }
 
-    private data class Source(val url: String? = null)
 }
 
 class DramaIdBerkasDrive : ExtractorApi() {

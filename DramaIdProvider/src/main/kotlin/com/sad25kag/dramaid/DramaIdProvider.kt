@@ -21,7 +21,6 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -30,6 +29,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -260,9 +260,9 @@ class DramaIdProvider : MainAPI() {
             // DramaID sering menyimpan server sebagai JSON base64 pada .resolusi-list/.server-list.
             doc.select(".resolusi-list li[data], .server-list li[data]").forEach { element ->
                 val decodedJson = decodeBase64(element.attr("data")) ?: return@forEach
-                val resolution = tryParseJson<ResolutionData>(decodedJson)
+                val resolution = parseResolutionData(decodedJson)
                 val servers = resolution?.links.orEmpty().ifEmpty {
-                    listOfNotNull(tryParseJson<ServerData>(decodedJson))
+                    listOfNotNull(parseServerData(decodedJson))
                 }
                 val qualityLabel = resolution?.resolution ?: element.text().trim()
 
@@ -647,6 +647,43 @@ class DramaIdProvider : MainAPI() {
 
     private fun String.cleanLabel(): String {
         return replace(Regex("""\s+"""), " ").trim().ifBlank { "Server" }
+    }
+
+    private fun parseResolutionData(json: String): ResolutionData? {
+        return runCatching {
+            val obj = JSONObject(json)
+            val links = obj.optJSONArray("links")?.let { array ->
+                buildList {
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        add(item.toServerData())
+                    }
+                }
+            }
+            ResolutionData(
+                resolution = obj.optStringOrNull("resolution"),
+                subtitle_url = obj.optStringOrNull("subtitle_url"),
+                links = links,
+            )
+        }.getOrNull()
+    }
+
+    private fun parseServerData(json: String): ServerData? {
+        return runCatching {
+            JSONObject(json).toServerData().takeIf { !it.url.isNullOrBlank() }
+        }.getOrNull()
+    }
+
+    private fun JSONObject.toServerData(): ServerData {
+        return ServerData(
+            url = optStringOrNull("url"),
+            mode = optStringOrNull("mode"),
+            urutan_text = optStringOrNull("urutan_text"),
+        )
+    }
+
+    private fun JSONObject.optStringOrNull(key: String): String? {
+        return optString(key).trim().ifBlank { null }
     }
 
     data class ResolutionData(
