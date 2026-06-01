@@ -340,6 +340,7 @@ class Dracinema : MainAPI() {
                             referer = mainUrl
                             quality = source.quality ?: Qualities.P720.value
                             headers = mapOf(
+                                "User-Agent" to USER_AGENT,
                                 "Accept" to "*/*",
                                 "Range" to "bytes=0-"
                             )
@@ -393,7 +394,7 @@ class Dracinema : MainAPI() {
                     newExtractorLink(name, name, link, ExtractorLinkType.VIDEO) {
                         referer = mainUrl
                         quality = getQualityFromName(link).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value
-                        headers = mapOf("Accept" to "*/*", "Range" to "bytes=0-")
+                        headers = mapOf("User-Agent" to USER_AGENT, "Accept" to "*/*", "Range" to "bytes=0-")
                     }
                 )
                 found = true
@@ -415,7 +416,10 @@ class Dracinema : MainAPI() {
 
     private fun String.toPlayUrl(targetEpisode: Int?): String {
         val clean = substringBefore("?episode=").trimEnd('/')
-        if (clean.contains("/play/", true)) return clean
+        if (clean.contains("/play/", true)) {
+            val trailingEpisode = clean.substringAfterLast('/').toIntOrNull()
+            return if (trailingEpisode == 1) clean.substringBeforeLast('/') else clean
+        }
         val movieKey = clean.substringAfter("/movie/", "").substringBefore("?").trim('/').takeIf { it.isNotBlank() }
             ?: return clean
         val base = "$mainUrl/play/$movieKey"
