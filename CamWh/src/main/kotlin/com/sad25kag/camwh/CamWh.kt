@@ -202,28 +202,6 @@ class CamWh : MainAPI() {
             )
         }
 
-        suspend fun String.resolveCamWhVideoUrl(): String? {
-            val decoded = decodeEscapedUrl()
-                .removePrefix("function/0/")
-                .trim()
-
-            if (decoded.isBlank()) return null
-            if (decoded.contains("videos_screenshots", ignoreCase = true)) return null
-            if (decoded.contains("/screenshots/", ignoreCase = true)) return null
-            if (decoded.endsWith(".jpg", ignoreCase = true) || decoded.endsWith(".png", ignoreCase = true)) return null
-
-            val fixed = fixUrl(decoded)
-            if (!fixed.contains("/get_file/", ignoreCase = true)) return fixed
-
-            return runCatching {
-                app.get(
-                    fixed,
-                    headers = streamHeaders(),
-                    referer = "$mainUrl/",
-                    allowRedirects = false
-                ).headers["Location"] ?: fixed
-            }.getOrDefault(fixed)
-        }
 
         suspend fun extractFromHtml(html: String) {
             val patterns = listOf(
@@ -358,6 +336,29 @@ class CamWh : MainAPI() {
             "Origin" to mainUrl,
             "Range" to "bytes=0-"
         )
+    }
+
+    private suspend fun String.resolveCamWhVideoUrl(): String? {
+        val decoded = decodeEscapedUrl()
+            .removePrefix("function/0/")
+            .trim()
+
+        if (decoded.isBlank()) return null
+        if (decoded.contains("videos_screenshots", ignoreCase = true)) return null
+        if (decoded.contains("/screenshots/", ignoreCase = true)) return null
+        if (decoded.endsWith(".jpg", ignoreCase = true) || decoded.endsWith(".png", ignoreCase = true)) return null
+
+        val fixed = fixUrl(decoded)
+        if (!fixed.contains("/get_file/", ignoreCase = true)) return fixed
+
+        return runCatching {
+            app.get(
+                fixed,
+                headers = streamHeaders(),
+                referer = "$mainUrl/",
+                allowRedirects = false
+            ).headers["Location"] ?: fixed
+        }.getOrDefault(fixed)
     }
 
     private fun String.decodeEscapedUrl(): String {
