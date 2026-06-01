@@ -29,9 +29,13 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class Gerakin21 : MainAPI() {
     override var mainUrl = "https://gerakin21.cloud"
@@ -537,7 +541,11 @@ class Gerakin21 : MainAPI() {
                 .findAll(cleaned)
                 .forEach { queueUrl(it.value, base) }
 
-            Regex("""https?://(?:[^"'<>\s\\]+\.)?(?:streamtape|filemoon|vidhide|voe|dood|d000d|mixdrop|streamwish|wish|filelions|vidguard|vidplay|uqload|mp4upload|ok\.ru|sendvid|lulustream|wolfstream|streamruby|dropload|embedwish)[^"'<>\s\\]*""", RegexOption.IGNORE_CASE)
+            Regex("""https?://(?:[^"'<>\s\\]+\.)?(?:streamtape|filemoon|vidhide|voe|dood|d000d|mixdrop|streamwish|wish|filelions|vidguard|vidplay|uqload|mp4upload|ok\.ru|sendvid|lulustream|wolfstream|streamruby|dropload|embedwish|bysezoxexe)[^"'<>\s\\]*""", RegexOption.IGNORE_CASE)
+                .findAll(cleaned)
+                .forEach { queueUrl(it.value, base) }
+
+            Regex("""https?://fufafilm\.(?:upns\.pro|strp2p\.com)/#[A-Za-z0-9_-]+(?:&dl=1)?""", RegexOption.IGNORE_CASE)
                 .findAll(cleaned)
                 .forEach { queueUrl(it.value, base) }
         }
@@ -551,6 +559,8 @@ class Gerakin21 : MainAPI() {
                     "a[href*='voe'], a[href*='dood'], a[href*='mixdrop'], " +
                     "a[href*='streamwish'], a[href*='wish'], a[href*='filelions'], " +
                     "a[href*='vidguard'], a[href*='mp4upload'], a[href*='ok.ru'], " +
+                    "a[href*='fufafilm.upns.pro'], a[href*='fufafilm.strp2p.com'], " +
+                    "a[href*='bysezoxexe.com'], a[href*='byse'], " +
                     "[data-url], [data-src], [data-video], [data-file], [data-embed], [data-player], " +
                     "option[value]"
             ).forEach { element ->
@@ -600,6 +610,10 @@ class Gerakin21 : MainAPI() {
             if (isBadPlaybackUrl(next)) continue
 
             when {
+                tryResolveFufafilm(next, referer, callback) -> {
+                    found = true
+                }
+
                 isDirectM3u8(next) -> {
                     generateM3u8(
                         source = name,
@@ -669,6 +683,97 @@ class Gerakin21 : MainAPI() {
         }
 
         return found
+    }
+
+
+    private suspend fun tryResolveFufafilm(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host.orEmpty().lowercase()
+        if (host != "fufafilm.upns.pro" && host != "fufafilm.strp2p.com") return false
+
+        val videoId = uri.rawFragment
+            ?.substringBefore("&")
+            ?.substringBefore("?")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return false
+
+        val playerBase = "${uri.scheme ?: "https"}://$host"
+        val apiUrl = "$playerBase/api/v1/video?id=$videoId&w=1280&h=720&r=${URI(mainUrl).host.orEmpty()}"
+        val encrypted = runCatching {
+            app.get(
+                apiUrl,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "*/*"
+                ),
+                referer = "$mainUrl/",
+                timeout = 25L
+            ).text.trim()
+        }.getOrNull()?.takeIf { it.matches(Regex("""^[0-9a-fA-F]+$""")) } ?: return false
+
+        val decrypted = runCatching { decryptFufafilmPayload(encrypted) }.getOrNull() ?: return false
+        val json = runCatching { JSONObject(decrypted) }.getOrNull() ?: return false
+        var emitted = false
+
+        fun emitHls(raw: String?, sourceName: String) {
+            val fixed = resolveUrl(raw, playerBase) ?: return
+            if (!fixed.contains(".m3u8", true)) return
+            generateM3u8(
+                source = sourceName,
+                streamUrl = fixed,
+                referer = playerBase,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to playerBase
+                )
+            ).forEach(callback)
+            emitted = true
+        }
+
+        emitHls(json.optString("source"), "$name Fufafilm")
+        emitHls(json.optString("cf"), "$name Fufafilm CF")
+
+        val hlsVideoTiktok = json.optString("hlsVideoTiktok").takeIf { it.isNotBlank() }
+        if (hlsVideoTiktok != null) {
+            val version = runCatching {
+                val config = JSONObject(json.optString("streamingConfig"))
+                config.optJSONObject("adjust")
+                    ?.optJSONObject("Tiktok")
+                    ?.optJSONObject("params")
+                    ?.optString("v")
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+
+            val resolved = resolveUrl(hlsVideoTiktok, playerBase)?.let { hls ->
+                if (version != null && !hls.contains("?", true)) "$hls?v=$version" else hls
+            }
+            emitHls(resolved, "$name Fufafilm Tiktok")
+        }
+
+        return emitted
+    }
+
+    private fun decryptFufafilmPayload(hex: String): String {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        val key = SecretKeySpec("kiemtienmua911ca".toByteArray(Charsets.UTF_8), "AES")
+        val iv = IvParameterSpec("1234567890oiuytr".toByteArray(Charsets.UTF_8))
+        cipher.init(Cipher.DECRYPT_MODE, key, iv)
+        val decrypted = cipher.doFinal(hex.hexToBytes())
+        return String(decrypted, Charsets.UTF_8)
+    }
+
+    private fun String.hexToBytes(): ByteArray {
+        val clean = trim()
+        val result = ByteArray(clean.length / 2)
+        for (i in result.indices) {
+            val index = i * 2
+            result[i] = clean.substring(index, index + 2).toInt(16).toByte()
+        }
+        return result
     }
 
     private fun hasNextPage(document: Document, page: Int): Boolean {
@@ -790,7 +895,8 @@ class Gerakin21 : MainAPI() {
             "mixdrop", "streamwish", "wishfast", "filelions", "vidguard", "vidplay",
             "uqload", "mp4upload", "ok.ru", "sendvid", "lulustream", "wolfstream",
             "streamruby", "dropload", "embedwish", "short.icu", "abyss.to", "fastream",
-            "streamhub", "vidmoly", "upstream", "filegram", "streamsb"
+            "streamhub", "vidmoly", "upstream", "filegram", "streamsb",
+            "fufafilm.upns.pro", "fufafilm.strp2p.com", "bysezoxexe.com", "byse"
         ).any { lower.contains(it) }
     }
 
