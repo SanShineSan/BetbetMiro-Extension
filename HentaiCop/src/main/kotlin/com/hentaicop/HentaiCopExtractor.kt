@@ -35,6 +35,8 @@ object HentaiCopExtractor {
         """(?i)(?:https?:)?//[^\s'\"<>\\]+?(?:\.m3u8|\.mp4|googlevideo\.com/[^\s'\"<>\\]+|videoplayback[^\s'\"<>\\]*)(?:\?[^\s'\"<>\\]*)?"""
     )
     private val encodedHttpRegex = Regex("""https?%3A%2F%2F[^\s'\"<>]+""", RegexOption.IGNORE_CASE)
+    private val packedPageRegex = Regex("""(?s)var\s+p\s*=\s*[\"']([^\"']+)[\"']""")
+    private val rhsScriptRegex = Regex("""(?s)var\s+kodeRHS\s*=\s*[\"']([^\"']+)[\"']""")
 
     suspend fun loadLinks(
         providerName: String,
@@ -143,20 +145,34 @@ object HentaiCopExtractor {
         val embedText = runCatching {
             app.get(normalizedServer, headers = HentaiCopUtils.videoHeaders(server.referer), referer = server.referer).text
         }.getOrNull() ?: return serverFound
-        val embedDocument = Jsoup.parse(embedText, normalizedServer)
+        unpackPlayerTexts(embedText).forEach { unpackedText ->
+            val embedDocument = Jsoup.parse(unpackedText, normalizedServer)
 
-        collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
-        extractMedia(normalizedServer, normalizedServer, embedDocument).forEach { item ->
-            val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
-            if (emitted) serverFound = true
-        }
-
-        extractServers(normalizedServer, embedDocument)
-            .filterNot { it.url == normalizedServer || isPseudoUrl(it.url) }
-            .distinctBy { it.url }
-            .forEach { nested ->
-                if (resolveServer(providerName, nested, seenPages, seenLinks, subtitleCallback, callback, depth + 1)) serverFound = true
+            collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
+            extractMedia(normalizedServer, normalizedServer, embedDocument).forEach { item ->
+                val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
+                if (emitted) serverFound = true
             }
+
+            extractMediaFromText(normalizedServer, normalizedServer, unpackedText).forEach { item ->
+                val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
+                if (emitted) serverFound = true
+            }
+
+            extractServers(normalizedServer, embedDocument)
+                .filterNot { it.url == normalizedServer || isPseudoUrl(it.url) }
+                .distinctBy { it.url }
+                .forEach { nested ->
+                    if (resolveServer(providerName, nested, seenPages, seenLinks, subtitleCallback, callback, depth + 1)) serverFound = true
+                }
+
+            extractServersFromText(normalizedServer, server.name, unpackedText)
+                .filterNot { it.url == normalizedServer || isPseudoUrl(it.url) }
+                .distinctBy { it.url }
+                .forEach { nested ->
+                    if (resolveServer(providerName, nested, seenPages, seenLinks, subtitleCallback, callback, depth + 1)) serverFound = true
+                }
+        }
 
         return serverFound
     }
@@ -364,6 +380,42 @@ object HentaiCopExtractor {
         }
 
         return media.distinctBy { it.url }
+    }
+
+    private fun unpackPlayerTexts(text: String): List<String> {
+        val texts = linkedSetOf(normalizedHtml(text))
+
+        texts.toList().forEach { source ->
+            packedPageRegex.findAll(source).forEach { match ->
+                decodeReversedBase64(match.groupValues[1])?.let { decodedPage ->
+                    texts.add(normalizedHtml(decodedPage))
+                }
+            }
+        }
+
+        texts.toList().forEach { source ->
+            rhsScriptRegex.findAll(source).forEach { match ->
+                decodeBase64(match.groupValues[1])?.let { decodedScript ->
+                    texts.add(normalizedHtml(decodedScript))
+                }
+            }
+        }
+
+        return texts.toList()
+    }
+
+    private fun decodeReversedBase64(value: String): String? {
+        val reversed = value.trim().reversed()
+        return decodeBase64(reversed)?.let { decodeUrl(it) }
+    }
+
+    private fun decodeBase64(value: String): String? {
+        val raw = value.trim()
+        if (raw.isBlank()) return null
+        return runCatching {
+            val padded = raw.padEnd(raw.length + ((4 - raw.length % 4) % 4), '=')
+            String(java.util.Base64.getDecoder().decode(padded))
+        }.getOrNull()
     }
 
     private fun normalizedHtml(document: Document): String = normalizedHtml(document.html())
