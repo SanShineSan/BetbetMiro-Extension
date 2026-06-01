@@ -494,19 +494,19 @@ class IdlixProvider : MainAPI() {
         return urls.distinct()
     }
 
-    private fun extractIframeSubtitles(
+    private suspend fun extractIframeSubtitles(
         iframeText: String,
         iframeUrl: String,
     ): List<SubtitleFile> {
         val subtitles = mutableListOf<SubtitleFile>()
         val subRegex = Regex("""\"label\"\s*:\s*\"([^\"]*?)\"[^}]*?\"path\"\s*:\s*\"([^\"]*?)\"""")
 
-        subRegex.findAll(iframeText).forEach { match ->
+        for (match in subRegex.findAll(iframeText)) {
             val label = match.groupValues[1].ifBlank { "Subtitle" }
             val path = match.groupValues[2]
                 .replace("\\/", "/")
                 .fixAgainst(iframeUrl)
-                ?: return@forEach
+                ?: continue
             subtitles.add(newSubtitleFile(label, path))
         }
 

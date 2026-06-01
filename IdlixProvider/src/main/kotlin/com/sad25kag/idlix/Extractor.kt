@@ -99,7 +99,7 @@ class Majorplay : ExtractorApi() {
 
         val subRegex = Regex("""\\"label\\":\\"([^\\"]*?)\\"[^}]*?\\"path\\":\\"([^\\"]*?)\\"""")
 
-        subRegex.findAll(scripts).forEach { match ->
+        for (match in subRegex.findAll(scripts)) {
             val label = match.groupValues[1]
             var vttUrl = match.groupValues[2]
 
