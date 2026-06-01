@@ -2,6 +2,7 @@ package com.sad25kag.Animekhor
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -186,57 +187,35 @@ open class Animekhor : MainAPI() {
         val candidates = linkedSetOf<String>()
 
         fun addCandidate(raw: String?) {
-            val cleaned = raw?.trim()
-                ?.replace("&amp;", "&")
-                ?.replace("\\/", "/")
-                ?.takeIf { it.isNotBlank() } ?: return
-
-            val fixed = when {
-                cleaned.startsWith("//") -> httpsify(cleaned)
-                cleaned.startsWith("/") -> "$mainUrl$cleaned"
-                cleaned.startsWith("http", true) -> cleaned
-                else -> return
-            }
-
-            if (!isBadPlayerCandidate(fixed)) candidates.add(fixed)
+            normalizePlayerUrl(raw)?.let { candidates.add(it) }
         }
 
-        fun addFromDecodedOption(value: String) {
+        fun addDecodedMirror(value: String) {
             if (value.isBlank()) return
-            runCatching { base64Decode(value) }.getOrNull()?.let { decoded ->
-                listOf(
-                    Regex("""(?i)iframe[^>]+src=["']([^"']+)["']"""),
-                    Regex("""(?i)src=["']([^"']+)["']"""),
-                    Regex("""(?i)data-src=["']([^"']+)["']"""),
-                    Regex("""(?i)file\s*[:=]\s*["']([^"']+)["']"""),
-                    Regex("""(?i)url\s*[:=]\s*["']([^"']+)["']""")
-                ).forEach { regex -> regex.findAll(decoded).forEach { addCandidate(it.groupValues[1]) } }
+
+            val decoded = runCatching { base64Decode(value) }.getOrNull() ?: return
+            val decodedDocument = Jsoup.parse(decoded)
+
+            decodedDocument.select("iframe[src]").forEach { iframe ->
+                addCandidate(iframe.attr("src"))
             }
         }
 
-        document.select(".mobius option, #mobius option, select option").forEach { option ->
-            addFromDecodedOption(option.attr("value"))
+        document.select("#pembed iframe[src], .player-embed iframe[src], .video-content iframe[src]").forEach { iframe ->
+            addCandidate(iframe.attr("src"))
         }
 
-        document.select("iframe[src], iframe[data-src], source[src], video[src], video[data-src], [data-video], [data-src], [data-url], a[href]")
-            .forEach { element ->
-                addCandidate(element.attr("src"))
-                addCandidate(element.attr("data-src"))
-                addCandidate(element.attr("data-video"))
-                addCandidate(element.attr("data-url"))
-
-                val href = element.attr("href")
-                val label = element.text()
-                if (label.contains("download", true) || label.contains("player", true) || isKnownPlayerHost(href)) {
-                    addCandidate(href)
-                }
-            }
+        document.select(".mobius select.mirror option[value], select.mirror option[value]").forEach { option ->
+            addDecodedMirror(option.attr("value"))
+        }
 
         var found = false
         candidates.forEach { url ->
             if (isOkruUrl(url)) return@forEach
+
+            val referer = if (isAnimekhorPlayer(url)) mainUrl else data
             try {
-                loadExtractor(url = url, referer = data, subtitleCallback = subtitleCallback) { link ->
+                loadExtractor(url = url, referer = referer, subtitleCallback = subtitleCallback) { link ->
                     found = true
                     callback(link)
                 }
@@ -247,9 +226,31 @@ open class Animekhor : MainAPI() {
         return found
     }
 
+    private fun normalizePlayerUrl(raw: String?): String? {
+        val cleaned = raw?.trim()
+            ?.replace("&amp;", "&")
+            ?.replace("\\/", "/")
+            ?.takeIf { it.isNotBlank() } ?: return null
+
+        val fixed = when {
+            cleaned.startsWith("//") -> httpsify(cleaned)
+            cleaned.startsWith("/") -> "$mainUrl$cleaned"
+            cleaned.startsWith("http", true) -> cleaned
+            else -> return null
+        }
+
+        return fixed.takeUnless { isBadPlayerCandidate(it) }
+    }
+
+    private fun isAnimekhorPlayer(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("animekhor.p2pstream.vip") || lower.contains("animekhor.upns.live")
+    }
+
     private fun isBadPlayerCandidate(url: String): Boolean {
         val lower = url.lowercase()
-        return lower.contains("/anime/") || lower.contains("/genre/") ||
+        return lower.contains("acceptable.a-ads.com") ||
+            lower.contains("/anime/") || lower.contains("/genre/") ||
             lower.contains("/genres/") || lower.contains("/tag/") ||
             lower.contains("/schedule") || lower.contains("facebook.com") ||
             lower.contains("twitter.com") || lower.contains("telegram") ||
@@ -257,20 +258,6 @@ open class Animekhor : MainAPI() {
             lower.endsWith(".jpeg") || lower.endsWith(".png") ||
             lower.endsWith(".webp") || lower.endsWith(".gif") ||
             lower.endsWith(".css") || lower.endsWith(".js")
-    }
-
-    private fun isKnownPlayerHost(url: String): Boolean {
-        val lower = url.lowercase()
-        return lower.contains("dailymotion") || lower.contains("rumble") ||
-            lower.contains("mp4upload") || lower.contains("filemoon") ||
-            lower.contains("vidhide") || lower.contains("vidguard") ||
-            lower.contains("streamwish") || lower.contains("embedwish") ||
-            lower.contains("filelions") || lower.contains("p2pstream") ||
-            lower.contains("donghuaworld") || lower.contains("donghuaplanet") ||
-            lower.contains("vipdownloaderxyz.blogspot") || lower.contains("blogspot.com") ||
-            lower.contains("odysee.com") || lower.contains("abyss.to") ||
-            lower.contains("mir.cr") || lower.contains(".m3u8") ||
-            lower.contains(".mp4")
     }
 
     private fun isOkruUrl(url: String): Boolean {

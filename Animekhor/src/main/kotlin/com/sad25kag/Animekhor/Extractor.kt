@@ -9,14 +9,13 @@ import com.lagradost.cloudstream3.extractors.VidHidePro
 import com.lagradost.cloudstream3.extractors.VidStack
 import com.lagradost.cloudstream3.extractors.VidhideExtractor
 import com.lagradost.cloudstream3.newSubtitleFile
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONArray
 
 class embedwish : StreamWishExtractor() {
     override var mainUrl = "https://embedwish.com"
@@ -24,6 +23,10 @@ class embedwish : StreamWishExtractor() {
 
 class P2pstream : VidStack() {
     override var mainUrl = "https://animekhor.p2pstream.vip"
+}
+
+class AnimekhorUpns : VidStack() {
+    override var mainUrl = "https://animekhor.upns.live"
 }
 
 class Filelions : VidhideExtractor() {
@@ -74,26 +77,29 @@ open class Rumble : ExtractorApi() {
             ?.replace("\\/", "/")
 
         sourcesJson?.let { raw ->
-            tryParseJson<List<Map<String, String>>>(raw)?.forEach { source ->
-                val fileUrl = source["file"] ?: return@forEach
-                val label = source["label"] ?: ""
-                val type = source["type"] ?: ""
+            runCatching { JSONArray(raw) }.getOrNull()?.let { sources ->
+                for (index in 0 until sources.length()) {
+                    val source = sources.optJSONObject(index) ?: continue
+                    val fileUrl = source.optString("file").takeIf { it.isNotBlank() } ?: continue
+                    val label = source.optString("label")
+                    val type = source.optString("type")
 
-                try {
-                    when {
-                        type.contains("mpegURL") || fileUrl.contains(".m3u8") ->
-                            M3u8Helper.generateM3u8(name, fileUrl, mainUrl).forEach(callback)
+                    try {
+                        when {
+                            type.contains("mpegURL") || fileUrl.contains(".m3u8") ->
+                                M3u8Helper.generateM3u8(name, fileUrl, mainUrl).forEach(callback)
 
-                        fileUrl.contains(".mp4") ->
-                            callback.invoke(
-                                newExtractorLink(name, "$name $label", url = fileUrl, INFER_TYPE) {
-                                    this.referer = referer ?: mainUrl
-                                    this.quality = getQualityFromName(label)
-                                }
-                            )
+                            fileUrl.contains(".mp4") ->
+                                callback.invoke(
+                                    newExtractorLink(name, "$name $label", url = fileUrl, INFER_TYPE) {
+                                        this.referer = referer ?: mainUrl
+                                        this.quality = getQualityFromName(label)
+                                    }
+                                )
+                        }
+                    } catch (e: Exception) {
+                        Log.e(name, "Source failed [$label]: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.e(name, "Source failed [$label]: ${e.message}")
                 }
             }
         }
@@ -110,11 +116,14 @@ open class Rumble : ExtractorApi() {
             ?.replace("\\/", "/")
 
         tracksJsonRaw?.let { raw ->
-            tryParseJson<List<Map<String, String>>>(raw)?.forEach { track ->
-                val file = track["file"] ?: return@forEach
-                val label = track["label"] ?: "Unknown"
-                if (file.endsWith(".vtt")) {
-                    subtitleCallback.invoke(newSubtitleFile(label, file))
+            runCatching { JSONArray(raw) }.getOrNull()?.let { tracks ->
+                for (index in 0 until tracks.length()) {
+                    val track = tracks.optJSONObject(index) ?: continue
+                    val file = track.optString("file").takeIf { it.isNotBlank() } ?: continue
+                    val label = track.optString("label").ifBlank { "Unknown" }
+                    if (file.endsWith(".vtt")) {
+                        subtitleCallback.invoke(newSubtitleFile(label, file))
+                    }
                 }
             }
         }
