@@ -2,6 +2,8 @@ package com.sad25kag.FreeReels
 
 import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.ErrorLoadingException
@@ -25,7 +27,6 @@ import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -38,6 +39,17 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+
+@PublishedApi
+internal val freeReelsJsonMapper = jacksonObjectMapper().apply {
+    configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+}
+
+internal inline fun <reified T> tryParseFreeReelsJson(value: String): T? {
+    return runCatching {
+        freeReelsJsonMapper.readValue(value, T::class.java)
+    }.getOrNull()
+}
 
 class FreeReels : MainAPI() {
     override var mainUrl = "https://m.mydramawave.com"
@@ -184,7 +196,7 @@ class FreeReels : MainAPI() {
                 requestBody = reqBody
             ).text
 
-            val authData = tryParseJson<NativeAuthResponse>(res)
+            val authData = tryParseFreeReelsJson<NativeAuthResponse>(res)
 
             sessionToken = authData?.data?.authKey ?: authData?.data?.token
             sessionSecret = authData?.data?.authSecret.orEmpty()
@@ -227,7 +239,7 @@ class FreeReels : MainAPI() {
             "$nativeApiUrl/homepage/v2/tab/index?tab_key=${category.tabKey}&position_index=${category.posIndex}&rec_trigger=0"
 
         val res = app.get(indexUrl, headers = getNativeHeaders()).text
-        val moduleIndex = tryParseJson<UniversalFeedResponse>(res)?.data
+        val moduleIndex = tryParseFreeReelsJson<UniversalFeedResponse>(res)?.data
             ?: return emptyList<UniversalItem>() to false
 
         if (page <= 1) {
@@ -262,7 +274,7 @@ class FreeReels : MainAPI() {
                 requestBody = reqBody
             ).text
 
-            currentData = tryParseJson<UniversalFeedResponse>(feedRes)?.data
+            currentData = tryParseFreeReelsJson<UniversalFeedResponse>(feedRes)?.data
             currentNext = currentData?.pageInfo?.next
         }
 
@@ -338,7 +350,7 @@ class FreeReels : MainAPI() {
 
         val searchItems = mutableListOf<UniversalItem>()
         val dataObj = runCatching {
-            tryParseJson<UniversalFeedResponse>(res)?.data
+            tryParseFreeReelsJson<UniversalFeedResponse>(res)?.data
         }.getOrNull()
 
         extractMovies(dataObj, searchItems)
@@ -373,7 +385,7 @@ class FreeReels : MainAPI() {
                 headers = getNativeHeaders(isVip = true)
             ).text
 
-            info = tryParseJson<NativeDetailResponse>(resRaw)?.data?.info
+            info = tryParseFreeReelsJson<NativeDetailResponse>(resRaw)?.data?.info
         }
 
         if (info?.episodeList.isNullOrEmpty()) {
@@ -384,7 +396,7 @@ class FreeReels : MainAPI() {
                 ).text
 
                 val fallbackRes = decryptIfNeeded(fallbackRaw)
-                val fallbackInfo = tryParseJson<NativeDetailResponse>(fallbackRes)?.data?.info
+                val fallbackInfo = tryParseFreeReelsJson<NativeDetailResponse>(fallbackRes)?.data?.info
 
                 if (fallbackInfo != null && !fallbackInfo.episodeList.isNullOrEmpty()) {
                     info = fallbackInfo
@@ -430,7 +442,7 @@ class FreeReels : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val ep = tryParseJson<NativeEpisode>(data) ?: return false
+        val ep = tryParseFreeReelsJson<NativeEpisode>(data) ?: return false
 
         val videoUrl = ep.externalAudioH264
             ?: ep.externalAudioH265
