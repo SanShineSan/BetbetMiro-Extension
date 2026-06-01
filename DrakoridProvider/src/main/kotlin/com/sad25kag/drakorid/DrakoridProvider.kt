@@ -323,15 +323,17 @@ class DrakoridProvider : MainAPI() {
                 decryptSeekPlayerHex(hexResponse)
             }.getOrNull() ?: return@forEach
 
-            val mediaUrl = Regex("""https?:\\?/\\?/[^\"'\\s<>]+?(?:\\.m3u8|\\.mp4)[^\"'\\s<>]*""")
-                .find(decrypted)
-                ?.value
-                ?.replace("\\/", "/")
-                ?: Regex("""[\"']([^\"']+?(?:\\.m3u8|\\.mp4)[^\"']*)[\"']""")
-                    .find(decrypted)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    ?.replace("\\/", "/")
+            val normalized = decrypted.replace("\\/", "/")
+            val mediaUrl = runCatching {
+                val json = JSONObject(normalized)
+                listOf(
+                    json.optString("source"),
+                    json.optString("cf")
+                ).firstOrNull { it.contains(".m3u8", true) || it.contains(".mp4", true) }
+            }.getOrNull()
+                ?: Regex("""https?://[^\"'\s<>]+?(?:\.m3u8|\.mp4)[^\"'\s<>]*""")
+                    .find(normalized)
+                    ?.value
 
             if (!mediaUrl.isNullOrBlank()) {
                 emitDirect(mediaUrl, iframeSrc, callback)
@@ -344,7 +346,7 @@ class DrakoridProvider : MainAPI() {
 
     private fun decryptSeekPlayerHex(hex: String): String {
         val secretKey = "kiemtienmua911ca".toByteArray(Charsets.UTF_8)
-        val ivBytes = ByteArray(16) { index -> if (index < 9) index.toByte() else 32.toByte() }
+        val ivBytes = "1234567890oiuytr".toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(secretKey, "AES"), IvParameterSpec(ivBytes))
         val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
