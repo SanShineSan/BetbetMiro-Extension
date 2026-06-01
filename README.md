@@ -183,8 +183,6 @@ Untuk menjaga kualitas perbaikan, perubahan provider dilakukan secara bertahap d
 - Patch tidak dibuat berdasarkan tebakan, fallback acak, atau penambahan host tanpa bukti dari source aktif.
 - Setiap provider yang diubah wajib menaikkan `version` di `build.gradle.kts`.
 
-Jika melaporkan masalah playback atau `loadLinks()` 0 link, HAR/network capture sangat membantu untuk menemukan iframe, API player, token, referer, redirect, dan direct video URL yang benar. Jangan kirim HAR dari situs yang membutuhkan login atau mengandung cookie/session pribadi.
-
 ---
 
 ## 📝 Melaporkan Error
