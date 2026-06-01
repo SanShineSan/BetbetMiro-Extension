@@ -175,14 +175,6 @@ in class com.lagradost.cloudstream3.utils.AppUtils
 
 Error seperti ini biasanya menandakan perubahan kompatibilitas API/runtime CloudStream, bukan selalu berarti website sumber sedang mati. Provider yang masih memakai parser lama perlu diperbarui agar sesuai dengan runtime CloudStream terbaru.
 
-Untuk menjaga kualitas perbaikan, perubahan provider dilakukan secara bertahap dan berbasis bukti:
-
-- Error kompatibilitas ringan diperbaiki langsung pada bagian yang terbukti bermasalah.
-- Masalah `search()` diverifikasi dari domain, endpoint, dan struktur halaman sumber.
-- Masalah `loadLinks()` hanya diperbaiki setelah ada bukti valid dari HTML/DOM player, network log, atau HAR capture.
-- Patch tidak dibuat berdasarkan tebakan, fallback acak, atau penambahan host tanpa bukti dari source aktif.
-- Setiap provider yang diubah wajib menaikkan `version` di `build.gradle.kts`.
-
 ---
 
 ## 📝 Melaporkan Error
