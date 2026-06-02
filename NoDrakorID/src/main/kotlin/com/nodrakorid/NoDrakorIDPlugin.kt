@@ -20,6 +20,7 @@ class NoDrakorIDPlugin : Plugin() {
         registerExtractorAPI(NoDrakorIDStreamcasthub())
         registerExtractorAPI(NoDrakorIDDm21embed())
         registerExtractorAPI(NoDrakorIDMeplayer())
+        registerExtractorAPI(NoDrakorIDAbyssPlayer())
         registerExtractorAPI(NoDrakorIDStreamWish())
         registerExtractorAPI(NoDrakorIDFileMoon())
         registerExtractorAPI(NoDrakorIDDood())

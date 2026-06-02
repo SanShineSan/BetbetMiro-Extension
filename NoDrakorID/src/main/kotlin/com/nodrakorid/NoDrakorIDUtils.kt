@@ -36,6 +36,7 @@ internal object NoDrakorIDUtils {
     }
 
     fun cleanTitle(raw: String?): String = cleanText(raw)
+        .replace(Regex("(?i)^permalink\\s+to:\\s*"), "")
         .replace(Regex("(?i)^nonton\\s+(film\\s+)?"), "")
         .replace(Regex("(?i)\\s+subtitle\\s+indonesia.*$"), "")
         .replace(Regex("(?i)\\s+sub\\s+indo.*$"), "")
@@ -116,9 +117,16 @@ internal object NoDrakorIDUtils {
     fun isContentUrl(url: String): Boolean {
         val lower = url.lowercase()
         if (!lower.startsWith(NoDrakorIDSepeda.MAIN_URL)) return false
-        if (listOf("/genre/", "/country/", "/year/", "/tag/", "/page/", "/category/", "/dmca", "/privacy", "/contact").any { lower.contains(it) }) return false
-        if (listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".css", ".js", ".ico").any { lower.substringBefore('?').endsWith(it) }) return false
-        return lower.trimEnd('/').substringAfterLast('/').isNotBlank()
+        val normalized = lower.substringBefore("#").substringBefore("?").trimEnd('/')
+        val root = NoDrakorIDSepeda.MAIN_URL.lowercase().trimEnd('/')
+        if (normalized == root) return false
+        if (listOf(
+                "/genre/", "/country/", "/year/", "/tag/", "/page/", "/category/",
+                "/cast/", "/director/", "/author/", "/feed/", "/wp-", "/dmca", "/privacy", "/contact"
+            ).any { lower.contains(it) }
+        ) return false
+        if (listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".ico").any { normalized.endsWith(it) }) return false
+        return normalized.substringAfterLast('/').isNotBlank()
     }
 
     fun typeFrom(url: String, title: String, text: String = ""): com.lagradost.cloudstream3.TvType {
@@ -187,7 +195,8 @@ internal object NoDrakorIDUtils {
         return listOf(
             "jeniusplay", "majorplay", "m3u8play", "e2eplay", "streamwish", "filemoon", "dood", "doodstream", "streamtape", "mp4upload",
             "hglink", "ghbrisk", "dhcplay", "streamcasthub", "dm21", "meplayer", "gdplayer", "filepress", "blogger.com", "googleusercontent",
-            "googlevideo", "video.google", "lulu", "lulustream", "vidhide", "vidguard", "voe", "mixdrop", "upstream", "filelions", "vidsrc", "embedwish", "player4u"
+            "googlevideo", "video.google", "lulu", "lulustream", "vidhide", "vidguard", "voe", "mixdrop", "upstream", "filelions", "vidsrc", "embedwish", "player4u",
+            "abyssplayer", "abyss.to", "sssrr.org"
         ).any { host.contains(it) }
     }
 

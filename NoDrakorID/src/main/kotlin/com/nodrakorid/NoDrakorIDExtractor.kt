@@ -2,6 +2,7 @@ package com.nodrakorid
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.mapper
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.extractors.DoodLaExtractor
 import com.lagradost.cloudstream3.extractors.StreamWishExtractor
@@ -20,6 +21,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.security.MessageDigest
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+
+private data class NoDrakorIDAbyssPayload(
+    val slug: String,
+    val md5Id: String,
+    val userId: String,
+    val media: String
+)
 
 internal object NoDrakorIDExtractor {
     private const val EXTRACT_TIMEOUT_MS = 45_000L
@@ -286,6 +299,10 @@ internal object NoDrakorIDExtractor {
             return emitDirect(fixedUrl, referer, label, callback)
         }
 
+        if (fixedUrl.contains("abyssplayer.com", true) || fixedUrl.contains("abyss.to", true)) {
+            if (resolveAbyssPlayer(fixedUrl, referer, callback)) return true
+        }
+
         if (fixedUrl.lowercase().contains("filepress") && fixedUrl.contains("/file/")) {
             resolveFilePress(fixedUrl, referer, label, subtitleCallback, callback, visited, depth + 1)?.let { if (it) return true }
         }
@@ -339,6 +356,93 @@ internal object NoDrakorIDExtractor {
             )
             true
         }
+    }
+
+    private suspend fun resolveAbyssPlayer(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val pageUrl = NoDrakorIDUtils.decodeKnownRedirect(url)
+        val html = withTimeoutOrNull(REQUEST_TIMEOUT_MS) {
+            runCatching { app.get(pageUrl, referer = referer, headers = NoDrakorIDUtils.browserHeaders, timeout = REQUEST_TIMEOUT_MS).text }.getOrNull()
+        }.orEmpty()
+        if (html.isBlank()) return false
+        return emitAbyssFromHtml(pageUrl, html, callback)
+    }
+
+    fun extractAbyssForHost(
+        pageUrl: String,
+        html: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean = emitAbyssFromHtml(pageUrl, html, callback)
+
+    private fun emitAbyssFromHtml(
+        pageUrl: String,
+        html: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val payload = parseAbyssPayload(html) ?: return false
+        val mediaJson = decryptAbyssMedia(payload) ?: return false
+        val root = runCatching { mapper.readTree(mediaJson) }.getOrNull() ?: return false
+        val sources = root.path("mp4").path("sources")
+        var emitted = false
+        if (!sources.isArray) return false
+        sources.forEach { source ->
+            val status = source.path("status").asBoolean(true)
+            val host = source.path("url").asText("").trimEnd('/')
+            val path = source.path("path").asText("").trimStart('/')
+            if (!status || host.isBlank() || path.isBlank()) return@forEach
+            val label = source.path("label").asText("AbyssPlayer")
+            val videoUrl = "$host/$path"
+            callback(
+                newExtractorLink(
+                    source = "AbyssPlayer",
+                    name = "AbyssPlayer $label",
+                    url = videoUrl,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = pageUrl
+                    this.quality = getQualityFromName(label).takeIf { it != Qualities.Unknown.value } ?: getQualityFromName(videoUrl)
+                    this.headers = mapOf(
+                        "Referer" to "https://abyssplayer.com/",
+                        "Origin" to "https://abyssplayer.com",
+                        "User-Agent" to USER_AGENT
+                    )
+                }
+            )
+            emitted = true
+        }
+        return emitted
+    }
+
+    private fun parseAbyssPayload(html: String): NoDrakorIDAbyssPayload? {
+        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=]+)["']""")
+            .find(html)?.groupValues?.getOrNull(1) ?: return null
+        val json = runCatching { String(Base64.getDecoder().decode(encoded), Charsets.ISO_8859_1) }.getOrNull() ?: return null
+        val node = runCatching { mapper.readTree(json) }.getOrNull() ?: return null
+        val slug = node.path("slug").asText("")
+        val md5Id = node.path("md5_id").asText("")
+        val userId = node.path("user_id").asText("")
+        val media = node.path("media").asText("")
+        if (slug.isBlank() || md5Id.isBlank() || userId.isBlank() || media.isBlank()) return null
+        return NoDrakorIDAbyssPayload(slug, md5Id, userId, media)
+    }
+
+    private fun decryptAbyssMedia(payload: NoDrakorIDAbyssPayload): String? {
+        return runCatching {
+            val key = md5Hex("${payload.userId}:${payload.slug}:${payload.md5Id}").toByteArray(Charsets.UTF_8)
+            val counter = key.copyOfRange(0, 16)
+            val encrypted = ByteArray(payload.media.length) { index -> payload.media[index].code.toByte() }
+            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(counter))
+            String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    private fun md5Hex(value: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
     }
 
     private suspend fun safeLoadExtractor(
@@ -475,6 +579,9 @@ open class NoDrakorIDHostExtractor : ExtractorApi() {
         val pageUrl = NoDrakorIDUtils.decodeKnownRedirect(url)
         val ref = referer ?: NoDrakorIDSepeda.MAIN_URL
         val html = runCatching { app.get(pageUrl, referer = ref, headers = NoDrakorIDUtils.browserHeaders, timeout = 15L).text }.getOrNull().orEmpty()
+        if (pageUrl.contains("abyssplayer.com", true) || pageUrl.contains("abyss.to", true)) {
+            if (NoDrakorIDExtractor.extractAbyssForHost(pageUrl, html, callback)) return
+        }
         val normalized = NoDrakorIDUtils.decodeHtml(NoDrakorIDUtils.decodeUrlRepeated(html)).replace("\\/", "/")
         val urls = NoDrakorIDUtils.extractUrlsFromText(pageUrl, normalized)
             .filter { NoDrakorIDUtils.looksDirectVideo(it) || NoDrakorIDUtils.isKnownPlayableHost(it) }
@@ -575,4 +682,9 @@ class NoDrakorIDDm21embed : VidStack() {
 class NoDrakorIDMeplayer : VidStack() {
     override var name = "Meplayer"
     override var mainUrl = "https://meplayer.xyz"
+}
+
+class NoDrakorIDAbyssPlayer : NoDrakorIDHostExtractor() {
+    override var name = "AbyssPlayer"
+    override var mainUrl = "https://abyssplayer.com"
 }
