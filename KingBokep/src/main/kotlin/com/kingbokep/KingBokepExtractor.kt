@@ -2,6 +2,7 @@ package com.kingbokep
 
 import com.kingbokep.KingBokepUtils.absoluteUrl
 import com.kingbokep.KingBokepUtils.cleanText
+import com.kingbokep.KingBokepUtils.decodeLoadData
 import com.kingbokep.KingBokepUtils.decodeUrl
 import com.kingbokep.KingBokepUtils.isPseudoUrl
 import com.kingbokep.KingBokepUtils.qualityFromText
@@ -10,7 +11,6 @@ import com.lagradost.api.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
@@ -137,6 +137,12 @@ object KingBokepExtractor {
             }
         }
 
+        document.select("meta[property=og:video], meta[property=og:video:url], meta[property=og:video:secure_url], meta[name=twitter:player:stream], meta[itemprop=contentUrl], link[itemprop=contentUrl]").forEach { element ->
+            absoluteUrl(pageUrl, element.attr("content").ifBlank { element.attr("href") })?.takeIf { !isPseudoUrl(it) }?.let { url ->
+                servers.add(KingBokepServer("KingBokep HLS", url, pageUrl, hlsCandidate = url.contains("m3u8", true)))
+            }
+        }
+
         document.select("video source[src], source[src], a[href*='.m3u8'], a[href*='.mp4']").forEach { element ->
             val raw = element.attr("src").ifBlank { element.attr("href") }
             absoluteUrl(pageUrl, raw)?.takeIf { !isPseudoUrl(it) }?.let { url ->
@@ -260,13 +266,9 @@ object KingBokepExtractor {
         val raw = data.trim()
         if (raw.startsWith("http")) return raw
         if (raw.startsWith("{")) {
-            return try {
-                val parsed = parseJson<KingBokepLoadData>(raw)
-                parsed.url?.takeIf { it.startsWith("http") }
-                    ?: parsed.id?.let { "$mainUrl/view/${it.trim('/')}/" }
-            } catch (_: Throwable) {
-                null
-            }
+            val parsed = decodeLoadData(raw) ?: return null
+            return parsed.url?.takeIf { it.startsWith("http") }
+                ?: parsed.id?.let { "$mainUrl/view/${it.trim('/')}/" }
         }
         return if (raw.isNotBlank()) "$mainUrl/view/${raw.trim('/')}/" else null
     }

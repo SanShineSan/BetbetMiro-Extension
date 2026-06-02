@@ -122,6 +122,76 @@ object KingBokepUtils {
             lower.startsWith("tel:")
     }
 
+
+    fun encodeLoadData(data: KingBokepLoadData): String {
+        return buildString {
+            append('{')
+            append("\"url\":\"").append(jsonEscape(data.url.orEmpty())).append("\"")
+            data.id?.takeIf { it.isNotBlank() }?.let {
+                append(",\"id\":\"").append(jsonEscape(it)).append("\"")
+            }
+            data.title?.takeIf { it.isNotBlank() }?.let {
+                append(",\"title\":\"").append(jsonEscape(it)).append("\"")
+            }
+            append('}')
+        }
+    }
+
+    fun decodeLoadData(data: String): KingBokepLoadData? {
+        val raw = data.trim()
+        if (!raw.startsWith("{")) return null
+        return KingBokepLoadData(
+            url = readJsonString(raw, "url"),
+            id = readJsonString(raw, "id"),
+            title = readJsonString(raw, "title")
+        )
+    }
+
+    private fun readJsonString(json: String, key: String): String? {
+        val match = Regex("\\\"" + Regex.escape(key) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"").find(json)
+            ?: return null
+        return jsonUnescape(match.groupValues[1]).takeIf { it.isNotBlank() }
+    }
+
+    private fun jsonEscape(value: String): String {
+        return value.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    private fun jsonUnescape(value: String): String {
+        val out = StringBuilder()
+        var index = 0
+        while (index < value.length) {
+            val current = value[index]
+            if (current == '\\' && index + 1 < value.length) {
+                when (val next = value[index + 1]) {
+                    '\\' -> out.append('\\')
+                    '"' -> out.append('"')
+                    '/' -> out.append('/')
+                    'n' -> out.append('\n')
+                    'r' -> out.append('\r')
+                    't' -> out.append('\t')
+                    'b' -> out.append('\b')
+                    'f' -> out.append('\u000C')
+                    'u' -> {
+                        val hex = value.substring(index + 2, (index + 6).coerceAtMost(value.length))
+                        out.append(hex.toIntOrNull(16)?.toChar() ?: next)
+                        index += 4
+                    }
+                    else -> out.append(next)
+                }
+                index += 2
+            } else {
+                out.append(current)
+                index++
+            }
+        }
+        return out.toString()
+    }
+
     fun qualityFromText(value: String?): Int {
         val lower = value.orEmpty().lowercase()
         return when {

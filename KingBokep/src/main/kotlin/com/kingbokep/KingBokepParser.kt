@@ -6,10 +6,10 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.kingbokep.KingBokepUtils.absoluteUrl
 import com.kingbokep.KingBokepUtils.cleanText
 import com.kingbokep.KingBokepUtils.durationMinutes
+import com.kingbokep.KingBokepUtils.encodeLoadData
 import com.kingbokep.KingBokepUtils.isVideoUrl
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -87,11 +87,13 @@ object KingBokepParser {
             .filterNot { it.url.trimEnd('/') == url.trimEnd('/') }
             .take(12)
 
-        val data = KingBokepLoadData(
-            url = url,
-            id = url.trimEnd('/').substringAfterLast('/'),
-            title = title
-        ).toJson()
+        val data = encodeLoadData(
+            KingBokepLoadData(
+                url = url,
+                id = url.trimEnd('/').substringAfterLast('/'),
+                title = title
+            )
+        )
 
         return api.newMovieLoadResponse(title, url, TvType.NSFW, data) {
             this.posterUrl = poster
