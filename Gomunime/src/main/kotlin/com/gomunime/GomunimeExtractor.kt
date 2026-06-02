@@ -20,7 +20,7 @@ object GomunimeExtractor {
     private const val BLOGGER_REFERER = "https://www.blogger.com/"
 
     private val keyValueMediaRegex = Regex(
-        """(?i)(?:file|src|source|url|hls|playlist|videoUrl|hlsUrl|video_url|embed_url|iframe_url|defaultStreamingUrl)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
+        """(?i)['\"]?(?:file|src|source|url|hls|playlist|videoUrl|videoSrc|streamUrl|hlsUrl|video_url|embedUrl|embed_url|contentUrl|content_url|iframeUrl|iframe_url|playerUrl|player_url|downloadUrl|download_url|defaultStreamingUrl)['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]"""
     )
     private val dataAttrRegex = Regex(
         """(?i)data-(?:src|url|embed|iframe|link|server|player|video|em|id|nume|post|hash|token)\s*=\s*['\"]([^'\"]+)['\"]"""
@@ -114,6 +114,8 @@ object GomunimeExtractor {
             if (emitCandidate(providerName, candidate, subtitleCallback, callback)) found = true
         }
 
+        if (found && normalizedUrl.isKnownInlinePlayerHost()) return true
+
         for (server in extractServers(mainUrl, normalizedUrl, document)) {
             if (loadFromUrl(server.name.ifBlank { providerName }, mainUrl, server.url, normalizedUrl, subtitleCallback, callback, visited, depth + 1)) {
                 found = true
@@ -150,14 +152,10 @@ object GomunimeExtractor {
                         video.url,
                         ExtractorLinkType.VIDEO
                     ) {
-                        val directReferer = if (video.url.contains("googlevideo.com", true)) BLOGGER_REFERER else candidate.url
+                        val directReferer = mediaReferer(video.url, candidate.url)
                         referer = directReferer
                         quality = video.quality
-                        headers = mapOf(
-                            "Referer" to directReferer,
-                            "User-Agent" to GomunimeUtils.USER_AGENT,
-                            "Accept" to "*/*"
-                        )
+                        headers = mediaHeaders(video.url, directReferer)
                     }
                 )
                 emitted = true
@@ -165,13 +163,14 @@ object GomunimeExtractor {
             if (emitted) return true
         }
 
-        if (candidate.url.contains(".m3u8", true) && candidate.url.isPlayableMediaUrl()) {
+        if (candidate.isHls || candidate.url.isLikelyHls()) {
+            val directReferer = mediaReferer(candidate.url, candidate.referer)
             val links = try {
                 generateM3u8(
                     source = sourceName,
                     streamUrl = candidate.url,
-                    referer = candidate.referer,
-                    headers = GomunimeUtils.headers
+                    referer = directReferer,
+                    headers = mediaHeaders(candidate.url, directReferer)
                 )
             } catch (_: Throwable) {
                 emptyList()
@@ -185,11 +184,7 @@ object GomunimeExtractor {
         }
 
         if (candidate.url.isDirectVideo()) {
-            val directReferer = when {
-                candidate.url.contains("googlevideo.com", true) -> BLOGGER_REFERER
-                candidate.url.contains("blogger.googleusercontent.com", true) -> BLOGGER_REFERER
-                else -> candidate.referer
-            }
+            val directReferer = mediaReferer(candidate.url, candidate.referer)
             callback(
                 newExtractorLink(
                     sourceName,
@@ -199,12 +194,7 @@ object GomunimeExtractor {
                 ) {
                     referer = directReferer
                     quality = qualityFromUrl(candidate.url)
-                    headers = mapOf(
-                        "Referer" to directReferer,
-                        "Origin" to "https://www.blogger.com",
-                        "User-Agent" to GomunimeUtils.USER_AGENT,
-                        "Accept" to "*/*"
-                    )
+                    headers = mediaHeaders(candidate.url, directReferer)
                 }
             )
             return true
@@ -321,7 +311,7 @@ object GomunimeExtractor {
             .mapNotNull { normalizeMediaUrl(mainUrl, pageUrl, it.groupValues[1]) }
             .forEach { servers.add(GomunimeServer("Script", it)) }
 
-        Regex("""(?i)['\"]((?:https?:)?//[^'\"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|btube|blogger|googlevideo|videoplayback)[^'\"]*)['\"]""")
+        Regex("""(?i)['\"]((?:https?:)?//[^'\"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|btube|anime-indo|xtwap|cepat|gdplayer|bubarindpr|blogger|googlevideo|videoplayback)[^'\"]*)['\"]""")
             .findAll(raw)
             .mapNotNull { absoluteUrl(pageUrl, it.groupValues[1]) ?: absoluteUrl(mainUrl, it.groupValues[1]) }
             .forEach { servers.add(GomunimeServer("Embed", it)) }
@@ -337,6 +327,12 @@ object GomunimeExtractor {
         document.select("video[src], video source[src], source[src]").forEach { source ->
             normalizeMediaUrl(mainUrl, referer, source.attr("src"))?.let { url ->
                 candidates.add(GomunimeMediaCandidate(url, "$sourceName Video", referer, url.isLikelyHls()))
+            }
+        }
+
+        document.select("meta[property=og:video], meta[property=og:video:url], meta[property=og:video:secure_url], meta[property=og:video:iframe], meta[itemprop=contentUrl], meta[itemprop=embedUrl], link[rel=video_src]").forEach { meta ->
+            normalizeMediaUrl(mainUrl, referer, meta.attr("content").ifBlank { meta.attr("href") })?.let { url ->
+                candidates.add(GomunimeMediaCandidate(url, "$sourceName Meta", referer, url.isLikelyHls()))
             }
         }
 
@@ -471,7 +467,7 @@ object GomunimeExtractor {
         return when {
             raw.startsWith("//") -> "https:$raw"
             raw.startsWith("http://") || raw.startsWith("https://") -> raw
-            raw.startsWith("/") -> absoluteUrl(mainUrl, raw)
+            raw.startsWith("/") -> absoluteUrl(referer, raw) ?: absoluteUrl(mainUrl, raw)
             else -> runCatching { URI(referer).resolve(raw).toString() }.getOrNull()
         }
     }
@@ -646,14 +642,49 @@ object GomunimeExtractor {
             .replace("\\", "")
     }
 
-    private fun String.isLikelyHls(): Boolean {
-        val lower = lowercase()
-        return lower.contains(".m3u8") || lower.contains("playlist") || lower.contains("hls") || lower.contains("master") || lower.contains("btube")
+    private fun mediaReferer(url: String, fallback: String): String {
+        return when {
+            url.isGoogleVideoUrl() -> ""
+            url.contains("xtwap.top/play.php", true) -> ""
+            url.contains("blogger.googleusercontent.com", true) -> BLOGGER_REFERER
+            else -> fallback
+        }
     }
 
-    private fun String.isDirectMedia(): Boolean = isPlayableMediaUrl()
+    private fun mediaHeaders(url: String, referer: String): Map<String, String> {
+        val headers = linkedMapOf(
+            "User-Agent" to GomunimeUtils.USER_AGENT,
+            "Accept" to "*/*"
+        )
+        if (referer.isNotBlank()) headers["Referer"] = referer
+        if (referer.contains("blogger.com", true) && !url.isGoogleVideoUrl()) headers["Origin"] = "https://www.blogger.com"
+        return headers
+    }
+
+    private fun String.isKnownInlinePlayerHost(): Boolean {
+        val lower = lowercase()
+        return lower.contains("anime-indo.lol/btube") ||
+            lower.contains("xtwap.top/cepat") ||
+            lower.contains("xtwap.top/play.php")
+    }
+
+    private fun String.isLikelyHls(): Boolean {
+        val lower = lowercase()
+        return lower.contains(".m3u8") ||
+            lower.contains("playlist") ||
+            lower.contains("hls") ||
+            lower.contains("master") ||
+            lower.contains("xtwap.top/play.php")
+    }
+
+    private fun String.isDirectMedia(): Boolean = isPlayableMediaUrl() || isLikelyHls()
 
     private fun String.isDirectVideo(): Boolean = isPlayableMediaUrl() && !lowercase().contains(".m3u8")
+
+    private fun String.isGoogleVideoUrl(): Boolean {
+        val lower = lowercase()
+        return lower.contains("googlevideo.com/videoplayback") || lower.contains("videoplayback")
+    }
 
     private fun String.isPlayableMediaUrl(): Boolean {
         val lower = lowercase()
