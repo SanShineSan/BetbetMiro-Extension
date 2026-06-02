@@ -44,7 +44,7 @@ class Indo18Plugin : BasePlugin() {
 }
 
 class Indo18 : MainAPI() {
-    override var mainUrl = "https://www.indo18.com"
+    override var mainUrl = "https://indo18.cc"
     override var name = "Indo18"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -985,8 +985,8 @@ class Indo18 : MainAPI() {
     }
 
     private fun String.cleanTitle(): String {
-        return replace(Regex("""\s+\|\s+INDO18\.COM.*$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s+INDO18\.COM.*$""", RegexOption.IGNORE_CASE), "")
+        return replace(Regex("""\s+\|\s+INDO18\.(?:COM|CC).*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+INDO18\.(?:COM|CC).*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Sub\s*Indo.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Subtitle\s+Indonesia.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+"""), " ")
