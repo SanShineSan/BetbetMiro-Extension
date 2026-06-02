@@ -3,6 +3,7 @@ package com.sad25kag.Indo18
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
@@ -23,6 +24,7 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.utils.getQualityFromName
@@ -53,9 +55,25 @@ class Indo18 : MainAPI() {
 
     override val supportedTypes = setOf(TvType.NSFW)
 
+    private data class PageFetch(
+        val url: String,
+        val document: Document,
+        val text: String,
+    )
+
+    private val sourceOrigins = listOf(
+        "https://indo18.cc",
+        "https://indo18.com",
+        "https://indo18.biz.id",
+        "https://indo18.link",
+    )
+
     private val streamApiOrigins = listOf(
         "https://rupertisdivingintoocean.com",
-        "https://bysezoxexe.com"
+        "https://bysezoxexe.com",
+        "https://fufafilm.upns.pro",
+        "https://fufafilm.strp2p.com",
+        "https://myvidplay.com",
     )
 
     override val mainPage = mainPageOf(
@@ -93,9 +111,10 @@ class Indo18 : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = buildPageUrl(request.data, page)
-        val document = app.get(url, headers = headers, referer = mainUrl, timeout = 25L).document
-        val items = parseCards(document).distinctBy { canonicalUrl(it.url) }
-        return newHomePageResponse(request.name, items, hasNext = hasNextPage(document, page))
+        val pageData = fetchPage(url, mainUrl, timeout = 25L)
+            ?: return newHomePageResponse(request.name, emptyList<SearchResponse>(), hasNext = false)
+        val items = parseCards(pageData.document).distinctBy { canonicalUrl(it.url) }
+        return newHomePageResponse(request.name, items, hasNext = hasNextPage(pageData.document, page))
     }
 
     private fun buildPageUrl(path: String, page: Int): String {
@@ -127,7 +146,7 @@ class Indo18 : MainAPI() {
 
         // Current indo18.cc video pages use /v/{slug}.  Prefer those anchors so UI links such as
         // "More videos" and row navigation buttons are not parsed as playable cards.
-        document.select("a[href*='/v/']").forEach { anchor ->
+        document.select("a[href*='/v/'], a[href*='/video/'], a[href*='/watch/']").forEach { anchor ->
             anchor.toSearchResult()?.let { item -> results[canonicalUrl(item.url)] = item }
         }
 
@@ -149,8 +168,8 @@ class Indo18 : MainAPI() {
             "h2 a[href], h3 a[href], .entry-title a[href], .title a[href], a[href]:has(img), a[href]"
         ) ?: return null
 
-        val href = normalizeContentUrl(fixUrl(anchor.attr("href"), mainUrl) ?: return null) ?: return null
-        if (!href.startsWith(mainUrl)) return null
+        val href = normalizeContentUrl(fixUrl(anchor.attr("href"), pageBaseUrl(anchor) ?: mainUrl) ?: return null) ?: return null
+        if (!isKnownIndo18Url(href)) return null
         if (isBlockedUrl(href)) return null
         if (!isContentUrl(href)) return null
 
@@ -168,7 +187,7 @@ class Indo18 : MainAPI() {
 
         if (title.length < 2 || isUnsafeTitle(title)) return null
 
-        val poster = fixUrl(image?.getImageAttr(), mainUrl)?.takeIf { !isBadImage(it) }
+        val poster = fixUrl(image?.getImageAttr(), pageBaseUrl(image ?: anchor) ?: mainUrl)?.takeIf { !isBadImage(it) }
         val score = Regex("""(\d{1,3})%""").find(text())?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.div(10.0)?.toString()
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
@@ -188,7 +207,7 @@ class Indo18 : MainAPI() {
     }
 
     private fun isBlockedUrl(url: String): Boolean {
-        val path = url.substringAfter(mainUrl).trim('/').lowercase()
+        val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault(url.substringAfter(mainUrl).trim('/')).lowercase()
         if (path.isBlank()) return true
         if (isContentUrl(url)) return false
         if (path.startsWith("?") || path.startsWith("#")) return true
@@ -214,9 +233,9 @@ class Indo18 : MainAPI() {
         )
 
         for (url in attempts) {
-            val document = runCatching { app.get(url, headers = headers, referer = mainUrl, timeout = 25L).document }.getOrNull() ?: continue
-            val results = parseCards(document).distinctBy { canonicalUrl(it.url) }
-            if (results.isNotEmpty()) return newSearchResponseList(results, hasNext = hasNextPage(document, page))
+            val pageData = fetchPage(url, mainUrl, timeout = 25L) ?: continue
+            val results = parseCards(pageData.document).distinctBy { canonicalUrl(it.url) }
+            if (results.isNotEmpty()) return newSearchResponseList(results, hasNext = hasNextPage(pageData.document, page))
         }
 
         return newSearchResponseList(emptyList(), hasNext = false)
@@ -228,12 +247,15 @@ class Indo18 : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val fixedUrl = normalizeContentUrl(fixUrl(url, mainUrl) ?: url) ?: (fixUrl(url, mainUrl) ?: url)
-        val document = app.get(fixedUrl, headers = headers, referer = mainUrl, timeout = 25L).document
+        val pageData = fetchPage(fixedUrl, mainUrl, timeout = 25L)
+            ?: throw ErrorLoadingException("Indo18 detail page unavailable")
+        val document = pageData.document
+        val effectiveUrl = pageData.url
 
         val title = document.selectFirst("h1, h1.entry-title")?.text()?.cleanTitle()?.takeIf { it.isNotBlank() }
-            ?: fixedUrl.substringAfterLast("/").replace("-", " ").cleanTitle()
+            ?: effectiveUrl.substringAfterLast("/").replace("-", " ").cleanTitle()
 
-        val poster = getPoster(document)
+        val poster = getPoster(document, effectiveUrl)
         val text = document.text()
         val views = Regex("""(?i)(?:views?|ditonton)\s*:?\s*([\d.,kmb]+)""").find(text)?.groupValues?.getOrNull(1)
         val rating = Regex("""(\d{1,3})%""").find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.div(10.0)?.toString()
@@ -245,9 +267,9 @@ class Indo18 : MainAPI() {
         val related = document.select("article:has(a), .related a[href], h2 a[href], h3 a[href], main a[href]")
             .mapNotNull { it.toSearchResult() }
             .distinctBy { canonicalUrl(it.url) }
-            .filter { canonicalUrl(it.url) != canonicalUrl(fixedUrl) }
+            .filter { canonicalUrl(it.url) != canonicalUrl(effectiveUrl) }
 
-        return newMovieLoadResponse(title, fixedUrl, TvType.NSFW, fixedUrl) {
+        return newMovieLoadResponse(title, effectiveUrl, TvType.NSFW, effectiveUrl) {
             posterUrl = poster
             plot = views?.let { "Views: $it" }
             this.tags = tags
@@ -274,23 +296,37 @@ class Indo18 : MainAPI() {
             val key = canonicalUrl(fixed)
             if (!emitted.add(key)) return false
 
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = name,
-                    url = fixed,
-                    type = if (isHlsLike(fixed)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                ) {
-                    this.referer = referer
-                    this.quality = getQualityFromName(fixed).takeIf { it != Qualities.Unknown.value } ?: qualityFromUrl(fixed)
-                    this.headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer,
-                        "Origin" to origin(referer),
-                        "Accept" to "*/*"
-                    )
-                }
+            val linkHeaders = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to referer,
+                "Origin" to origin(referer),
+                "Accept" to "*/*"
             )
+
+            var generated = false
+            if (isHlsLike(fixed)) {
+                runCatching {
+                    generateM3u8(name, fixed, referer, headers = linkHeaders).forEach { link ->
+                        generated = true
+                        callback(link)
+                    }
+                }
+            }
+
+            if (!generated) {
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = fixed,
+                        type = if (isHlsLike(fixed)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = referer
+                        this.quality = getQualityFromName(fixed).takeIf { it != Qualities.Unknown.value } ?: qualityFromUrl(fixed)
+                        this.headers = linkHeaders
+                    }
+                )
+            }
 
             return true
         }
@@ -422,26 +458,25 @@ class Indo18 : MainAPI() {
         }
 
         suspend fun collectFromPage(url: String, referer: String): List<String> {
-            val response = runCatching {
-                app.get(url, headers = headers + mapOf("Origin" to origin(url)), referer = referer, timeout = 20L)
-            }.getOrNull() ?: return emptyList()
+            val pageData = fetchPage(url, referer, timeout = 20L) ?: return emptyList()
 
-            val document = response.document
-            val html = response.text.cleanEscaped()
+            val document = pageData.document
+            val effectiveUrl = pageData.url
+            val html = pageData.text.cleanEscaped()
             val links = linkedSetOf<String>()
 
-            extractRedirectTargets(url, referer).forEach { links.add(it) }
-            jombloGoCandidates(url).forEach { links.add(it) }
-            collectElementLinks(document, url).forEach { links.add(it) }
-            extractPlayableUrls(html, url).forEach { links.add(it) }
-            extractDoodstreamLinks(html, url).forEach { links.add(it) }
-            extractPackedLinks(html, url).forEach { links.add(it) }
-            extractEncodedLinks(html, url).forEach { links.add(it) }
-            extractTrackingPayloadLinks(html, url).forEach { links.add(it) }
-            extractDownloadButtons(document, url).forEach { links.add(it) }
-            extractRedirectTargets(html, url).forEach { links.add(it) }
-            extractJombloLinks(html, url).forEach { links.add(it) }
-            extractStreamApiCandidates(html, url).forEach { links.add(it) }
+            extractRedirectTargets(effectiveUrl, referer).forEach { links.add(it) }
+            jombloGoCandidates(effectiveUrl).forEach { links.add(it) }
+            collectElementLinks(document, effectiveUrl).forEach { links.add(it) }
+            extractPlayableUrls(html, effectiveUrl).forEach { links.add(it) }
+            extractDoodstreamLinks(html, effectiveUrl).forEach { links.add(it) }
+            extractPackedLinks(html, effectiveUrl).forEach { links.add(it) }
+            extractEncodedLinks(html, effectiveUrl).forEach { links.add(it) }
+            extractTrackingPayloadLinks(html, effectiveUrl).forEach { links.add(it) }
+            extractDownloadButtons(document, effectiveUrl).forEach { links.add(it) }
+            extractRedirectTargets(html, effectiveUrl).forEach { links.add(it) }
+            extractJombloLinks(html, effectiveUrl).forEach { links.add(it) }
+            extractStreamApiCandidates(html, effectiveUrl).forEach { links.add(it) }
 
             return links.filterNot { isAdUrl(it) || shouldSkipUrl(it) }.distinct()
         }
@@ -465,9 +500,11 @@ class Indo18 : MainAPI() {
 
             var localFound = false
             val visited = linkedSetOf<String>()
-            queue.toList().take(30).forEach { target ->
-                val apiUrl = fixUrl(target, fixed) ?: return@forEach
-                if (!visited.add(canonicalUrl(apiUrl))) return@forEach
+            var index = 0
+            while (index < queue.size && visited.size < 40) {
+                val target = queue.elementAt(index++)
+                val apiUrl = fixUrl(target, fixed) ?: continue
+                if (!visited.add(canonicalUrl(apiUrl))) continue
 
                 val response = runCatching {
                     app.get(
@@ -480,7 +517,7 @@ class Indo18 : MainAPI() {
                         referer = referer,
                         timeout = 20L
                     )
-                }.getOrNull() ?: return@forEach
+                }.getOrNull() ?: continue
 
                 val text = response.text.cleanEscaped()
                 extractPlayableUrls(text, apiUrl).forEach { media ->
@@ -542,7 +579,7 @@ class Indo18 : MainAPI() {
         val visitedPages = linkedSetOf<String>()
         val candidates = linkedSetOf<String>()
 
-        candidates.add(startUrl)
+        expandSourceOriginUrls(startUrl).forEach { candidates.add(it) }
         collectFromPage(startUrl, mainUrl).forEach { candidates.add(it) }
         jombloGoCandidates(startUrl).forEach { candidates.add(it) }
 
@@ -552,20 +589,22 @@ class Indo18 : MainAPI() {
 
         if (found) return true
 
-        prioritizeEmbeds(candidates)
+        embedLoop@ for (embed in prioritizeEmbeds(candidates)
             .filter { visitedPages.add(canonicalUrl(it)) }
             .take(18)
-            .forEach { embed ->
-                if (tryAny(embed, startUrl)) {
-                    found = true
-                    return@forEach
-                }
+        ) {
+            if (tryAny(embed, startUrl)) {
+                found = true
+                break@embedLoop
+            }
 
-                collectFromPage(embed, startUrl).forEach { nested ->
-                    if (tryAny(nested, embed)) found = true
-                    if (found) return@forEach
+            for (nested in collectFromPage(embed, startUrl)) {
+                if (tryAny(nested, embed)) {
+                    found = true
+                    break@embedLoop
                 }
             }
+        }
 
         return found
     }
@@ -579,7 +618,7 @@ class Indo18 : MainAPI() {
                 "video source[src], source[src], source[data-src], iframe[src], iframe[data-src], " +
                 "iframe[data-litespeed-src], iframe[data-lazy-src], iframe[data-original], embed[src], object[data], " +
                 "a[href], button[data-url], button[data-video], button[data-file], [data-src], [data-video], " +
-                "[data-file], [data-url], [data-embed], [data-iframe], [onclick]"
+                "[data-file], [data-url], [data-embed], [data-iframe], [data-player], [data-href], [onclick], script[src]"
         ).forEach { element ->
             val values = listOf(
                 element.attr("content"),
@@ -591,6 +630,8 @@ class Indo18 : MainAPI() {
                 element.attr("data-url"),
                 element.attr("data-embed"),
                 element.attr("data-iframe"),
+                element.attr("data-player"),
+                element.attr("data-href"),
                 element.attr("data-src"),
                 element.attr("data"),
                 element.attr("src"),
@@ -658,13 +699,15 @@ class Indo18 : MainAPI() {
             extractDoodstreamLinks(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
             extractRedirectTargets(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
             extractJombloLinks(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
+            extractStreamApiCandidates(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
         }
 
-        Regex("""(?i)(?:base64|data|hash)\s*[:=]\s*['"]([A-Za-z0-9+/=_-]{20,})['"]""").findAll(clean).mapNotNull { decodeBase64(it.groupValues[1]) }.forEach {
+        Regex("""(?i)(?:base64|data|hash|embed|source)\s*[:=]\s*['"]([A-Za-z0-9+/=_-]{20,})['"]""").findAll(clean).mapNotNull { decodeBase64(it.groupValues[1]) }.forEach {
             extractPlayableUrls(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
             extractDoodstreamLinks(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
             extractRedirectTargets(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
             extractJombloLinks(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
+            extractStreamApiCandidates(it.cleanEscaped(), baseUrl).forEach { link -> links.add(link) }
         }
 
         return links.toList()
@@ -765,7 +808,7 @@ class Indo18 : MainAPI() {
             .forEach { fixUrl(it.replace(".txt", ".m3u8"), baseUrl)?.let(urls::add) }
 
         Regex(
-            """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|embedUrl|embed_url|contentUrl|data-file|data-video|data-url|data-src|data-embed|data-iframe|content)\s*[:=]\s*["']([^"']+)["']""",
+            """(?:file|src|source|url|videoSource|videoUrl|video_url|playUrl|play_url|hls|hlsUrl|hls_url|embed|embedUrl|embed_url|iframe|player|contentUrl|data-file|data-video|data-url|data-src|data-embed|data-iframe|data-player|content)\s*[:=]\s*["']([^"']+)["']""",
             RegexOption.IGNORE_CASE
         ).findAll(clean).mapNotNull { it.groupValues.getOrNull(1) }.forEach { raw ->
             val fixed = fixUrl(raw.replace(".txt", ".m3u8"), baseUrl)
@@ -985,13 +1028,16 @@ class Indo18 : MainAPI() {
 
     private fun isContentUrl(url: String): Boolean {
         val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault("").lowercase()
-        return path.startsWith("v/")
+        return path.startsWith("v/") || path.startsWith("video/") || path.startsWith("watch/")
     }
 
     private fun normalizeContentUrl(url: String): String? {
         val fixed = fixUrl(url, mainUrl) ?: return null
-        if (!fixed.startsWith(mainUrl)) return fixed
-        return if (isContentUrl(fixed)) fixed.substringBefore("#").substringBefore("?").trimEnd('/') else fixed
+        return if (isKnownIndo18Url(fixed) && isContentUrl(fixed)) {
+            fixed.substringBefore("#").substringBefore("?").trimEnd('/')
+        } else {
+            fixed
+        }
     }
 
     private fun shouldSkipUrl(url: String): Boolean {
@@ -1001,8 +1047,64 @@ class Indo18 : MainAPI() {
             value.contains("privacy") || value.contains("dmca") || value.contains("copy") || value.contains("share")
     }
 
+    private suspend fun fetchPage(url: String, referer: String = mainUrl, timeout: Long = 25L): PageFetch? {
+        for (target in expandSourceOriginUrls(url)) {
+            val response = runCatching {
+                app.get(
+                    target,
+                    headers = headers + mapOf(
+                        "Referer" to referer,
+                        "Origin" to origin(target),
+                    ),
+                    referer = referer,
+                    timeout = timeout,
+                )
+            }.getOrNull() ?: continue
+
+            val text = response.text
+            if (text.isBlank()) continue
+            return PageFetch(target, response.document, text)
+        }
+
+        return null
+    }
+
+    private fun expandSourceOriginUrls(url: String): List<String> {
+        val fixed = fixUrl(url, mainUrl) ?: url
+        val uri = runCatching { URI(fixed) }.getOrNull() ?: return listOf(fixed)
+        val pathAndQuery = buildString {
+            append(uri.rawPath?.takeIf { it.isNotBlank() } ?: "/")
+            uri.rawQuery?.takeIf { it.isNotBlank() }?.let { append('?').append(it) }
+        }
+
+        return if (isKnownIndo18Host(uri.host.orEmpty())) {
+            sourceOrigins.map { it.trimEnd('/') + pathAndQuery }.distinct()
+        } else {
+            listOf(fixed)
+        }
+    }
+
+    private fun isKnownIndo18Url(url: String): Boolean {
+        return runCatching { isKnownIndo18Host(URI(url).host.orEmpty()) }.getOrDefault(false)
+    }
+
+    private fun isKnownIndo18Host(host: String): Boolean {
+        val clean = host.lowercase().removePrefix("www.")
+        return sourceOrigins.any { origin ->
+            runCatching { URI(origin).host.orEmpty().lowercase().removePrefix("www.") == clean }.getOrDefault(false)
+        }
+    }
+
+    private fun pageBaseUrl(element: Element): String? {
+        return element.ownerDocument()?.location()?.takeIf { it.isNotBlank() }
+    }
+
     private fun fixUrl(url: String?, baseUrl: String): String? {
-        val clean = url.cleanEscaped().trim().trim('"', '\'', ',', ';')
+        val escaped = url.cleanEscaped()
+        val clean = runCatching { URLDecoder.decode(escaped, "UTF-8") }
+            .getOrDefault(escaped)
+            .trim()
+            .trim('\"', '\'', ',', ';')
         if (clean.isBlank() || clean == "#" || clean.startsWith("javascript:", true) || clean.startsWith("mailto:", true)) return null
 
         return when {
@@ -1018,7 +1120,7 @@ class Indo18 : MainAPI() {
         "${uri.scheme}://${uri.host}"
     }.getOrDefault(mainUrl)
 
-    private fun getPoster(document: Document): String? {
+    private fun getPoster(document: Document, baseUrl: String = document.location().ifBlank { mainUrl }): String? {
         return fixUrl(
             document.selectFirst(
                 "meta[property=og:image], meta[name=twitter:image], video[poster], .poster img, .thumb img, article img, img"
@@ -1029,7 +1131,7 @@ class Indo18 : MainAPI() {
                     else -> element.getImageAttr()
                 }
             },
-            mainUrl
+            baseUrl
         )?.takeIf { !isBadImage(it) }
     }
 
