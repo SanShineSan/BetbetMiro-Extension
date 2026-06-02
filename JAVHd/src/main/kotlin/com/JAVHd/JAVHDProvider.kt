@@ -50,17 +50,6 @@ class JAVHDProvider : MainAPI() {
     private val subtitleCatUrl = "https://www.subtitlecat.com"
 
     override val mainPage = mainPageOf(
-        "/releaseday/" to "Release Day",
-        "/recent/" to "Latest Update",
-        "/popular/today/" to "Most View Today",
-        "/popular/week/" to "Most View Week",
-        "/popular/month/" to "Most View Month",
-        "/popular/year/" to "Most View Year",
-        "/rated/" to "Top Rated",
-        "/downloaded/" to "Most Downloaded",
-        "/longest/" to "Longest",
-        "/watched/" to "Watched",
-
         "$mainUrl/creampie/recent/%d/?ajax=1" to "Creampie",
         "$mainUrl/big-tits/recent/%d/?ajax=1" to "Big Tits",
         "$mainUrl/married-woman/recent/%d/?ajax=1" to "Married Woman",
