@@ -191,7 +191,9 @@ object KazefuriExtractorHelper {
             )
         }.getOrNull() ?: return
 
-        if (shouldSkipBodyRead(response.headers, url)) return
+        val contentType = response.headers["Content-Type"].orEmpty()
+        val contentLength = response.headers["Content-Length"]?.toLongOrNull()
+        if (shouldSkipBodyRead(contentType, contentLength, url)) return
 
         val body = runCatching { response.text.cleanEscaped() }.getOrNull() ?: return
         val texts = mutableListOf(body)
@@ -239,9 +241,8 @@ object KazefuriExtractorHelper {
         return extractorOnlyHosts.any { host -> value.contains(host) }
     }
 
-    private fun shouldSkipBodyRead(headers: Map<String, String>, url: String): Boolean {
-        val contentType = headers.headerValue("Content-Type").lowercase()
-        val contentLength = headers.headerValue("Content-Length").toLongOrNull()
+    private fun shouldSkipBodyRead(contentTypeRaw: String, contentLength: Long?, url: String): Boolean {
+        val contentType = contentTypeRaw.lowercase()
 
         if (contentLength != null && contentLength > MAX_NESTED_TEXT_BYTES) return true
 
@@ -254,10 +255,6 @@ object KazefuriExtractorHelper {
             url.endsWith(".zip", true) ||
             url.endsWith(".rar", true) ||
             url.endsWith(".7z", true)
-    }
-
-    private fun Map<String, String>.headerValue(name: String): String {
-        return entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value.orEmpty()
     }
 
     private fun extractPlayableUrls(text: String): List<String> {
