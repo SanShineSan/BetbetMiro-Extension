@@ -24,6 +24,7 @@ import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getExtractorApiFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class MissAV : MainAPI() {
     override var mainUrl = "https://missav.live"
@@ -102,19 +103,20 @@ class MissAV : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
+        val encodedQuery = query.urlEncoded()
         val url = if (page == 1) {
-            "${mainUrl}/en/search/${query}"
+            "${mainUrl}/en/search/${encodedQuery}"
         } else {
-            "${mainUrl}/en/search/${query}?page=$page"
+            "${mainUrl}/en/search/${encodedQuery}?page=$page"
         }
 
         val document = app.get(url).document
 
-        val aramaCevap =
-            document.select("div.grid.grid-cols-2 > div").mapNotNull { it.toMainPageResult() }
+        val aramaCevap = document.select("div.grid.grid-cols-2 > div, div.thumbnail.group")
+            .mapNotNull { it.toMainPageResult() }
+            .distinctBy { it.url }
 
-
-        return newSearchResponseList(aramaCevap, hasNext = true)
+        return newSearchResponseList(aramaCevap, hasNext = aramaCevap.isNotEmpty())
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
@@ -133,7 +135,7 @@ class MissAV : MainAPI() {
         val actresses = document.select("div.text-secondary:contains(actress) a").map {
             Actor(it.text().trim())
         }
-        return newMovieLoadResponse(title, url, TvType.NSFW, "$code:$url") {
+        return newMovieLoadResponse(title, url, TvType.NSFW, "$code$LOAD_DATA_SEPARATOR$url") {
             this.posterUrl = poster
             this.year = year
             this.tags = tags
@@ -147,28 +149,81 @@ class MissAV : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val url = data.substringAfter(":")
+        val code = data.substringBefore(LOAD_DATA_SEPARATOR)
+            .substringBefore(LEGACY_LOAD_DATA_SEPARATOR)
+            .trim()
+        val url = data.substringAfter(LOAD_DATA_SEPARATOR, data.substringAfter(LEGACY_LOAD_DATA_SEPARATOR))
+            .trim()
+
+        if (!url.startsWith("http")) return false
 
         val response = app.get(url).text
-        getAndUnpack(response).let { unpacked ->
-            val playlistId = """/([a-f0-9\-]{36})/""".toRegex().find(unpacked)?.groupValues?.get(1)
+        val playlistUrls = extractSurritPlaylistUrls(response)
+        var hasLinks = false
 
-            if (playlistId != null) {
-                data.substringBefore(":").let { code ->
-                    getExtractorApiFromName("SubtitleCat").getUrl(
-                        url = code,
-                        subtitleCallback = subtitleCallback,
-                        callback = callback
-                    )
-                }
-                generateM3u8(
-                    source = name,
-                    streamUrl = "https://surrit.com/$playlistId/playlist.m3u8",
-                    referer = "$mainUrl/",
-                    headers = mapOf("Referer" to "$mainUrl/")
-                ).forEach(callback)
+        playlistUrls.forEach { streamUrl ->
+            val links = generateM3u8(
+                source = name,
+                streamUrl = streamUrl,
+                referer = "$mainUrl/",
+                headers = mapOf("Referer" to "$mainUrl/")
+            )
+            links.forEach { link ->
+                hasLinks = true
+                callback(link)
             }
         }
-        return true
+
+        if (hasLinks && code.isNotBlank()) {
+            runCatching {
+                getExtractorApiFromName("SubtitleCat").getUrl(
+                    url = code,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            }
+        }
+
+        return hasLinks
+    }
+
+    private fun extractSurritPlaylistUrls(response: String): List<String> {
+        val sources = listOf(response, runCatching { getAndUnpack(response) }.getOrDefault(""))
+        val directUrls = sources.flatMap { source ->
+            val normalized = source.replace("\\/", "/")
+            SURRIT_M3U8_REGEX.findAll(normalized).map { it.value }.toList()
+        }
+
+        val playlistIds = sources.flatMap { source ->
+            val normalized = source.replace("\\/", "/")
+            val directIds = SURRIT_ID_REGEX.findAll(normalized).map { it.groupValues[1] } +
+                NINEYU_ID_REGEX.findAll(normalized).map { it.groupValues[1] }
+            val packedIds = UUID_REGEX.findAll(normalized).mapNotNull { match ->
+                val start = (match.range.first - 320).coerceAtLeast(0)
+                val end = (match.range.last + 320).coerceAtMost(normalized.length)
+                val context = normalized.substring(start, end)
+                if (context.contains("surrit", ignoreCase = true) || context.contains("m3u8", ignoreCase = true)) {
+                    match.value
+                } else {
+                    null
+                }
+            }
+            (directIds + packedIds).toList()
+        }
+
+        return (directUrls + playlistIds.map { "https://surrit.com/$it/playlist.m3u8" })
+            .map { it.substringBefore("\\") }
+            .distinct()
+    }
+
+    private fun String.urlEncoded(): String = URLEncoder.encode(this, "UTF-8").replace("+", "%20")
+
+    companion object {
+        private const val LOAD_DATA_SEPARATOR = "|MISSAV|"
+        private const val LEGACY_LOAD_DATA_SEPARATOR = ":"
+        private val UUID_REGEX = Regex("""[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}""", RegexOption.IGNORE_CASE)
+        private val SURRIT_ID_REGEX = Regex("""https?://surrit\.com/([a-f0-9\-]{36})(?:/|$)""", RegexOption.IGNORE_CASE)
+        private val NINEYU_ID_REGEX = Regex("""https?://nineyu\.com/([a-f0-9\-]{36})/seek/""", RegexOption.IGNORE_CASE)
+        private val SURRIT_M3U8_REGEX = Regex("""https?://surrit\.com/[^\s'"<>]+?\.m3u8""", RegexOption.IGNORE_CASE)
     }
 }
