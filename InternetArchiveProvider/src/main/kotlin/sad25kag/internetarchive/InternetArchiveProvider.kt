@@ -25,8 +25,6 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -194,11 +192,11 @@ class InternetArchiveProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val loadData = tryParseJson<LoadData>(data)
+        val loadData = decodeLoadData(data)
             ?: runCatching {
-                val identifier = data.trim()
+                val identifier = extractIdentifier(data.trim())
                 val metadata = getMetadata(identifier)
-                metadata.buildSingleLoadData()
+                metadata.buildSingleLoadData(this)
             }.getOrNull()
             ?: return false
 
@@ -255,7 +253,7 @@ class InternetArchiveProvider : MainAPI() {
         }
 
         val text = app.get(url, timeout = 30L).text
-        return tryParseJson<SearchResult>(text) ?: SearchResult()
+        return mapper.readJsonOrNull<SearchResult>(text) ?: SearchResult()
     }
 
     private suspend fun getMetadata(identifier: String): MetadataResult {
@@ -265,6 +263,14 @@ class InternetArchiveProvider : MainAPI() {
         ).text
 
         return mapper.readValue(text)
+    }
+
+    private fun decodeLoadData(data: String): LoadData? {
+        return mapper.readJsonOrNull(data)
+    }
+
+    private fun encodeLoadData(data: LoadData): String {
+        return mapper.writeValueAsString(data)
     }
 
     private fun parseArchiveData(data: String): Pair<String, String> {
@@ -471,7 +477,7 @@ class InternetArchiveProvider : MainAPI() {
                     title(),
                     "${provider.mainUrl}/details/${metadata.identifier.orEmpty()}",
                     baseType,
-                    loadData.toJson()
+                    provider.encodeLoadData(loadData)
                 ) {
                     plot = cleanDescription()
                     year = extractYear(metadata.date)
@@ -500,7 +506,7 @@ class InternetArchiveProvider : MainAPI() {
                     type = "video-playlist"
                 )
 
-                provider.newEpisode(episodeLoadData.toJson()) {
+                provider.newEpisode(provider.encodeLoadData(episodeLoadData)) {
                     name = representative.title?.ifBlank { null } ?: episodeName
                     season = episodeInfo.first
                     episode = episodeInfo.second
@@ -709,6 +715,7 @@ class InternetArchiveProvider : MainAPI() {
         }
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LoadData(
         val identifier: String = "",
         val urlData: Set<URLData> = emptySet(),
@@ -716,6 +723,7 @@ class InternetArchiveProvider : MainAPI() {
         val type: String = "video-playlist"
     )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class URLData(
         val url: String = "",
         val format: String = "",
@@ -724,10 +732,15 @@ class InternetArchiveProvider : MainAPI() {
         val displayName: String = "Video"
     )
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class SubtitleData(
         val url: String = "",
         val label: String = "Subtitle"
     )
+}
+
+private inline fun <reified T> com.fasterxml.jackson.databind.ObjectMapper.readJsonOrNull(text: String): T? {
+    return runCatching { readValue<T>(text) }.getOrNull()
 }
 
 private fun String.encodeParam(): String {
