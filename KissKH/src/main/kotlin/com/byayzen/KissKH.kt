@@ -14,6 +14,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.addSub
 import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrl
@@ -34,6 +35,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 
 class KissKH : MainAPI() {
     override var mainUrl = "https://kisskh.buzz"
@@ -76,7 +78,7 @@ class KissKH : MainAPI() {
                 list = results,
                 isHorizontalImages = true
             ),
-            hasNext = document.selectFirst("a.next.page-numbers, a.page-numbers.next") != null
+            hasNext = document.selectFirst("a.next.page-numbers, a.page-numbers.next") != null || results.isNotEmpty()
         )
     }
 
