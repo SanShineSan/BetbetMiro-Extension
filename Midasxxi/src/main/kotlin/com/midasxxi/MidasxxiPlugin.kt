@@ -13,5 +13,6 @@ class MidasxxiPlugin: Plugin() {
         Midasxxi.context = context
         registerMainAPI(Midasxxi())
         registerExtractorAPI(Playcinematic())
+        registerExtractorAPI(Midasfilm())
     }
 }

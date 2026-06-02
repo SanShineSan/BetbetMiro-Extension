@@ -14,9 +14,12 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URI
 
-class Playcinematic : ExtractorApi() {
-    override var name = "Playcinematic"
-    override var mainUrl = "https://playcinematic.com"
+open class Playcinematic(
+    private val extractorName: String = "Playcinematic",
+    private val extractorMainUrl: String = "https://playcinematic.com"
+) : ExtractorApi() {
+    override var name = extractorName
+    override var mainUrl = extractorMainUrl
     override val requiresReferer = true
 
     override suspend fun getUrl(
@@ -85,6 +88,7 @@ class Playcinematic : ExtractorApi() {
                         )
                     ).forEach(callback)
                 } else if (
+                    stream.contains("/stream/k/", true) ||
                     stream.contains(".mp4", true) ||
                     stream.contains(".webm", true) ||
                     stream.contains(".mkv", true)
@@ -116,14 +120,14 @@ class Playcinematic : ExtractorApi() {
         val clean = text.cleanEscaped()
 
         Regex(
-            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt)(?:\?[^"'\\\s<>]*)?""",
+            """https?://[^"'\\\s<>]+?(?:\.(?:m3u8|mp4|webm|mkv|txt)|/stream/k/[^"'\\\s<>]+)(?:\?[^"'\\\s<>]*)?""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { it.value.cleanEscaped() }
             .forEach { results.add(it) }
 
         Regex(
-            """//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|mkv|txt)(?:\?[^"'\\\s<>]*)?""",
+            """//[^"'\\\s<>]+?(?:\.(?:m3u8|mp4|webm|mkv|txt)|/stream/k/[^"'\\\s<>]+)(?:\?[^"'\\\s<>]*)?""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
             .map { "https:${it.value.cleanEscaped()}" }
@@ -135,16 +139,19 @@ class Playcinematic : ExtractorApi() {
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
             .map { it.cleanEscaped() }
-            .filter {
-                it.contains(".m3u8", true) ||
-                    it.contains(".mp4", true) ||
-                    it.contains(".webm", true) ||
-                    it.contains(".mkv", true) ||
-                    it.contains(".txt", true)
-            }
+            .filter { isPlayableCandidate(it) }
             .forEach { results.add(it) }
 
         return results.toList()
+    }
+
+    private fun isPlayableCandidate(url: String): Boolean {
+        return url.contains("/stream/k/", true) ||
+            url.contains(".m3u8", true) ||
+            url.contains(".mp4", true) ||
+            url.contains(".webm", true) ||
+            url.contains(".mkv", true) ||
+            url.contains(".txt", true)
     }
 
     private fun normalizeUrl(url: String, baseUrl: String): String {
@@ -194,3 +201,5 @@ class Playcinematic : ExtractorApi() {
             .trim()
     }
 }
+
+class Midasfilm : Playcinematic("Midasfilm", "https://midasfilm.com")

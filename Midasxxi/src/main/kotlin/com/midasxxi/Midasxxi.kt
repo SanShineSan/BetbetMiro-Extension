@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.toNewSearchResponseList
@@ -360,6 +359,11 @@ class Midasxxi : MainAPI() {
         directUrl = getBaseUrl(pageUrl)
         val document = pageResp.document
         val emitted = mutableSetOf<String>()
+        var found = false
+        val wrappedCallback: (ExtractorLink) -> Unit = { link ->
+            found = true
+            callback(link)
+        }
 
         suspend fun emitExtractor(rawUrl: String?) {
             val cleaned = rawUrl?.trim()?.takeIf { it.isNotBlank() } ?: return
@@ -369,11 +373,11 @@ class Midasxxi : MainAPI() {
 
             if (fixed.contains("youtube", true) || fixed.contains("youtu.be", true)) return
 
-            loadExtractor(fixed, pageUrl, subtitleCallback, callback)
+            found = loadExtractor(fixed, pageUrl, subtitleCallback, wrappedCallback) || found
         }
 
         // Initial iframe already rendered on some pages.
-        document.select("#dooplay_player_response iframe[src], #playcontainer iframe[src], iframe.metaframe[src], iframe[src*='playcinematic'], source[src]")
+        document.select("#dooplay_player_response iframe[src], #playcontainer iframe[src], iframe.metaframe[src], iframe[src*='playcinematic'], iframe[src*='midasfilm'], source[src]")
             .forEach { iframe ->
                 emitExtractor(iframe.attr("src"))
             }
@@ -384,48 +388,56 @@ class Midasxxi : MainAPI() {
             "movie"
         }
 
-        document.select("ul#playeroptionsul > li.dooplay_player_option[data-post], #playeroptionsul li[data-post]").map {
+        document.select("ul#playeroptionsul > li.dooplay_player_option[data-post], #playeroptionsul li[data-post]")
+            .map {
                 Triple(
                     it.attr("data-post"),
                     it.attr("data-nume"),
                     it.attr("data-type").ifBlank { defaultType }
                 )
-            }.amap { (id, nume, type) ->
-            if (id.isBlank() || nume.isBlank() || type.isBlank()) return@amap
-            if (nume.equals("trailer", true)) return@amap
+            }
+            .filterNot { (_, nume, _) -> nume.equals("trailer", true) }
+            .distinctBy { (id, nume, type) -> "$id|$nume|$type" }
+            .take(4)
+            .forEach { (id, nume, type) ->
+                if (id.isBlank() || nume.isBlank() || type.isBlank()) return@forEach
 
-            val ajaxResp = app.post(
-                url = "$directUrl/wp-admin/admin-ajax.php",
-                data = mapOf(
-                    "action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type
-                ),
-                referer = pageUrl,
-                headers = mapOf("Accept" to "*/*", "X-Requested-With" to "XMLHttpRequest")
-            )
+                val ajaxResp = runCatching {
+                    app.post(
+                        url = "$directUrl/wp-admin/admin-ajax.php",
+                        data = mapOf(
+                            "action" to "doo_player_ajax", "post" to id, "nume" to nume, "type" to type
+                        ),
+                        referer = pageUrl,
+                        headers = mapOf("Accept" to "*/*", "X-Requested-With" to "XMLHttpRequest")
+                    )
+                }.getOrNull() ?: return@forEach
 
-            val json = ajaxResp.parsedSafe<ResponseHash>() ?: runCatching {
-                AppUtils.parseJson<ResponseHash>(ajaxResp.text.replace("\\/", "/"))
-            }.getOrNull() ?: return@amap
+                val json = ajaxResp.parsedSafe<ResponseHash>() ?: runCatching {
+                    AppUtils.parseJson<ResponseHash>(ajaxResp.text.replace("\\/", "/"))
+                }.getOrNull() ?: return@forEach
 
-            // New site response is plain URL: {"embed_url":"https://playcinematic.com/video/xxx","type":"iframe"}
-            val rawEmbed = json.embed_url.trim()
-            if (rawEmbed.startsWith("http", true) || rawEmbed.startsWith("//")) {
-                emitExtractor(rawEmbed)
-                return@amap
+                // Current site response is plain URL, for example:
+                // {"embed_url":"https://playcinematic.com/video/xxx","type":"iframe"}
+                // HAR also shows midasfilm.com using the same player flow.
+                val rawEmbed = json.embed_url.trim()
+                if (rawEmbed.startsWith("http", true) || rawEmbed.startsWith("//")) {
+                    emitExtractor(rawEmbed)
+                    return@forEach
+                }
+
+                // Fallback for old encrypted flow (kept for compatibility with mirrors).
+                if (json.key.isNullOrBlank()) return@forEach
+                val metrix = runCatching { AppUtils.parseJson<AesData>(rawEmbed).m }.getOrNull() ?: return@forEach
+                val password = generateKey(json.key, metrix)
+                val decrypted = AesHelper.cryptoAESHandler(rawEmbed, password.toByteArray(), false)
+                    ?.fixBloat()
+                    ?: return@forEach
+
+                emitExtractor(decrypted)
             }
 
-            // Fallback for old encrypted flow (kept for compatibility with mirrors).
-            if (json.key.isNullOrBlank()) return@amap
-            val metrix = runCatching { AppUtils.parseJson<AesData>(rawEmbed).m }.getOrNull() ?: return@amap
-            val password = generateKey(json.key, metrix)
-            val decrypted = AesHelper.cryptoAESHandler(rawEmbed, password.toByteArray(), false)
-                ?.fixBloat()
-                ?: return@amap
-
-            emitExtractor(decrypted)
-        }
-
-        return emitted.isNotEmpty()
+        return found
     }
 
     private fun parseEpisodeNumbers(numberText: String, episodeUrl: String): Pair<Int?, Int?> {
