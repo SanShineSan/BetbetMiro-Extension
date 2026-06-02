@@ -46,7 +46,7 @@ class Indo18Plugin : BasePlugin() {
 }
 
 class Indo18 : MainAPI() {
-    override var mainUrl = "https://indo18.cc"
+    override var mainUrl = "https://www.indo18.com"
     override var name = "Indo18"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -62,8 +62,9 @@ class Indo18 : MainAPI() {
     )
 
     private val sourceOrigins = listOf(
-        "https://indo18.cc",
+        "https://www.indo18.com",
         "https://indo18.com",
+        "https://indo18.cc",
         "https://indo18.biz.id",
         "https://indo18.link",
     )
@@ -96,10 +97,13 @@ class Indo18 : MainAPI() {
         "category/masturbasi/" to "Masturbasi",
         "category/ngintip/" to "Ngintip",
         "category/pembantu/" to "Pembantu",
+        "category/perawan/" to "Perawan",
         "category/pns/" to "PNS",
         "category/scandal/" to "Scandal",
         "category/tante/" to "Tante",
-        "category/video-indonesia/" to "Video Indonesia"
+        "category/video-indonesia/" to "Video Indonesia",
+        "category/video-semi/" to "Video Semi",
+        "category/video-viral/" to "Video Viral"
     )
 
     private val headers = mapOf(
@@ -124,7 +128,7 @@ class Indo18 : MainAPI() {
             page <= 1 && clean.startsWith("?") -> "$mainUrl/$clean"
             page <= 1 -> "$mainUrl/${clean.trim('/')}"
             clean.isBlank() -> "$mainUrl/page/$page"
-            clean.startsWith("?") -> "$mainUrl/page/$page$clean"
+            clean.startsWith("?") -> "$mainUrl/page/$page/$clean"
             clean.contains("?") -> {
                 val base = clean.substringBefore("?").trim('/')
                 val query = clean.substringAfter("?")
@@ -144,20 +148,19 @@ class Indo18 : MainAPI() {
     private fun parseCards(document: Document): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
 
-        // Current indo18.cc video pages use /v/{slug}.  Prefer those anchors so UI links such as
-        // "More videos" and row navigation buttons are not parsed as playable cards.
-        document.select("a[href*='/v/'], a[href*='/video/'], a[href*='/watch/']").forEach { anchor ->
-            anchor.toSearchResult()?.let { item -> results[canonicalUrl(item.url)] = item }
+        // Active www.indo18.com currently publishes playable detail pages as root slugs
+        // (/title-slug/) instead of the older /v/{slug} format.  Parse card containers first
+        // so thumbnails can be recovered, then fall back to raw anchors for the simple listing DOM.
+        document.select(
+            "article:has(a[href]), .post:has(a[href]), .item:has(a[href]), .video:has(a[href]), " +
+                ".video-item:has(a[href]), .thumb-block:has(a[href]), .content article:has(a[href]), " +
+                ".grid article:has(a[href]), .card:has(a[href]), li:has(a[href])"
+        ).forEach { element ->
+            element.toSearchResult()?.let { item -> results[canonicalUrl(item.url)] = item }
         }
 
-        if (results.isEmpty()) {
-            document.select(
-                "article:has(a), .post:has(a), .item:has(a), .video:has(a), .video-item:has(a), " +
-                    ".content article:has(a), .grid article:has(a), .card:has(a), h2:has(a), h3:has(a), " +
-                    "a[href]:has(img), .content a[href]"
-            ).forEach { element ->
-                element.toSearchResult()?.let { item -> results[canonicalUrl(item.url)] = item }
-            }
+        document.select("a[href]").forEach { anchor ->
+            anchor.toSearchResult()?.let { item -> results[canonicalUrl(item.url)] = item }
         }
 
         return results.values.toList()
@@ -173,7 +176,8 @@ class Indo18 : MainAPI() {
         if (isBlockedUrl(href)) return null
         if (!isContentUrl(href)) return null
 
-        val image = selectFirst("img") ?: anchor.selectFirst("img")
+        val baseUrl = pageBaseUrl(anchor) ?: pageBaseUrl(this) ?: mainUrl
+        val poster = findPosterUrl(this, anchor, baseUrl)
         val title = listOf(
             selectFirst("h1")?.text(),
             selectFirst("h2")?.text(),
@@ -181,13 +185,12 @@ class Indo18 : MainAPI() {
             selectFirst(".entry-title")?.text(),
             selectFirst(".title")?.text(),
             anchor.attr("title"),
-            image?.attr("alt"),
+            findPosterElement(this, anchor)?.attr("alt"),
             anchor.text()
-        ).firstOrNull { isUsableTitle(it) }?.cleanTitle() ?: return null
+        ).firstOrNull { isUsableTitle(it) }?.cleanListingTitle() ?: return null
 
         if (title.length < 2 || isUnsafeTitle(title)) return null
 
-        val poster = fixUrl(image?.getImageAttr(), pageBaseUrl(image ?: anchor) ?: mainUrl)?.takeIf { !isBadImage(it) }
         val score = Regex("""(\d{1,3})%""").find(text())?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.div(10.0)?.toString()
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
@@ -209,16 +212,11 @@ class Indo18 : MainAPI() {
     private fun isBlockedUrl(url: String): Boolean {
         val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault(url.substringAfter(mainUrl).trim('/')).lowercase()
         if (path.isBlank()) return true
-        if (isContentUrl(url)) return false
         if (path.startsWith("?") || path.startsWith("#")) return true
+        if (isNonContentPath(path)) return true
+        if (isContentUrl(url)) return false
 
-        val blockedPrefixes = listOf(
-            "category/", "categories", "actors", "actor/", "tags", "tag/", "page/", "search",
-            "filter", "content-removal", "privacy", "dmca", "contact", "wp-content", "wp-json", "wp-admin",
-            "feed", "login", "register", "reset-password"
-        )
-
-        return blockedPrefixes.any { path == it.trimEnd('/') || path.startsWith(it) }
+        return true
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
@@ -227,9 +225,9 @@ class Indo18 : MainAPI() {
 
         val encoded = URLEncoder.encode(keyword, "UTF-8")
         val attempts = listOf(
-            if (page <= 1) "$mainUrl/?s=$encoded" else "$mainUrl/page/$page?s=$encoded",
+            if (page <= 1) "$mainUrl/?s=$encoded" else "$mainUrl/page/$page/?s=$encoded",
             if (page <= 1) "$mainUrl/search/$encoded/" else "$mainUrl/search/$encoded/page/$page/",
-            if (page <= 1) "$mainUrl/?search=$encoded" else "$mainUrl/page/$page?search=$encoded"
+            if (page <= 1) "$mainUrl/?search=$encoded" else "$mainUrl/page/$page/?search=$encoded"
         )
 
         for (url in attempts) {
@@ -264,7 +262,10 @@ class Indo18 : MainAPI() {
             .filter { it.isNotBlank() && !it.equals("Home", true) && !it.equals("Categories", true) && !isUnsafeTitle(it) }
             .distinct()
 
-        val related = document.select("article:has(a), .related a[href], h2 a[href], h3 a[href], main a[href]")
+        val related = document.select(
+            "article:has(a[href]), .post:has(a[href]), .item:has(a[href]), .video:has(a[href]), " +
+                ".video-item:has(a[href]), .thumb-block:has(a[href]), .related a[href], h2 a[href], h3 a[href], main a[href]"
+        )
             .mapNotNull { it.toSearchResult() }
             .distinctBy { canonicalUrl(it.url) }
             .filter { canonicalUrl(it.url) != canonicalUrl(effectiveUrl) }
@@ -614,11 +615,13 @@ class Indo18 : MainAPI() {
 
         document.select(
             "meta[itemprop=embedURL], meta[property=og:video], meta[property=og:video:url], " +
-                "meta[property=og:video:secure_url], video[src], video[data-src], video[data-video], " +
-                "video source[src], source[src], source[data-src], iframe[src], iframe[data-src], " +
-                "iframe[data-litespeed-src], iframe[data-lazy-src], iframe[data-original], embed[src], object[data], " +
-                "a[href], button[data-url], button[data-video], button[data-file], [data-src], [data-video], " +
-                "[data-file], [data-url], [data-embed], [data-iframe], [data-player], [data-href], [onclick], script[src]"
+                "meta[property=og:video:secure_url], meta[property=og:video:iframe], meta[name=twitter:player], " +
+                "video[src], video[data-src], video[data-video], video[poster], video source[src], " +
+                "source[src], source[data-src], iframe[src], iframe[data-src], iframe[data-litespeed-src], " +
+                "iframe[data-lazy-src], iframe[data-original], embed[src], object[data], a[href], button[data-url], " +
+                "button[data-video], button[data-file], [data-src], [data-video], [data-file], [data-url], " +
+                "[data-embed], [data-iframe], [data-player], [data-href], [data-hls], [data-m3u8], " +
+                "[data-mp4], [onclick], script[src]"
         ).forEach { element ->
             val values = listOf(
                 element.attr("content"),
@@ -633,6 +636,10 @@ class Indo18 : MainAPI() {
                 element.attr("data-player"),
                 element.attr("data-href"),
                 element.attr("data-src"),
+                element.attr("data-hls"),
+                element.attr("data-m3u8"),
+                element.attr("data-mp4"),
+                element.attr("poster"),
                 element.attr("data"),
                 element.attr("src"),
                 element.attr("href"),
@@ -1028,7 +1035,26 @@ class Indo18 : MainAPI() {
 
     private fun isContentUrl(url: String): Boolean {
         val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault("").lowercase()
-        return path.startsWith("v/") || path.startsWith("video/") || path.startsWith("watch/")
+        if (path.isBlank() || isNonContentPath(path) || path.contains('.')) return false
+        if (path.startsWith("v/") || path.startsWith("video/") || path.startsWith("watch/")) return true
+
+        // Current source format uses one clean WordPress-like slug at the site root.
+        return '/' !in path && path.length > 2
+    }
+
+    private fun isNonContentPath(path: String): Boolean {
+        val clean = path.trim('/').lowercase()
+        val exact = setOf(
+            "category", "categories", "actors", "actor", "tags", "tag", "page", "search", "filter",
+            "content-removal", "privacy", "dmca", "contact", "wp-content", "wp-json", "wp-admin",
+            "feed", "login", "register", "reset-password", "lost-password", "password-reset", "signup", "sign-up", "account", "profile", "cgi-bin", "cdn-cgi"
+        )
+        if (clean in exact) return true
+
+        return listOf(
+            "category/", "categories/", "actors/", "actor/", "tags/", "tag/", "page/", "search/",
+            "wp-content/", "wp-json/", "wp-admin/", "feed/", "cdn-cgi/", "cgi-bin/"
+        ).any { clean.startsWith(it) }
     }
 
     private fun normalizeContentUrl(url: String): String? {
@@ -1121,33 +1147,66 @@ class Indo18 : MainAPI() {
     }.getOrDefault(mainUrl)
 
     private fun getPoster(document: Document, baseUrl: String = document.location().ifBlank { mainUrl }): String? {
-        return fixUrl(
-            document.selectFirst(
-                "meta[property=og:image], meta[name=twitter:image], video[poster], .poster img, .thumb img, article img, img"
-            )?.let { element ->
+        val element = document.selectFirst(
+            "meta[property=og:image], meta[name=twitter:image], meta[itemprop=thumbnailUrl], link[rel=image_src], " +
+                "video[poster], .poster img, .thumb img, article img, picture img, [style*=background]"
+        )
+
+        return fixUrl(element?.getImageAttr(), baseUrl)?.takeIf { !isBadImage(it) }
+    }
+
+    private fun findPosterUrl(element: Element, anchor: Element, baseUrl: String): String? {
+        return fixUrl(findPosterElement(element, anchor)?.getImageAttr(), baseUrl)?.takeIf { !isBadImage(it) }
+    }
+
+    private fun findPosterElement(element: Element, anchor: Element): Element? {
+        val selector = "img[src], img[data-src], img[data-lazy-src], img[data-original], img[data-full], picture img, " +
+            "source[srcset], source[data-srcset], [style*=background], [data-poster], video[poster]"
+
+        val scopes = mutableListOf<Element>()
+        scopes.add(element)
+        scopes.add(anchor)
+
+        var parent = anchor.parent()
+        repeat(4) {
+            if (parent != null) scopes.add(parent!!)
+            parent = parent?.parent()
+        }
+
+        return scopes.asSequence()
+            .mapNotNull { scope ->
                 when {
-                    element.hasAttr("content") -> element.attr("content")
-                    element.hasAttr("poster") -> element.attr("poster")
-                    else -> element.getImageAttr()
+                    scope.hasAttr("src") || scope.hasAttr("data-src") || scope.hasAttr("data-lazy-src") ||
+                        scope.hasAttr("data-original") || scope.hasAttr("data-full") || scope.hasAttr("srcset") ||
+                        scope.hasAttr("data-srcset") || scope.hasAttr("data-poster") || scope.hasAttr("poster") ||
+                        scope.attr("style").contains("background", true) -> scope
+                    else -> scope.selectFirst(selector)
                 }
-            },
-            baseUrl
-        )?.takeIf { !isBadImage(it) }
+            }
+            .firstOrNull { !it.getImageAttr().isNullOrBlank() }
     }
 
     private fun Element.getImageAttr(): String? {
         fun fromSrcSet(value: String?): String? = value?.split(",")?.map { it.trim().substringBefore(" ") }?.lastOrNull { it.isNotBlank() && !isBadImage(it) }
 
-        return fromSrcSet(attr("data-srcset"))
+        return attr("content").takeIf { it.isNotBlank() }
+            ?: attr("abs:href").takeIf { it.isNotBlank() && hasAttr("rel") }
+            ?: fromSrcSet(attr("data-srcset"))
             ?: fromSrcSet(attr("data-lazy-srcset"))
             ?: fromSrcSet(attr("srcset"))
+            ?: attr("abs:data-poster").takeIf { it.isNotBlank() }
+            ?: attr("abs:poster").takeIf { it.isNotBlank() }
             ?: attr("abs:data-src").takeIf { it.isNotBlank() }
             ?: attr("abs:data-lazy-src").takeIf { it.isNotBlank() }
             ?: attr("abs:data-original").takeIf { it.isNotBlank() }
             ?: attr("abs:data-full").takeIf { it.isNotBlank() }
             ?: attr("abs:src").takeIf { it.isNotBlank() }
+            ?: attr("data-poster").takeIf { it.isNotBlank() }
+            ?: attr("poster").takeIf { it.isNotBlank() }
             ?: attr("data-src").takeIf { it.isNotBlank() }
             ?: attr("data-lazy-src").takeIf { it.isNotBlank() }
+            ?: attr("data-original").takeIf { it.isNotBlank() }
+            ?: attr("data-full").takeIf { it.isNotBlank() }
             ?: attr("src").takeIf { it.isNotBlank() }
             ?: Regex("""url\((['\"]?)([^)'\"]+)\1\)""", RegexOption.IGNORE_CASE)
                 .find(attr("style"))?.groupValues?.getOrNull(2)?.takeIf { it.isNotBlank() }
@@ -1164,7 +1223,8 @@ class Indo18 : MainAPI() {
 
     private fun isUnsafeTitle(text: String): Boolean {
         val value = text.lowercase()
-        return value.contains("smp") || value.contains("sma") || value.contains("smk") ||
+        return value.contains("abg") || value.contains("teen") || value.contains("minor") || value.contains("underage") ||
+            value.contains("smp") || value.contains("sma") || value.contains("smk") || value.contains("smu") ||
             value.contains("sekolah") || value.contains("pelajar") || value.contains("siswi") ||
             value.contains("anak kecil") || value.contains("dibawah umur") || value.contains("underage") ||
             value.contains("rape") || value.contains("dipaksa") || value.contains("pemerkosaan") ||
@@ -1233,6 +1293,14 @@ class Indo18 : MainAPI() {
             .replace(Regex("""\s+INDO18\.(?:COM|CC).*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Sub\s*Indo.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Subtitle\s+Indonesia.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
+    private fun String.cleanListingTitle(): String {
+        return cleanTitle()
+            .replace(Regex("""^\s*\d{1,2}:\d{2}(?::\d{2})?\s+"""), "")
+            .replace(Regex("""\s+\d+(?:[.,]\d+)?[KMB]?\s+\d{1,3}%\s*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+"""), " ")
             .trim()
     }

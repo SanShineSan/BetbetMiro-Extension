@@ -1,9 +1,9 @@
-version = 12
+version = 13
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "Indo18 provider with source-origin fallback, safer listing/search/detail parsing, and hardened playback resolving from direct media, embed/player payloads, stream API hosts, Doodstream, Jomblo/Playmogo redirects, packed scripts, encoded URLs, HLS, MP4, and Cloudstream extractors."
+    description = "Indo18 provider with active www.indo18.com origin, root-slug detail parsing, source-matched categories, safer posters, and hardened playback resolving from Jomblo/Playmogo redirects, embed/player payloads, stream API hosts, Doodstream, HLS, MP4, and Cloudstream extractors."
 
     /**
      * Status int as the following:
@@ -19,5 +19,5 @@ cloudstream {
     )
 
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=indo18.cc&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=www.indo18.com&sz=%size%"
 }
