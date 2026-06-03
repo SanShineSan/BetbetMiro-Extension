@@ -3,17 +3,12 @@ import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
-val cloudstreamGradlePluginVersion = providers
-    .gradleProperty("cloudstream.gradle.plugin.version")
-    .orElse("22be73619eb679c2df2c685fa3ba48ce923e68cb")
-    .get()
-
-val cloudstreamApiVersion = providers
-    .gradleProperty("cloudstream.api.version")
-    .orElse("pre-release")
-    .get()
-
 buildscript {
+
+    val cloudstreamGradlePluginVersion = project
+        .findProperty("cloudstream.gradle.plugin.version")
+        ?.toString()
+        ?: "22be73619eb679c2df2c685fa3ba48ce923e68cb"
 
     repositories {
         google()
@@ -39,6 +34,11 @@ buildscript {
         )
     }
 }
+
+val cloudstreamApiVersion = providers
+    .gradleProperty("cloudstream.api.version")
+    .orElse("pre-release")
+    .get()
 
 allprojects {
 
