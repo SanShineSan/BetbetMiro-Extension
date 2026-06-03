@@ -10,5 +10,9 @@ class NomatPlugin : Plugin() {
         Nomat.context = context
         registerMainAPI(Nomat())
         registerExtractorAPI(Hydrax())
+        registerExtractorAPI(NomatFileLions())
+        registerExtractorAPI(NomatFileMoon())
+        registerExtractorAPI(NomatStreamWish())
+        registerExtractorAPI(NomatStreamHide())
     }
 }

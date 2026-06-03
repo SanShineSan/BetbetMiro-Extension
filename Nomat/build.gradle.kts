@@ -1,4 +1,4 @@
-version = 6
+version = 7
 
 cloudstream {
     description = "Nomat"
@@ -19,5 +19,5 @@ cloudstream {
         "Movie",
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://nomat.site&size=%size%"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://nomat.asia&size=%size%"
 }

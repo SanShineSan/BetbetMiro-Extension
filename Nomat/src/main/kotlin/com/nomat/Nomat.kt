@@ -2,72 +2,67 @@ package com.nomat
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.httpsify
-import com.lagradost.cloudstream3.utils.loadExtractor
-import java.net.URI
-import org.jsoup.nodes.Element
-import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.base64Decode
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.mvvm.logError
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
+import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class Nomat : MainAPI() {
     companion object {
         var context: android.content.Context? = null
     }
-    
-    override var mainUrl = "https://nomat.site"
-    private var directUrl: String? = null
+
+    override var mainUrl = "https://nomat.asia"
     override var name = "Nomat"
     override val hasMainPage = true
     override var lang = "id"
-    override val supportedTypes =
-            setOf(TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.AsianDrama)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.AsianDrama)
 
     override val mainPage = mainPageOf(
-        "slug/film-baru-terpopuler" to "Film Baru Terpopuler",
-        "slug/film-box-office" to "Film Box Office",
-        "slug/film-serial-anime" to "Serial Anime",
-        "slug/film-serial-tv-korea" to "Serial Drama Korea",
-        
-        "genre/action" to "Action",
-        "genre/adventure" to "Adventure",
-        "genre/animation" to "Animation",
-        "genre/comedy" to "Comedy",
-        "genre/crime" to "Crime",
-        "genre/drama" to "Drama",
-        "genre/fantasy" to "Fantasy",
-        "genre/horror" to "Horror",
-        "genre/mystery" to "Mystery",
-        "genre/romance" to "Romance",
-        "genre/sci-fi" to "Sci-Fi",
-        "genre/thriller" to "Thriller",
-        
-        "country/indonesia" to "Indonesia",
-        "country/japan" to "Japan",
-        "country/korea" to "Korea",
-        "country/china" to "China",
-        "country/thailand" to "Thailand",
-        "country/usa" to "USA"
+        "slug/film-terbaru" to "Film Terbaru",
+        "slug/film-terfavorit" to "Film Terfavorit",
+        "slug/film-box-office" to "Box Office",
+        "slug/semua-film" to "Semua Film",
+
+        "category/genre/action" to "Action",
+        "category/genre/horror" to "Horror",
+        "category/genre/sci-fi" to "Sci-Fi",
+        "category/genre/romance" to "Romance",
+        "category/genre/history" to "History",
+        "category/genre/animasi" to "Animation",
+        "category/genre/serial-tv" to "Serial",
+
+        "category/country/indonesia" to "Indonesia",
+        "category/country/japan" to "Japan",
+        "category/country/korea" to "Korea",
+        "category/country/china" to "China",
+        "category/country/thailand" to "Thailand",
+        "category/country/usa" to "USA",
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) {
-            "$mainUrl/${request.data}"
+        val cleanPath = request.data.trim('/')
+        val url = if (page <= 1) {
+            "$mainUrl/$cleanPath/"
         } else {
-            "$mainUrl/${request.data}/page/$page"
+            "$mainUrl/$cleanPath/page/$page/"
         }
 
-        val doc = app.get(url).document
-        val home = doc.select("article.item").mapNotNull { it.toSearchResult() }
+        val document = app.get(url).document
+        val home = document.select(".section .body a[href]")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
 
         return newHomePageResponse(
             list = HomePageList(
@@ -80,72 +75,99 @@ class Nomat : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("h2.entry-title, h3, a[title]")?.text() ?: this.attr("title").takeIf { it.isNotBlank() } ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.getImageAttr())
-        val isTvSeries = href.contains("/series/") || href.contains("/tv/") || this.select(".type-series").isNotEmpty()
+        if (selectFirst(".item") == null) return null
+
+        val title = selectFirst(".title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val href = attr("abs:href").ifBlank { attr("href") }.takeIf { it.isNotBlank() } ?: return null
+        val posterUrl = selectFirst(".poster")?.getBackgroundImage()
+            ?: selectFirst("img")?.getImageAttr()
+        val isTvSeries = href.contains("/series/") ||
+            href.contains("/tv/") ||
+            href.contains("/serial", true) ||
+            selectFirst(".qual.eps") != null
 
         return if (isTvSeries) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = posterUrl
+            newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                this.posterUrl = fixUrlNull(posterUrl)
             }
         } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = posterUrl
+            newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                this.posterUrl = fixUrlNull(posterUrl)
             }
         }
     }
 
-
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-        return document.select("article.item").mapNotNull { it.toSearchResult() }
+        val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+        val document = app.get("$mainUrl/search/$encoded/").document
+
+        return document.select(".section .body a[href]")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text() ?: return null
-        val poster = fixUrlNull(document.selectFirst("div.poster img")?.getImageAttr())
-        val tags = document.select("div.sgeneros a").map { it.text() }
-        val plot = document.selectFirst("div.wp-content p")?.text()
-        val isTvSeries = url.contains("/series/") || url.contains("/tv/") || document.select(".episodiotitle").isNotEmpty()
-        
-        // Perbaikan: Tidak di-convert ke Float karena parameter addScore adalah String?
-        val rating = document.selectFirst("span.dt_rating_vgs")?.text()
-        val recommendations = document.select("article.item").mapNotNull { it.toSearchResult() }
+        val title = document.selectFirst(".video-title h1")?.text()
+            ?: document.select("h1").firstOrNull { !it.text().contains("NOMAT:", true) }?.text()
+            ?: document.selectFirst("title")?.text()?.substringBefore(" Subtitle Indonesia")?.substringAfter("Nonton ")
+            ?: return null
 
-        if (isTvSeries) {
-            val episodes = mutableListOf<Episode>()
-            document.select("ul.episodios li").forEach { epElement ->
-                val epTitle = epElement.selectFirst(".episodiotitle a")?.text() ?: "Episode"
-                val epUrl = epElement.selectFirst(".episodiotitle a")?.attr("href") ?: return@forEach
-                val seasonNum = epElement.selectFirst(".numerando")?.text()?.split("-")?.firstOrNull()?.trim()?.toIntOrNull()
-                val epNum = epElement.selectFirst(".numerando")?.text()?.split("-")?.lastOrNull()?.trim()?.toIntOrNull()
+        val poster = document.selectFirst(".video-poster")?.getBackgroundImage()
+        val tags = document.select(".video-genre a").map { it.text().trim() }.filter { it.isNotBlank() }
+        val actors = document.select(".video-actor a").map { it.text().trim() }.filter { it.isNotBlank() }
+        val plot = document.selectFirst(".video-synopsis")?.text()
+            ?.substringAfter("Sinopsis:", "")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val rating = document.selectFirst(".video-rating")?.text()
+            ?.substringAfter("Rating:")
+            ?.substringBefore("/")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && it != "?" }
+        val recommendations = document.select(".section .body a[href]")
+            .mapNotNull { it.toSearchResult() }
+            .filter { it.url != url }
+            .distinctBy { it.url }
 
-                episodes.add(
-                    newEpisode(epUrl) {
-                        this.name = epTitle
-                        this.season = seasonNum
-                        this.episode = epNum
-                    }
-                )
+        val trailerId = document.selectFirst("amp-youtube[data-videoid]")?.attr("data-videoid")
+            ?.takeIf { it.isNotBlank() }
+
+        val episodes = document.select(".video-episodes a[href]")
+            .mapIndexedNotNull { index, element ->
+                val episodeUrl = element.attr("abs:href").ifBlank { element.attr("href") }
+                    .takeIf { it.isNotBlank() }
+                    ?: return@mapIndexedNotNull null
+
+                val episodeName = element.text().trim().ifBlank { "Episode ${index + 1}" }
+                val episodeNumber = Regex("""\d+""").find(episodeName)?.value?.toIntOrNull() ?: (index + 1)
+
+                newEpisode(fixUrl(episodeUrl)) {
+                    this.name = episodeName
+                    this.episode = episodeNumber
+                }
             }
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
+
+        return if (episodes.size > 1) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = fixUrlNull(poster)
                 this.plot = plot
                 this.tags = tags
                 this.recommendations = recommendations
+                addActors(actors)
                 addScore(rating)
+                if (trailerId != null) addTrailer("https://www.youtube.com/watch?v=$trailerId")
             }
         } else {
-            return newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = poster
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = fixUrlNull(poster)
                 this.plot = plot
                 this.tags = tags
                 this.recommendations = recommendations
+                addActors(actors)
                 addScore(rating)
+                if (trailerId != null) addTrailer("https://www.youtube.com/watch?v=$trailerId")
             }
         }
     }
@@ -156,40 +178,84 @@ class Nomat : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        return try {
-            val nhDoc = app.get(data, referer = mainUrl, timeout = 100L).document
+        var emitted = 0
 
-            nhDoc.select("div.server-item").forEach { el ->
-                val encoded = el.attr("data-url")
-                if (encoded.isNotBlank()) {
-                    try {
-                        val decoded = base64Decode(encoded)
-                        loadExtractor(decoded, data, subtitleCallback, callback)
-                    } catch (e: Exception) {
-                        logError(e)
-                    }
-                }
+        val playerPages = runCatching {
+            if (data.contains("nontonhemat.link")) {
+                listOf(data)
+            } else {
+                val document = app.get(data, referer = mainUrl).document
+                document.select("a[href*=\"nontonhemat.link\"]")
+                    .mapNotNull { it.attr("abs:href").ifBlank { it.attr("href") }.takeIf { it.isNotBlank() } }
+                    .distinct()
+                    .take(2)
             }
-            
-            nhDoc.select("iframe[src]").forEach { iframe ->
-                val src = iframe.attr("src")
-                if (src.isNotBlank() && src.startsWith("http")) {
-                    loadExtractor(src, data, subtitleCallback, callback)
-                }
-            }
-            true
-        } catch (e: Exception) {
-            logError(e)
-            false
+        }.getOrElse {
+            logError(it)
+            emptyList()
         }
+
+        for (playerPage in playerPages) {
+            val playerDoc = try {
+                app.get(playerPage, referer = data).document
+            } catch (t: Throwable) {
+                logError(t)
+                continue
+            }
+
+            val playerLinks = playerDoc.select(".server-item[data-url]")
+                .mapNotNull { it.attr("data-url").decodeBase64Url() }
+                .filter(::isSupportedPlayer)
+                .distinct()
+                .take(6)
+
+            for (link in playerLinks) {
+                runCatching {
+                    loadExtractor(link, playerPage, subtitleCallback) {
+                        emitted++
+                        callback(it)
+                    }
+                }.onFailure { logError(it) }
+
+                if (emitted > 0) return true
+            }
+        }
+
+        return emitted > 0
     }
 
-    private fun Element.getImageAttr(): String {
+    private fun isSupportedPlayer(url: String): Boolean {
+        return listOf(
+            "filelions.to",
+            "filemoon.sx",
+            "streamwish.to",
+            "streamhide.to",
+            "playhydrax.com",
+            "vidhide",
+        ).any { url.contains(it, true) }
+    }
+
+    private fun String.decodeBase64Url(): String? {
+        return runCatching { base64Decode(this).trim() }
+            .getOrNull()
+            ?.takeIf { it.startsWith("http") }
+    }
+
+    private fun Element.getBackgroundImage(): String? {
+        return Regex("""url\(['"]?([^'")]+)""")
+            .find(attr("style"))
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun Element.getImageAttr(): String? {
         return when {
-            this.hasAttr("data-src") -> this.attr("abs:data-src")
-            this.hasAttr("data-lazy-src") -> this.attr("abs:data-lazy-src")
-            this.hasAttr("srcset") -> this.attr("abs:srcset").substringBefore(" ")
-            else -> this.attr("abs:src")
-        }
+            hasAttr("data-src") -> attr("abs:data-src")
+            hasAttr("data-lazy-src") -> attr("abs:data-lazy-src")
+            hasAttr("srcset") -> attr("abs:srcset").substringBefore(" ")
+            else -> attr("abs:src")
+        }.takeIf { it.isNotBlank() }
     }
 }
