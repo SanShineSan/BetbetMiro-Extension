@@ -15,6 +15,11 @@ buildscript {
         ?.toString()
         ?: "2.3.0"
 
+    val androidGradlePluginVersion = project
+        .findProperty("android.gradle.plugin.version")
+        ?.toString()
+        ?: "8.7.3"
+
     repositories {
         google()
         mavenCentral()
@@ -25,7 +30,7 @@ buildscript {
 
         // Android Gradle Plugin
         classpath(
-            "com.android.tools.build:gradle:8.7.3"
+            "com.android.tools.build:gradle:$androidGradlePluginVersion"
         )
 
         // CloudStream Gradle Plugin
