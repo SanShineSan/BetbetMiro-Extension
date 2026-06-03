@@ -1,12 +1,10 @@
-# 🚀 BetbetMiro Extension
+# BetbetMiro Extension
 
 <div align="center">
 
-# 🍿 BetbetMiro Extension
+### CloudStream provider repository maintained by @sad25kag
 
-### Anime • Donghua • Drama • Movie • Multi-Source • NSFW
-
-Repository CloudStream yang berfokus pada provider aktif, update cepat, dan perbaikan berkelanjutan.
+Anime • Donghua • Drama • Movie • Multi-Source • NSFW
 
 <img src="https://img.shields.io/github/stars/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=yellow" />
 <img src="https://img.shields.io/github/forks/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=blue" />
@@ -17,91 +15,73 @@ Repository CloudStream yang berfokus pada provider aktif, update cepat, dan perb
 
 ---
 
-## 🎬 Tentang Repository
+## Tentang Repository
 
-BetbetMiro Extension adalah repository CloudStream yang menyediakan berbagai provider streaming dari berbagai sumber.
+**BetbetMiro Extension** adalah repository ekstensi CloudStream yang berisi kumpulan provider dari berbagai sumber. Repository ini berfokus pada pemeliharaan provider, perbaikan parser, pembaruan domain, validasi kategori, serta stabilitas playback.
 
-Fokus utama repository ini:
+Prioritas pengembangan repository ini:
 
-- ⚡ Provider aktif dan terawat
-- 🔄 Perbaikan cepat saat source berubah
-- 🧩 Dukungan Anime, Donghua, Drama, Movie, dan Multi-Source
-- 🎥 Prioritas pada playback yang stabil
-- 📱 Kompatibel dengan CloudStream versi terbaru
-
----
-
-## 📊 Repository Highlights
-
-| Informasi | Status |
-|------------|---------|
-| Repository Status | 🟢 Aktif |
-| Auto Update | 🟢 Didukung |
-| CloudStream Compatible | 🟢 Ya |
-| Open Source | 🟢 Ya |
-| Android Support | 🟢 Ya |
-| Continuous Maintenance | 🟢 Aktif |
+1. Provider tetap aktif dan dapat digunakan.
+2. Build tetap bersih dan kompatibel dengan CloudStream.
+3. `repo.json` dan `plugins.json` tetap valid.
+4. GitHub Actions berjalan sukses.
+5. Dokumentasi jelas dan mudah dipahami.
+6. Perubahan kosmetik dilakukan hanya bila diperlukan.
 
 ---
 
-## 🎭 Kategori Konten
+## Status Provider
 
-### 🎌 Anime
+Daftar provider bersifat dinamis dan dikelola secara berkala. Provider dapat ditambahkan, diperbarui, dinonaktifkan, atau dihapus sewaktu-waktu berdasarkan kondisi sumber, stabilitas, dan kebutuhan pemeliharaan.
 
-Provider anime subtitle Indonesia dan multi-language.
-
-### 🐉 Donghua
-
-Berbagai source donghua populer.
-
-### 📺 Drama Asia
-
-Drama China, Korea, Jepang, Thailand, dan lainnya.
-
-### 🎬 Movie
-
-Film Indonesia, Barat, Asia, dan multi-source.
-
-### 🌐 Multi-Source
-
-Provider yang menggabungkan berbagai sumber dalam satu ekstensi.
-
-### 🔞 NSFW
-
-Provider khusus konten dewasa untuk pengguna yang memenuhi syarat usia.
+Provider dalam repository ini bergantung pada sumber pihak ketiga. Perubahan domain, struktur halaman, proteksi akses, endpoint player, atau host video dapat memengaruhi fungsi provider tanpa pemberitahuan sebelumnya.
 
 ---
 
-## 📥 Install Repository
+## Kategori Konten
 
-### ✅ One Click Install
+Repository ini dapat memuat provider untuk beberapa kategori berikut:
 
-Buka dari perangkat Android yang sudah terpasang CloudStream:
+- Anime
+- Donghua
+- Drama Asia
+- Film Indonesia
+- Film Barat dan Asia
+- Multi-source provider
+- Konten dewasa/NSFW untuk pengguna yang memenuhi syarat usia
+
+Ketersediaan kategori mengikuti provider yang sedang aktif dan dapat berubah sewaktu-waktu.
+
+---
+
+## Instalasi Repository
+
+### One-click Install
+
+Buka link berikut dari perangkat Android yang sudah terpasang CloudStream:
 
 ```text
 cloudstreamrepo://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/repo.json
 ```
 
----
+### Instalasi Manual
 
-### 🧩 Install Manual
-
-1. Buka CloudStream
-2. Settings
-3. Extensions
-4. Add Repository
+1. Buka CloudStream.
+2. Masuk ke **Settings**.
+3. Buka menu **Extensions**.
+4. Pilih **Add Repository**.
 5. Masukkan URL berikut:
 
 ```text
 https://raw.githubusercontent.com/sad25kag/BetbetMiro-Extension/master/repo.json
 ```
 
-6. Install Repository
-7. Selesai 🎉
+6. Simpan repository.
+7. Install provider yang ingin digunakan.
 
 ---
 
-## 🛠️ Build From Source
+## Build From Source
 
 Clone repository:
 
@@ -110,13 +90,13 @@ git clone https://github.com/sad25kag/BetbetMiro-Extension.git
 cd BetbetMiro-Extension
 ```
 
-Build:
+Build semua provider:
 
 ```bash
 ./gradlew make
 ```
 
-Output build:
+Output build akan tersedia di:
 
 ```text
 /builds
@@ -124,136 +104,141 @@ Output build:
 
 ---
 
-## ⚙️ Standar BetbetMiro
+## Standar Pemeliharaan Provider
 
-Perbaikan provider wajib mengikuti prinsip berikut:
+Setiap perubahan provider harus menjaga stabilitas repository dan meminimalkan risiko regresi. Standar dasar yang digunakan:
 
-- ✅ Bump version pada `build.gradle.kts`
-- ✅ Search harus berfungsi
-- ✅ Homepage harus berfungsi
-- ✅ Load detail harus berfungsi
-- ✅ `loadLinks()` harus menghasilkan link yang valid
-- ✅ Kategori mengikuti website sumber
-- ✅ Tidak mengubah bagian yang sudah stabil tanpa alasan
-- ✅ Menghindari parser crash
-- ✅ Menghindari URL kosong dan URL relatif yang tidak ditangani
-- ✅ Menghindari membaca response besar dengan `.text`
-
----
-
-## 🚦 Workflow Perbaikan Provider
-
-Saat provider bermasalah:
-
-1. Verifikasi domain sumber
-2. Verifikasi `search()`
-3. Verifikasi homepage
-4. Verifikasi `load()`
-5. Verifikasi `loadLinks()`
-6. Verifikasi extractor
-7. Verifikasi playback langsung
-
-Masalah yang paling sering terjadi:
-
-- Domain berubah
-- Struktur HTML berubah
-- Extractor mati
-- URL video berubah
-- Link embed berubah
-- OOM akibat membaca file besar
+- Version provider wajib dinaikkan di `build.gradle.kts` setiap ada perubahan kode.
+- `search()` harus mengembalikan hasil yang relevan.
+- `getMainPage()` harus sesuai kategori aktif dari sumber.
+- `load()` harus memuat detail konten dengan data episode/movie yang valid.
+- `loadLinks()` harus menghasilkan callback video yang valid, bukan sekadar return `true`.
+- Parser harus mengikuti struktur sumber aktif berdasarkan bukti terbaru.
+- Extractor harus dibatasi agar tidak memicu request berlebihan, hang, atau OutOfMemory.
+- File provider lain tidak diubah kecuali memang terdampak langsung.
+- Perubahan fallback, host, kategori, atau selector harus punya alasan teknis yang jelas.
 
 ---
 
-## 🧭 Catatan Kompatibilitas & Investigasi
+## Workflow Perbaikan Provider
 
-CloudStream dan source website dapat berubah sewaktu-waktu. Beberapa provider mungkin mengalami error setelah update aplikasi, terutama pada versi prerelease, misalnya:
+Saat provider bermasalah, investigasi dilakukan dengan alur berikut:
+
+1. Verifikasi domain aktif.
+2. Cek struktur homepage dan kategori.
+3. Cek hasil search.
+4. Cek halaman detail dan data episode/movie.
+5. Cek iframe/player/API yang digunakan sumber.
+6. Cek extractor dan host video aktif.
+7. Patch akar masalah secara spesifik.
+8. Bump version provider.
+9. Jalankan validasi build/test bila environment tersedia.
+
+Jenis masalah yang sering terjadi:
+
+- Domain sumber berubah.
+- Struktur HTML berubah.
+- Endpoint search/kategori berubah.
+- Player iframe berubah.
+- Host video berubah.
+- Token, referer, origin, atau cookie berubah.
+- Extractor tidak lagi cocok dengan response aktif.
+- Resolver terlalu luas dan memicu timeout, hang, atau OutOfMemory.
+
+---
+
+## Kompatibilitas CloudStream
+
+CloudStream dan API ekstensi dapat berubah dari waktu ke waktu. Perubahan pada runtime CloudStream dapat menyebabkan provider yang sebelumnya berjalan normal menjadi gagal build, gagal load, atau gagal playback.
+
+Contoh masalah kompatibilitas runtime:
 
 ```text
 No virtual method parseJson(...)
 in class com.lagradost.cloudstream3.utils.AppUtils
 ```
 
-Error seperti ini biasanya menandakan perubahan kompatibilitas API/runtime CloudStream, bukan selalu berarti website sumber sedang mati. Provider yang masih memakai parser lama perlu diperbarui agar sesuai dengan runtime CloudStream terbaru.
+Error seperti itu biasanya menunjukkan perubahan API/runtime CloudStream, bukan selalu berarti sumber website sedang mati. Provider terkait perlu diperbarui agar sesuai dengan API CloudStream yang digunakan.
 
 ---
 
-## 📝 Melaporkan Error
+## Melaporkan Masalah
 
-Saat membuat issue, sertakan:
+Saat membuat issue, sertakan informasi berikut agar investigasi lebih cepat:
 
-- Nama provider
-- URL halaman yang bermasalah
-- Screenshot error
-- Log CloudStream
-- Langkah reproduksi
+- Nama provider.
+- URL halaman yang bermasalah.
+- Screenshot error.
+- Log CloudStream atau provider test.
+- Langkah reproduksi.
+- Informasi apakah error terjadi di CloudStream stable atau prerelease.
 
-Semakin lengkap informasi yang diberikan, semakin cepat proses investigasi.
-
----
-
-## 🤝 Pull Request
-
-Pull Request sangat diterima untuk:
-
-- Perbaikan provider
-- Penambahan kategori
-- Perbaikan extractor
-- Perbaikan parser
-- Perbaikan performa
-- Provider baru
-
-Checklist sebelum PR:
-
-- [ ] Version sudah dinaikkan
-- [ ] Build berhasil
-- [ ] Search berhasil
-- [ ] Load detail berhasil
-- [ ] Playback berhasil
-- [ ] Tidak merusak provider lain
+Laporan yang lengkap membantu menentukan apakah masalah berasal dari domain, parser, kategori, detail page, extractor, host video, atau runtime CloudStream.
 
 ---
 
-## ⚠️ Disclaimer
+## Pull Request
+
+Pull Request diterima untuk perbaikan yang jelas dan terarah, seperti:
+
+- Perbaikan provider.
+- Pembaruan domain.
+- Pembaruan kategori.
+- Perbaikan search/load/loadLinks.
+- Perbaikan extractor.
+- Optimasi performa resolver.
+- Penambahan provider baru.
+
+Checklist sebelum membuat PR:
+
+- [ ] Version provider sudah dinaikkan.
+- [ ] Build berhasil dijalankan bila environment tersedia.
+- [ ] Search sudah dicek.
+- [ ] Homepage/kategori sudah dicek.
+- [ ] Load detail sudah dicek.
+- [ ] Playback/loadLinks sudah dicek.
+- [ ] File yang tidak terkait tidak diubah.
+
+---
+
+## Disclaimer
 
 Repository ini tidak menyimpan, meng-host, atau mendistribusikan konten video apa pun.
 
-Semua konten berasal dari sumber pihak ketiga yang tersedia secara publik di internet.
+Semua konten berasal dari sumber pihak ketiga yang tersedia di internet. Repository ini hanya menyediakan parser dan integrasi provider untuk CloudStream.
 
-Pengembang repository hanya menyediakan parser dan integrasi untuk CloudStream.
+Pemilik repository tidak berafiliasi dengan CloudStream maupun sumber pihak ketiga yang digunakan oleh provider.
 
 ---
 
-## 🔞 Peringatan Konten Dewasa
+## Peringatan Konten Dewasa
 
-Sebagian ekstensi dalam repository ini dapat mengakses konten dewasa (NSFW).
+Sebagian provider dalam repository ini dapat mengakses konten dewasa/NSFW.
 
 Dengan menggunakan repository ini, pengguna menyatakan bahwa:
 
-- Berusia minimal 18 tahun atau sesuai hukum setempat.
-- Bertanggung jawab penuh atas penggunaan masing-masing.
-- Memahami risiko dan aturan yang berlaku di wilayahnya.
+- Telah memenuhi batas usia yang berlaku di wilayah masing-masing.
+- Bertanggung jawab penuh atas penggunaan repository dan provider di dalamnya.
+- Memahami hukum, aturan, dan risiko penggunaan konten di wilayah masing-masing.
 
 ---
 
-## ❤️ Credits
+## Credits
 
 Terima kasih kepada:
 
 - CloudStream
-- Semua developer provider
-- Komunitas Open Source
-- Para tester
-- Pelapor bug
-- Kontributor repository
+- Developer provider dan extractor
+- Komunitas open source
+- Tester dan pelapor bug
+- Kontributor BetbetMiro Extension
 
 ---
 
 <div align="center">
 
-# 🍿 Happy Streaming
+### BetbetMiro Extension
 
-### Built with ☕, parser fixes, extractor patches, and countless Gradle rebuilds.
-
-**BetbetMiro Extension**
+Maintained with parser fixes, extractor patches, source validation, and countless Gradle rebuilds.
 
 </div>
