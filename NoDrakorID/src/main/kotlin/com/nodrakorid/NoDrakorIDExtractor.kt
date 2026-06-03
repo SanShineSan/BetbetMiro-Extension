@@ -371,13 +371,13 @@ internal object NoDrakorIDExtractor {
         return emitAbyssFromHtml(pageUrl, html, callback)
     }
 
-    fun extractAbyssForHost(
+    suspend fun extractAbyssForHost(
         pageUrl: String,
         html: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean = emitAbyssFromHtml(pageUrl, html, callback)
 
-    private fun emitAbyssFromHtml(
+    private suspend fun emitAbyssFromHtml(
         pageUrl: String,
         html: String,
         callback: (ExtractorLink) -> Unit
