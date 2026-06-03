@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import okhttp3.FormBody
 
 class PornhoarderPlugin : MainAPI() {
-    override var mainUrl              = "https://ww3.pornhoarder.org"
+    override var mainUrl              = "https://pornhoarder.io"
     override var name                 = "Pornhoarder"
     override val hasMainPage          = true
     override var lang                 = "id"
@@ -63,10 +63,14 @@ class PornhoarderPlugin : MainAPI() {
         }
     }
 
-    private fun Element.toSearchResult(): SearchResponse {
-        val title = this.select(".video-content h1").text().replace("| PornHoarder.tv","")
-        val href = mainUrl + this.select(".video-link").attr("href")
-        val posterUrl = this.selectFirst(".video-image.primary.b-lazy")?.attr("data-src")
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.select(".video-content h1").text()
+            .replace("| PornHoarder.tv", "")
+            .replace("| PornHoarder.io", "")
+            .trim()
+            .takeIf { it.isNotBlank() } ?: return null
+        val href = absoluteUrl(this.select(".video-link").attr("href")) ?: return null
+        val posterUrl = absoluteUrl(this.selectFirst(".video-image.primary.b-lazy")?.attr("data-src"))
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
@@ -112,22 +116,34 @@ class PornhoarderPlugin : MainAPI() {
 
     private fun absoluteUrl(url: String?, base: String = mainUrl): String? {
         val cleaned = url?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (cleaned.startsWith("javascript:", true) ||
+            cleaned.startsWith("about:", true) ||
+            cleaned.startsWith("data:", true) ||
+            cleaned.startsWith("blob:", true) ||
+            cleaned.startsWith("#")
+        ) return null
+
         return when {
             cleaned.startsWith("http://") || cleaned.startsWith("https://") -> cleaned
             cleaned.startsWith("//") -> "https:$cleaned"
-            cleaned.startsWith("/") -> "${mainUrl.removeSuffix("/")}$cleaned"
+            cleaned.startsWith("/") -> "${base.substringBefore("://")}://${base.substringAfter("://").substringBefore("/")}$cleaned"
             cleaned.startsWith("?") -> "${base.substringBefore("?")}$cleaned"
-            cleaned.startsWith("javascript:", true) || cleaned.startsWith("#") -> null
-            else -> "${base.substringBeforeLast("/", mainUrl).trimEnd('/')}/$cleaned"
+            else -> "${base.substringBeforeLast("/", base).trimEnd('/')}/$cleaned"
         }
     }
 
     private fun String.isPlayableCandidate(): Boolean {
         val lower = lowercase()
-        return lower.startsWith("http") && !listOf(
+        return startsWith("http") && !listOf(
             "javascript:", "about:", "data:", "blob:", "googlesyndication", "doubleclick",
-            "popads", "exoclick", "juicyads", "adsterra", "analytics"
+            "popads", "exoclick", "juicyads", "adsterra", "analytics", "vast", "preroll",
+            "commentsmodule", "tagbom", "megawebify", "videosprofitnetwork", "magsrv", "vstserv"
         ).any { lower.contains(it) }
+    }
+
+    private fun String.isPornhoarderPlayer(): Boolean {
+        val lower = lowercase()
+        return lower.contains("pornhoarder.net/player_t.php") || lower.contains("pornhoarder.net/player.php")
     }
 
     private suspend fun tryLoadExtractor(
@@ -148,58 +164,70 @@ class PornhoarderPlugin : MainAPI() {
         }
     }
 
+    private fun collectPlayerCandidates(html: String, pageUrl: String): List<String> {
+        val results = mutableListOf<String>()
+        val document = org.jsoup.Jsoup.parse(html, pageUrl)
+
+        document.select(".video-player iframe[src], iframe[src], source[src], video[src]").forEach { element ->
+            absoluteUrl(element.attr("src"), pageUrl)?.let(results::add)
+        }
+
+        document.select("script[type=application/ld+json]").forEach { script ->
+            Regex("""\"embedUrl\"\s*:\s*\"([^\"]+)\"""").findAll(script.data())
+                .map { it.groupValues[1].replace("\\/", "/") }
+                .mapNotNull { absoluteUrl(it, pageUrl) }
+                .forEach(results::add)
+        }
+
+        Regex("""['\"](https?://[^'\"\s<>]+(?:player(?:_t)?\.php\?video=|/e/|/embed/|mp4|m3u8)[^'\"\s<>]*)['\"]""")
+            .findAll(html)
+            .take(16)
+            .map { it.groupValues[1] }
+            .mapNotNull { absoluteUrl(it, pageUrl) }
+            .forEach(results::add)
+
+        return results.distinct().filter { it.isPlayableCandidate() }
+    }
+
+    private suspend fun resolvePlayerCandidate(
+        playerUrl: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        if (!playerUrl.isPornhoarderPlayer()) {
+            return tryLoadExtractor(playerUrl, referer, subtitleCallback, callback)
+        }
+
+        val playerDoc = runCatching {
+            app.get(playerUrl, referer = referer).text
+        }.getOrNull() ?: return false
+
+        val nested = collectPlayerCandidates(playerDoc, playerUrl).filterNot { it.isPornhoarderPlayer() }
+        for (nestedUrl in nested.take(6)) {
+            if (tryLoadExtractor(nestedUrl, playerUrl, subtitleCallback, callback)) return true
+        }
+        return false
+    }
+
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val doc = app.get(data).document
-        val serversList = mutableListOf<String>()
+        val pageHtml = runCatching {
+            app.get(data, referer = "$mainUrl/").text
+        }.getOrNull() ?: return false
 
-        doc.select(".video-player iframe[src], iframe[src]").forEach { iframe ->
-            absoluteUrl(iframe.attr("src"), data)?.let(serversList::add)
+        val candidates = collectPlayerCandidates(pageHtml, data).toMutableList()
+
+        val videoId = data.substringBefore("?").trimEnd('/').substringAfterLast('/').takeIf { it.length > 16 }
+        if (videoId != null) {
+            candidates.add("https://pornhoarder.net/player_t.php?video=$videoId")
         }
 
-        doc.select(".video-detail-servers li a[href]").take(12).forEach { item ->
-            val hostUrl = absoluteUrl(item.attr("href"), data) ?: return@forEach
-            runCatching {
-                val serverDoc = app.get(hostUrl, referer = data).document
-                serverDoc.select(".video-player iframe[src], iframe[src]").forEach { iframe ->
-                    absoluteUrl(iframe.attr("src"), hostUrl)?.let(serversList::add)
-                }
+        for (candidate in candidates.distinct().filter { it.isPlayableCandidate() }.take(8)) {
+            if (resolvePlayerCandidate(candidate, data, subtitleCallback, callback)) {
+                return true
             }
         }
 
-        var linksLoaded = 0
-        serversList.distinct().filter { it.isPlayableCandidate() }.take(12).forEach { playerUrl ->
-            if (tryLoadExtractor(playerUrl, data, subtitleCallback) { link ->
-                    linksLoaded++
-                    callback(link)
-                }
-            ) return@forEach
-
-            val requestBody = FormBody.Builder()
-                .addEncoded("play", "")
-                .build()
-
-            val playerDoc = runCatching {
-                app.post(playerUrl, requestBody = requestBody, referer = data).document
-            }.getOrNull() ?: return@forEach
-
-            val nestedLinks = mutableListOf<String>()
-            playerDoc.select("iframe[src], source[src], video[src]").forEach { element ->
-                absoluteUrl(element.attr("src"), playerUrl)?.let(nestedLinks::add)
-            }
-            Regex("""['"](https?://[^'"\s]+(?:mp4|m3u8|embed|e/)[^'"\s]*)['"]""")
-                .findAll(playerDoc.html())
-                .take(8)
-                .map { it.groupValues[1] }
-                .forEach(nestedLinks::add)
-
-            nestedLinks.distinct().filter { it.isPlayableCandidate() }.take(6).forEach { nested ->
-                tryLoadExtractor(nested, playerUrl, subtitleCallback) { link ->
-                    linksLoaded++
-                    callback(link)
-                }
-            }
-        }
-
-        return linksLoaded > 0
+        return false
     }
 }
