@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
 open class Rebahin : MainAPI() {
     companion object {
         // Single point of domain rotation. Update here when the site moves.
-        const val DOMAIN = "https://rebahinxxi3.biz"
+        const val DOMAIN = "https://rebahinxxi3.hair"
 
         val baseHeaders =
             mapOf(
@@ -231,43 +231,37 @@ open class Rebahin : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        data.removeSurrounding("[", "]").split(",").map { it.trim() }.amap { link ->
-            safeApiCall {
-                when {
-                    link.startsWith(mainServer) ->
-                        invokeLokalSource(link, subtitleCallback, callback)
-                    else -> {
-                        val resolvedCount = AtomicInteger(0)
-                        val ref = directUrl?.let { "$it/" } ?: "$mainServer/"
-                        loadExtractor(link, ref, subtitleCallback) { ext ->
-                            resolvedCount.incrementAndGet()
-                            callback.invoke(ext)
-                        }
-                        if (resolvedCount.get() == 0) {
-                            val host =
-                                runCatching { URI(link).host }
-                                    .getOrNull()
-                                    ?.removePrefix("www.") ?: "Embed"
-                            callback.invoke(
-                                newExtractorLink(host, host, link) {
-                                    this.referer = ref
-                                    this.quality = Qualities.Unknown.value
-                                },
-                            )
-                        }
+        val resolvedCount = AtomicInteger(0)
+        data
+            .removeSurrounding("[", "]")
+            .split(",")
+            .map { it.trim().trim('[', ']', ' ') }
+            .filter { it.startsWith("http") }
+            .distinct()
+            .amap { link ->
+                safeApiCall {
+                    val emitted = when {
+                        link.startsWith(mainServer) ->
+                            invokeLokalSource(link, subtitleCallback, callback)
+                        link.contains("/iembed/", true) ->
+                            invokeIembed(link, subtitleCallback, callback)
+                        link.contains("199.87.210.226/player/", true) ->
+                            invokeJuicyPlayer(link, subtitleCallback, callback)
+                        else ->
+                            invokeExtractorOrFallback(link, subtitleCallback, callback)
                     }
+                    if (emitted) resolvedCount.incrementAndGet()
                 }
             }
-        }
 
-        return true
+        return resolvedCount.get() > 0
     }
 
     private suspend fun invokeLokalSource(
         url: String,
         subCallback: (SubtitleFile) -> Unit,
         sourceCallback: (ExtractorLink) -> Unit,
-    ) {
+    ): Boolean {
         val document =
             runCatching {
                 app.get(
@@ -278,8 +272,9 @@ open class Rebahin : MainAPI() {
                         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
                     timeout = 30L,
                 ).document
-            }.getOrNull() ?: return
+            }.getOrNull() ?: return false
 
+        var emitted = false
         document.select("script").find { it.data().contains("window.juicyData") }?.data()?.let { script ->
             Regex("\"file\":\\s?\"(.+.m3u8)\"").find(script)?.groupValues?.getOrNull(1)?.let { link ->
                 M3u8Helper
@@ -288,7 +283,10 @@ open class Rebahin : MainAPI() {
                         link,
                         referer = "$mainServer/",
                         headers = mapOf("Accept" to "*/*", "Origin" to mainServer),
-                    ).forEach(sourceCallback)
+                    ).forEach {
+                        emitted = true
+                        sourceCallback.invoke(it)
+                    }
             }
 
             val subData =
@@ -306,7 +304,156 @@ open class Rebahin : MainAPI() {
                 )
             }
         }
+        return emitted
     }
+
+
+    private suspend fun invokeIembed(
+        url: String,
+        subCallback: (SubtitleFile) -> Unit,
+        sourceCallback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val source = Regex("[?&]source=([^&]+)").find(url)?.groupValues?.getOrNull(1)
+        val decoded = source?.let { runCatching { base64Decode(it) }.getOrNull() }
+        if (!decoded.isNullOrBlank()) {
+            return when {
+                decoded.contains("199.87.210.226/player/", true) ->
+                    invokeJuicyPlayer(decoded, subCallback, sourceCallback)
+                else -> invokeExtractorOrFallback(decoded, subCallback, sourceCallback)
+            }
+        }
+
+        val iframe = safeGet(url)
+            ?.document
+            ?.selectFirst("iframe[src]")
+            ?.attr("src")
+            ?.let { fixUrl(it) }
+            ?: return false
+        return when {
+            iframe.contains("199.87.210.226/player/", true) ->
+                invokeJuicyPlayer(iframe, subCallback, sourceCallback)
+            else -> invokeExtractorOrFallback(iframe, subCallback, sourceCallback)
+        }
+    }
+
+    private suspend fun invokeJuicyPlayer(
+        url: String,
+        subCallback: (SubtitleFile) -> Unit,
+        sourceCallback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val playerBase = getBaseUrl(url)
+        val html = app.get(
+            url,
+            referer = "$mainUrl/",
+            headers = baseHeaders,
+            timeout = 30L,
+        ).text
+
+        val decodedConfig = decodeJuicyConfig(html) ?: return invokeExtractorOrFallback(url, subCallback, sourceCallback)
+        var emitted = false
+        Regex("\"kind\":\"(?!thumbnails)([^\"]+)\"[^{}]*\"file\":\"([^\"]+)\"[^{}]*\"label\":\"([^\"]+)\"")
+            .findAll(decodedConfig)
+            .forEach { match ->
+                val file = unescapeJsUrl(match.groupValues[2])
+                val label = match.groupValues[3]
+                if (file.endsWith(".srt", true) || file.endsWith(".vtt", true)) {
+                    subCallback.invoke(SubtitleFile(getLanguage(label), file))
+                }
+            }
+
+        Regex("\"file\":\"([^\"]+\\.m3u8[^\"]*)\"")
+            .findAll(decodedConfig)
+            .map { unescapeJsUrl(it.groupValues[1]) }
+            .distinct()
+            .forEach { m3u8 ->
+                M3u8Helper.generateM3u8(
+                    "Rebahin Juicy",
+                    m3u8,
+                    referer = "$playerBase/",
+                    headers = mapOf(
+                        "Accept" to "*/*",
+                        "Origin" to playerBase,
+                        "Referer" to "$playerBase/",
+                    ),
+                ).forEach {
+                    emitted = true
+                    sourceCallback.invoke(it)
+                }
+            }
+
+        return emitted
+    }
+
+    private suspend fun invokeExtractorOrFallback(
+        link: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val resolvedCount = AtomicInteger(0)
+        val ref = directUrl?.let { "$it/" } ?: "$mainServer/"
+        loadExtractor(link, ref, subtitleCallback) { ext ->
+            resolvedCount.incrementAndGet()
+            callback.invoke(ext)
+        }
+        if (resolvedCount.get() > 0) return true
+
+        val host = runCatching { URI(link).host }.getOrNull()?.removePrefix("www.") ?: "Embed"
+        callback.invoke(
+            newExtractorLink(host, host, link) {
+                this.referer = ref
+                this.quality = Qualities.Unknown.value
+            },
+        )
+        return true
+    }
+
+    private fun decodeJuicyConfig(html: String): String? {
+        val callBody = Regex("_juicycodes\\((?s:(.*?))\\);", RegexOption.DOT_MATCHES_ALL)
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return null
+        val encoded = Regex("\"([^\"]*)\"")
+            .findAll(callBody)
+            .joinToString("") { it.groupValues[1] }
+            .ifBlank { return null }
+        if (encoded.length <= 3) return null
+
+        val salt = encoded.takeLast(3).map { it.code - 100 }.joinToString("").toIntOrNull() ?: return null
+        val payload = encoded
+            .dropLast(3)
+            .replace('_', '+')
+            .replace('-', '/')
+            .let { it + "=".repeat((4 - it.length % 4) % 4) }
+        val rawSymbols = runCatching { base64Decode(payload).rot13().rot13() }.getOrNull() ?: return null
+        val symbolMap = listOf('`', '%', '-', '+', '*', '$', '!', '_', '^', '=')
+        val digits =
+            buildString {
+                rawSymbols.forEach { symbol ->
+                    val index = symbolMap.indexOf(symbol)
+                    if (index < 0) return null
+                    append(index)
+                }
+            }
+        if (digits.length < 4) return null
+
+        return digits.chunked(4).mapNotNull { block ->
+            block.toIntOrNull()?.minus(salt)?.takeIf { it > 0 }?.toChar()
+        }.joinToString("")
+    }
+
+    private fun String.rot13(): String = map { char ->
+        when (char) {
+            in 'a'..'m', in 'A'..'M' -> char + 13
+            in 'n'..'z', in 'N'..'Z' -> char - 13
+            else -> char
+        }
+    }.joinToString("")
+
+    private fun unescapeJsUrl(url: String): String = url
+        .replace("\\/", "/")
+        .replace("\\u0026", "&")
+        .replace("\\&", "&")
 
     private fun getLanguage(str: String): String = when {
         str.contains("indonesia", true) || str.contains("bahasa", true) -> "Indonesian"
