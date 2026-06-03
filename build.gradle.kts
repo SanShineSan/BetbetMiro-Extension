@@ -60,6 +60,18 @@ val kotlinxSerializationVersion = providers
     .orElse("1.7.3")
     .get()
 
+val androidCompileSdkVersion = providers
+    .gradleProperty("android.compileSdk.version")
+    .orElse("35")
+    .get()
+    .toInt()
+
+val androidTargetSdkVersion = providers
+    .gradleProperty("android.targetSdk.version")
+    .orElse(androidCompileSdkVersion.toString())
+    .get()
+    .toInt()
+
 allprojects {
 
     repositories {
@@ -107,9 +119,9 @@ subprojects {
 
             minSdk = 21
 
-            compileSdkVersion(35)
+            compileSdkVersion(androidCompileSdkVersion)
 
-            targetSdk = 35
+            targetSdk = androidTargetSdkVersion
         }
 
         // =========================

@@ -42,9 +42,7 @@ jobs:
       - name: Download Cloudstream jar
         run: |
           mkdir -p "$HOME/.gradle/caches/cloudstream/cloudstream"
-          curl -L --retry 3 --fail \
-            -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar" \
-            "${{ steps.cloudstream.outputs.jar_url }}"
+          curl -L --retry 3 --fail             -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar"             "${{ steps.cloudstream.outputs.jar_url }}"
           ls -lah "$HOME/.gradle/caches/cloudstream/cloudstream"
 
       - name: Populate Gradle cache
@@ -62,7 +60,7 @@ jobs:
         run: |
           mkdir -p android-sdk-export
 
-          tar -czf android-sdk-export/android-sdk-minimal.tar.gz             -C "$ANDROID_HOME"             platforms/android-35             build-tools/34.0.0             platform-tools             licenses
+          tar -czf android-sdk-export/android-sdk-minimal.tar.gz             -C "$ANDROID_HOME"             platforms/android-36             build-tools/34.0.0             platform-tools             licenses
 
           ls -lah android-sdk-export
 
