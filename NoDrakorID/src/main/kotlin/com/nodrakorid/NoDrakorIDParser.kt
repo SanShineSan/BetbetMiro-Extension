@@ -108,9 +108,13 @@ internal object NoDrakorIDParser {
         val rating = NoDrakorIDUtils.extractRating(doc.selectFirst(".rating, .imdb, .dt_rating_vgs, .starstruck-rating")?.text())
             ?: NoDrakorIDUtils.extractRating(metadataText)
         val episodes = parseEpisodes(api, doc)
-        val type = NoDrakorIDUtils.typeFrom(url, title, metadataText)
+        val type = if (NoDrakorIDUtils.hasUnsupportedOnlyPlayer(doc.outerHtml())) {
+            TvType.CustomMedia
+        } else {
+            NoDrakorIDUtils.typeFrom(url, title, metadataText)
+        }
 
-        return if (episodes.isNotEmpty() && type != TvType.Movie) {
+        return if (episodes.isNotEmpty() && type != TvType.Movie && type != TvType.CustomMedia) {
             api.newTvSeriesLoadResponse(title, url, type, episodes) {
                 posterUrl = poster
                 this.plot = plot

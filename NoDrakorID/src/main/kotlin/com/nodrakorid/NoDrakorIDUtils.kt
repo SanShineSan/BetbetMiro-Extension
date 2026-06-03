@@ -196,8 +196,27 @@ internal object NoDrakorIDUtils {
             "jeniusplay", "majorplay", "m3u8play", "e2eplay", "streamwish", "filemoon", "dood", "doodstream", "streamtape", "mp4upload",
             "hglink", "ghbrisk", "dhcplay", "streamcasthub", "dm21", "meplayer", "gdplayer", "filepress", "blogger.com", "googleusercontent",
             "googlevideo", "video.google", "lulu", "lulustream", "vidhide", "vidguard", "voe", "mixdrop", "upstream", "filelions", "vidsrc", "embedwish", "player4u",
-            "abyssplayer", "abyss.to", "sssrr.org"
+            "abyssplayer", "abyss.to", "sssrr.org", "boosterx", "chillx", "jav-vids", "upload18", "earnvid", "hanerix"
         ).any { host.contains(it) }
+    }
+
+    fun hasSupportedPlayerSignal(html: String): Boolean {
+        val lower = html.lowercase()
+        return looksDirectVideo(lower) || listOf(
+            "abyssplayer.com", "abyss.to", "sssrr.org", "boosterx.stream", "chillx.top", "jav-vids.xyz", "upload18.org",
+            "streamwish", "filemoon", "dood", "streamtape", "mp4upload", "hglink", "ghbrisk", "dhcplay", "streamcasthub",
+            "dm21embed", "meplayer", "gdplayer", "filepress", "googlevideo", "blogger.com", "vidhide", "vidguard", "filelions",
+            "earnvid", "hanerix"
+        ).any { lower.contains(it) }
+    }
+
+    fun hasUnsupportedOnlyPlayer(html: String): Boolean {
+        val lower = html.lowercase()
+        val hasUnsupported = listOf(
+            "watch.asiaplayer.site",
+            "bulsis.net/go/"
+        ).any { lower.contains(it) }
+        return hasUnsupported && !hasSupportedPlayerSignal(html)
     }
 
     fun isShortenerUrl(url: String): Boolean {

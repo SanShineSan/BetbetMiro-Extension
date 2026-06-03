@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.extractors.DoodLaExtractor
 import com.lagradost.cloudstream3.extractors.StreamWishExtractor
 import com.lagradost.cloudstream3.extractors.VidStack
+import com.lagradost.cloudstream3.extractors.VidHidePro
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -547,6 +548,7 @@ internal object NoDrakorIDExtractor {
         if (!allowShortener && NoDrakorIDUtils.isShortenerUrl(url)) return true
         if (!allowInternalPage && NoDrakorIDUtils.isNoDrakorUrl(url)) return true
         val lower = url.lowercase()
+        if (lower.contains("watch.asiaplayer.site") || lower.contains("bulsis.net/go/")) return true
         return listOf("/wp-content/", "/wp-json/", "/xmlrpc.php", "/feed/", "/comments/", "#respond", "?replytocom=").any { lower.contains(it) }
     }
 
@@ -556,7 +558,8 @@ internal object NoDrakorIDExtractor {
             NoDrakorIDUtils.looksDirectVideo(lower) -> 0
             lower.contains("googlevideo") -> 1
             lower.contains("filepress") -> 2
-            lower.contains("jeniusplay") || lower.contains("majorplay") || lower.contains("streamwish") || lower.contains("filemoon") -> 3
+            lower.contains("abyssplayer") || lower.contains("boosterx") || lower.contains("chillx") || lower.contains("jav-vids") -> 2
+            lower.contains("jeniusplay") || lower.contains("majorplay") || lower.contains("streamwish") || lower.contains("filemoon") || lower.contains("upload18") -> 3
             NoDrakorIDUtils.isKnownPlayableHost(lower) -> 4
             NoDrakorIDUtils.isShortenerUrl(lower) -> 8
             NoDrakorIDUtils.isNoDrakorUrl(lower) -> 9
@@ -682,6 +685,68 @@ class NoDrakorIDDm21embed : VidStack() {
 class NoDrakorIDMeplayer : VidStack() {
     override var name = "Meplayer"
     override var mainUrl = "https://meplayer.xyz"
+}
+
+
+open class NoDrakorIDChillx : ExtractorApi() {
+    override var name = "Chillx"
+    override var mainUrl = "https://chillx.top"
+    override var requiresReferer = true
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val pageUrl = NoDrakorIDUtils.decodeKnownRedirect(url)
+        val html = runCatching { app.get(pageUrl, referer = referer ?: mainUrl, headers = NoDrakorIDUtils.browserHeaders, timeout = 15L).text }.getOrNull().orEmpty()
+        val encoded = Regex("""const\s+\w+\s*=\s*['"]([^'"]+)['"]""").find(html)?.groupValues?.getOrNull(1) ?: return
+        val decoded = decryptChillx(encoded).replace("\\/", "/")
+        val stream = Regex("""["']?file["']?\s*[:=]\s*["']([^"']+)""", RegexOption.IGNORE_CASE).find(decoded)?.groupValues?.getOrNull(1)
+            ?: NoDrakorIDUtils.extractUrlsFromText(pageUrl, decoded).firstOrNull { NoDrakorIDUtils.looksDirectVideo(it) }
+            ?: return
+        if (NoDrakorIDUtils.isHls(stream)) {
+            M3u8Helper.generateM3u8(name, stream, referer = mainUrl, headers = NoDrakorIDUtils.videoHeaders(mainUrl)).forEach(callback)
+        } else {
+            callback(newExtractorLink(name, name, stream, ExtractorLinkType.VIDEO) {
+                this.referer = mainUrl
+                this.quality = getQualityFromName(stream).takeIf { it != Qualities.Unknown.value } ?: Qualities.P1080.value
+                this.headers = NoDrakorIDUtils.videoHeaders(mainUrl)
+            })
+        }
+        Regex("""\[([^]]+)](https?://[^\s,]+\.srt)""").findAll(decoded).forEach { match ->
+            subtitleCallback.invoke(SubtitleFile(match.groupValues[1].trim(), match.groupValues[2].trim()))
+        }
+    }
+
+    private fun decryptChillx(encoded: String): String {
+        return runCatching {
+            val decodedBytes = Base64.getDecoder().decode(encoded)
+            val keyBytes = decodedBytes.sliceArray(0 until 16)
+            val dataBytes = decodedBytes.sliceArray(16 until decodedBytes.size)
+            val passwordBytes = "~%aRg@&H3&QEK1QV".toByteArray(Charsets.UTF_8)
+            val decryptedBytes = dataBytes.mapIndexed { index, byte ->
+                (byte.toInt() xor passwordBytes[index % passwordBytes.size].toInt() xor keyBytes[index % keyBytes.size].toInt()).toByte()
+            }.toByteArray()
+            String(decryptedBytes, Charsets.UTF_8)
+        }.getOrDefault("")
+    }
+}
+
+class NoDrakorIDBoosterx : NoDrakorIDChillx() {
+    override var name = "Boosterx"
+    override var mainUrl = "https://boosterx.stream"
+}
+
+class NoDrakorIDJavVids : VidHidePro() {
+    override var name = "JavVids"
+    override var mainUrl = "https://jav-vids.xyz"
+}
+
+class NoDrakorIDUpload18 : NoDrakorIDHostExtractor() {
+    override var name = "Upload18"
+    override var mainUrl = "https://upload18.org"
 }
 
 class NoDrakorIDAbyssPlayer : NoDrakorIDHostExtractor() {

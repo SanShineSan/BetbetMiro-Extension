@@ -1,9 +1,9 @@
-version = 4
+version = 5
 
 cloudstream {
     language = "id"
     authors = listOf("BetbetMiro")
-    description = "NoDrakorID provider for richemmerson.com with source-backed categories, filtered cards, and AbyssPlayer playback extraction."
+    description = "NoDrakorID provider for richemmerson.com with source-backed categories, filtered cards, and AbyssPlayer, Boosterx, and guarded unsupported player handling."
 
     status = 1
 
