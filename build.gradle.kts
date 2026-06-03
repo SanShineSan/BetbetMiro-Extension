@@ -45,6 +45,16 @@ val cloudstreamApiVersion = providers
     .orElse("pre-release")
     .get()
 
+val kotlinxCoroutinesVersion = providers
+    .gradleProperty("kotlinx.coroutines.version")
+    .orElse("1.10.1")
+    .get()
+
+val kotlinxSerializationVersion = providers
+    .gradleProperty("kotlinx.serialization.version")
+    .orElse("1.7.3")
+    .get()
+
 allprojects {
 
     repositories {
@@ -153,15 +163,15 @@ subprojects {
         )
 
         implementation(
-            "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1"
+            "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
         )
 
         implementation(
-            "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1"
+            "org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinxCoroutinesVersion"
         )
 
         implementation(
-            "org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3"
+            "org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationVersion"
         )
 
         // =========================
