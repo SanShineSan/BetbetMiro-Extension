@@ -1,8 +1,8 @@
 package com.nonton01
 
 object Nonton01Seeds {
-    const val MAIN_URL = "https://01ntn.cc"
-    const val PUBLIC_URL = "https://01nonton.com"
+    const val MAIN_URL = "https://91.208.197.221"
+    const val PUBLIC_URL = "https://01nonton.top"
     const val LATEST_LINK_URL = "https://idmax.one/01nonton/"
 
     /**
@@ -11,23 +11,24 @@ object Nonton01Seeds {
      */
     val MIRROR_URLS = listOf(
         MAIN_URL,
-        "https://www.01ntn.cc",
-        "https://91.208.197.221",
         PUBLIC_URL,
+        "https://01nonton.com",
         "https://www.01nonton.com",
-        "https://nonton01.com"
+        "https://nonton01.com",
+        "https://01ntn.cc",
+        "https://www.01ntn.cc"
     )
 
     val KNOWN_HOSTS = setOf(
-        "01ntn.cc",
-        "www.01ntn.cc",
         "91.208.197.221",
+        "01nonton.top",
+        "www.01nonton.top",
         "01nonton.com",
         "www.01nonton.com",
         "nonton01.com",
         "www.nonton01.com",
-        "01nonton.top",
-        "www.01nonton.top",
+        "01ntn.cc",
+        "www.01ntn.cc",
         "01nonton.site",
         "www.01nonton.site"
     )
@@ -38,8 +39,11 @@ object Nonton01Seeds {
      * variasi umum tanpa mengubah label kategori di UI.
      */
     fun mainPageRows(): Array<Pair<String, String>> = arrayOf(
-        paths("/page/%d/", "/movies/page/%d/", "/movie/page/%d/") to "Upload Terbaru",
+        paths("/page/%d/", "/movies/page/%d/") to "Upload Terbaru",
         paths("/movies/page/%d/", "/movie/page/%d/", "/film/page/%d/") to "Movies",
+        paths("/tvshows/page/%d/", "/tvshows/", "/series/page/%d/") to "TV Serial",
+        paths("/trending/page/%d/?get=movies", "/trending/?get=movies") to "Trending Movies",
+        paths("/trending/page/%d/?get=tv", "/trending/?get=tv") to "Trending TV",
         paths("/film-semi/page/%d/", "/film-dewasa/page/%d/", "/semi/page/%d/") to "Film Semi",
         paths("/drakor/page/%d/", "/k-drama/page/%d/", "/country/korea/page/%d/") to "Drakor",
         paths("/dracin/page/%d/", "/drama-china/page/%d/", "/country/china/page/%d/") to "Dracin",

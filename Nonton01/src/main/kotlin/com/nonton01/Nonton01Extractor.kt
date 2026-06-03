@@ -3,6 +3,7 @@ package com.nonton01
 import android.util.Base64
 import android.util.Log
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
@@ -22,13 +23,18 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLEncoder
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 object Nonton01Extractor {
     private const val TAG = "Nonton01"
-    private const val MAX_HOPS = 5
-    private const val MAX_DIRECT_CANDIDATES = 26
-    private const val MAX_EMBED_CANDIDATES = 32
-    private const val MAX_AJAX_CANDIDATES = 240
+    private const val MAX_HOPS = 1
+    private const val MAX_DIRECT_CANDIDATES = 8
+    private const val MAX_EMBED_CANDIDATES = 10
+    private const val MAX_AJAX_CANDIDATES = 32
+    private const val MAX_VISITED_PAGES = 24
 
     private val keyValueRegex = Regex(
         """(?i)(?:file|src|url|source|hls|hlsUrl|video|videoUrl|stream|streamUrl|playlist|embed|iframe|link|player|content)
@@ -64,6 +70,13 @@ object Nonton01Extractor {
         val source: String
     )
 
+    private data class AbyssPayload(
+        val slug: String,
+        val md5Id: String,
+        val userId: String,
+        val media: String
+    )
+
     private val serverAttributes = listOf(
         "src", "href", "value", "data-src", "data-url", "data-link", "data-href",
         "data-file", "data-video", "data-video-url", "data-stream", "data-stream-url",
@@ -81,8 +94,9 @@ object Nonton01Extractor {
     ): Boolean {
         Log.e(TAG, "loadLinks start: $data")
         val emitted = linkedSetOf<String>()
+        val visitedPages = linkedSetOf<String>()
         for (candidate in Nonton01Utils.mirrorUrlsFor(data)) {
-            val found = resolvePage(providerName, candidate, candidate, mainUrl, 0, emitted, subtitleCallback, callback)
+            val found = resolvePage(providerName, candidate, candidate, mainUrl, 0, emitted, visitedPages, subtitleCallback, callback)
             if (found) return true
         }
         Log.e(TAG, "loadLinks no playable links for: $data")
@@ -96,11 +110,21 @@ object Nonton01Extractor {
         mainUrl: String,
         depth: Int,
         emitted: MutableSet<String>,
+        visitedPages: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (depth > MAX_HOPS) {
             Log.e(TAG, "max hop reached: $pageUrl")
+            return false
+        }
+        val visitKey = pageUrl.substringBefore("#").substringBeforeLast("?retry=", pageUrl)
+        if (!visitedPages.add(visitKey)) {
+            Log.e(TAG, "skip already visited page: $pageUrl")
+            return false
+        }
+        if (visitedPages.size > MAX_VISITED_PAGES) {
+            Log.e(TAG, "visited page limit reached: ${visitedPages.size}")
             return false
         }
 
@@ -129,7 +153,7 @@ object Nonton01Extractor {
             val emittedNow = emitDirect(providerName, url, pageUrl, emitted, callback)
             found = found || emittedNow
             if (!emittedNow && depth < MAX_HOPS && canRecurseInto(url, pageUrl)) {
-                val nestedFound = resolvePage(providerName, url, pageUrl, mainUrl, depth + 1, emitted, subtitleCallback, callback)
+                val nestedFound = resolvePage(providerName, url, pageUrl, mainUrl, depth + 1, emitted, visitedPages, subtitleCallback, callback)
                 found = found || nestedFound
             }
         }
@@ -140,15 +164,11 @@ object Nonton01Extractor {
             val extractorFound = customFound || runExtractor(embed, pageUrl, emitted, subtitleCallback, callback)
             found = found || extractorFound
             if (!extractorFound && depth < MAX_HOPS && canRecurseInto(embed, pageUrl)) {
-                val nestedFound = resolvePage(providerName, embed, pageUrl, mainUrl, depth + 1, emitted, subtitleCallback, callback)
+                val nestedFound = resolvePage(providerName, embed, pageUrl, mainUrl, depth + 1, emitted, visitedPages, subtitleCallback, callback)
                 found = found || nestedFound
             }
         }
 
-        if (!found) {
-            Log.e(TAG, "fallback extractor on page: $pageUrl")
-            found = runExtractor(pageUrl, referer, emitted, subtitleCallback, callback)
-        }
         return found
     }
 
@@ -252,6 +272,10 @@ object Nonton01Extractor {
                 extractStreamTape(providerName, url, referer, emitted, callback)
             low.contains("jeniusplay") ->
                 extractJeniusplay(providerName, url, referer, emitted, subtitleCallback, callback)
+            low.contains("cinemaz.top") || low.contains("cinemaz.cc") || low.contains("cinemaz.club") ->
+                extractCinemaz(providerName, url, referer, emitted, callback)
+            low.contains("abyssplayer.com") || low.contains("abyss.to") ->
+                extractAbyssPlayer(url, referer, emitted, callback)
             low.contains("filemoon") || low.contains("vidhide") || low.contains("vidguard") ||
                 low.contains("streamwish") || low.contains("filelions") || low.contains("streamruby") ||
                 low.contains("playcinematic") || low.contains("player4u") || low.contains("hglink") ||
@@ -259,6 +283,147 @@ object Nonton01Extractor {
                 extractPackedPlayer(providerName, url, referer, emitted, subtitleCallback, callback)
             else -> false
         }
+    }
+
+    private suspend fun extractCinemaz(
+        providerName: String,
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val fixedUrl = normalizeUrl(referer, url) ?: url
+        val low = fixedUrl.lowercase()
+        val hash = when {
+            low.contains("data=") -> fixedUrl.substringAfter("data=").substringBefore("&").substringBefore("#")
+            low.contains("/video/") -> fixedUrl.trimEnd('/').substringAfterLast('/').substringBefore("?")
+            else -> fixedUrl.trimEnd('/').substringAfterLast('/').substringBefore("?")
+        }.trim()
+        if (hash.isBlank()) return false
+
+        val topPlayer = if (low.contains("cinemaz.top") && low.contains("/player/")) {
+            fixedUrl.substringBefore("&do=").substringBefore("?do=")
+        } else {
+            val fireJson = runCatching {
+                app.post(
+                    url = fixedUrl.substringBefore("?") + "?do=getVideo",
+                    data = mapOf("hash" to hash, "r" to referer, "s" to ""),
+                    referer = referer,
+                    headers = mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Accept" to "application/json, text/javascript, */*; q=0.01"
+                    )
+                ).text
+            }.onFailure { Log.e(TAG, "cinemaz fireplayer ajax failed $fixedUrl: ${it.message}") }.getOrNull().orEmpty()
+
+            val videoSrc = runCatching { JSONObject(normalizedText(fireJson)).optString("videoSrc") }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: extractUrlsFromText(fixedUrl, fireJson).firstOrNull { it.contains("cinemaz.top", true) && it.contains("data=", true) }
+            videoSrc?.let { normalizeUrl(fixedUrl, it) }
+        } ?: fixedUrl
+
+        val topHash = topPlayer.substringAfter("data=", hash).substringBefore("&").substringBefore("#").ifBlank { hash }
+        val response = runCatching {
+            app.post(
+                url = topPlayer.substringBefore("&do=").substringBefore("?do=") + "?data=$topHash&do=getVideo",
+                data = mapOf("hash" to topHash, "r" to "https://cinemaz.cc/"),
+                referer = topPlayer,
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Accept" to "application/json, text/javascript, */*; q=0.01"
+                )
+            ).text
+        }.onFailure { Log.e(TAG, "cinemaz top ajax failed hash=$topHash: ${it.message}") }.getOrNull().orEmpty()
+
+        val normalized = normalizedText(response)
+        val stream = runCatching {
+            val json = JSONObject(normalized)
+            json.optString("securedLink").ifBlank { json.optString("videoSource") }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: extractUrlsFromText(topPlayer, normalized).firstOrNull { looksLikeHls(it) || looksLikeDirectMp4(it) }
+            ?: return false
+
+        val finalUrl = normalizeUrl(topPlayer, stream) ?: stream
+        val found = emitDirect(providerName, finalUrl, topPlayer, emitted, callback)
+        Log.e(TAG, "custom cinemaz found=$found url=$fixedUrl stream=$finalUrl")
+        return found
+    }
+
+    private suspend fun extractAbyssPlayer(
+        url: String,
+        referer: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val pageUrl = normalizeUrl(referer, url) ?: url
+        val html = runCatching { app.get(pageUrl, headers = Nonton01Utils.siteHeadersFor(referer), referer = referer).text }
+            .onFailure { Log.e(TAG, "abyss GET failed $pageUrl: ${it.message}") }
+            .getOrNull() ?: return false
+        val payload = parseAbyssPayload(html) ?: return false
+        val mediaJson = decryptAbyssMedia(payload) ?: return false
+        val root = runCatching { JSONObject(mediaJson) }.getOrNull() ?: return false
+        val sources = root.optJSONObject("mp4")?.optJSONArray("sources") ?: return false
+        var found = false
+        for (index in 0 until sources.length()) {
+            val source = sources.optJSONObject(index) ?: continue
+            if (!source.optBoolean("status", true)) continue
+            val host = source.optString("url").trimEnd('/')
+            val path = source.optString("path").trimStart('/')
+            if (host.isBlank() || path.isBlank()) continue
+            val label = source.optString("label", "AbyssPlayer")
+            val videoUrl = "$host/$path"
+            if (emitted.add(videoUrl)) {
+                callback(
+                    newExtractorLink(
+                        source = "AbyssPlayer",
+                        name = "AbyssPlayer $label",
+                        url = videoUrl,
+                        type = com.lagradost.cloudstream3.utils.ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = pageUrl
+                        this.quality = com.lagradost.cloudstream3.utils.getQualityFromName(label).takeIf { it != Qualities.Unknown.value }
+                            ?: com.lagradost.cloudstream3.utils.getQualityFromName(videoUrl)
+                        this.headers = mapOf(
+                            "Referer" to "https://abyssplayer.com/",
+                            "Origin" to "https://abyssplayer.com",
+                            "User-Agent" to USER_AGENT
+                        )
+                    }
+                )
+                found = true
+            }
+        }
+        Log.e(TAG, "custom abyss found=$found url=$pageUrl")
+        return found
+    }
+
+    private fun parseAbyssPayload(html: String): AbyssPayload? {
+        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=]+)["']""")
+            .find(html)?.groupValues?.getOrNull(1) ?: return null
+        val json = runCatching { String(java.util.Base64.getDecoder().decode(encoded), Charsets.ISO_8859_1) }.getOrNull() ?: return null
+        val node = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        val slug = node.optString("slug")
+        val md5Id = node.optString("md5_id")
+        val userId = node.optString("user_id")
+        val media = node.optString("media")
+        if (slug.isBlank() || md5Id.isBlank() || userId.isBlank() || media.isBlank()) return null
+        return AbyssPayload(slug, md5Id, userId, media)
+    }
+
+    private fun decryptAbyssMedia(payload: AbyssPayload): String? {
+        return runCatching {
+            val key = md5Hex("${payload.userId}:${payload.slug}:${payload.md5Id}").toByteArray(Charsets.UTF_8)
+            val counter = key.copyOfRange(0, 16)
+            val encrypted = ByteArray(payload.media.length) { index -> payload.media[index].code.toByte() }
+            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(counter))
+            String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    private fun md5Hex(value: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
     }
 
     private suspend fun extractJeniusplay(
@@ -496,7 +661,7 @@ object Nonton01Extractor {
             Log.e(TAG, "ajax attributes missing: no post/id found for $pageUrl")
             return emptyList()
         }
-        if (numes.isEmpty()) (1..10).map { it.toString() }.forEach { numes.add(it) }
+        if (numes.isEmpty()) (1..4).map { it.toString() }.forEach { numes.add(it) }
 
         val inferredTypes = inferAjaxTypes(pageUrl)
         val orderedTypes = linkedSetOf<String>()
@@ -510,9 +675,9 @@ object Nonton01Extractor {
 
         val probes = linkedSetOf<AjaxProbe>()
         exactProbes.forEach { probes.add(it) }
-        posts.take(5).forEach { post ->
-            numes.take(10).forEach { nume ->
-                orderedTypes.take(6).forEach { type -> probes.add(AjaxProbe(post, nume, normalizeAjaxType(type), "fallback")) }
+        posts.take(3).forEach { post ->
+            numes.take(4).forEach { nume ->
+                orderedTypes.take(3).forEach { type -> probes.add(AjaxProbe(post, nume, normalizeAjaxType(type), "fallback")) }
             }
         }
 
@@ -522,13 +687,7 @@ object Nonton01Extractor {
         val actions = listOf(
             "doo_player_ajax",
             "dt_player_ajax",
-            "player_ajax",
-            "player_ajax_get",
-            "get_player",
-            "get_video",
-            "get_embed",
-            "getEmbed",
-            "get_player_content"
+            "player_ajax"
         )
         val nonceValues = extractAjaxNonces(document, html)
 
@@ -590,6 +749,10 @@ object Nonton01Extractor {
                     } else {
                         Log.e(TAG, "ajax captured ${urls.size} urls action=$action post=${probe.post} nume=${probe.nume} type=${probe.type} urls=${urls.take(6)}")
                         urls.forEach { out.add(it) }
+                        if (out.size >= MAX_EMBED_CANDIDATES) {
+                            Log.e(TAG, "ajax player target reached candidates=${out.size}")
+                            return prioritizeCandidates(out.toList())
+                        }
                     }
                 }
             }
@@ -1012,7 +1175,7 @@ object Nonton01Extractor {
         val out = linkedSetOf<String>()
         val candidates = mutableListOf<String>()
         atobRegex.findAll(html).map { it.groupValues[1] }.forEach { candidates.add(it) }
-        base64StringRegex.findAll(html).map { it.groupValues[1] }.take(120).forEach { candidates.add(it) }
+        base64StringRegex.findAll(html).map { it.groupValues[1] }.take(24).forEach { candidates.add(it) }
         candidates.forEach { encoded ->
             val decoded = decodeBase64(encoded) ?: return@forEach
             if (decoded.contains("http", ignoreCase = true) || decoded.contains("iframe", ignoreCase = true) || decoded.contains("m3u8", ignoreCase = true)) {
@@ -1120,7 +1283,7 @@ object Nonton01Extractor {
             "voe.sx", "uqload", "mixdrop", "fembed", "doodstream", "streamlare",
             "luluvdo", "vidmoly", "wolfstream", "upstream", "streamruby", "mcloud",
             "streamhide", "streamvid", "embedsito", "filegram", "dropload", "hydrax",
-            "fastream", "streamhub", "vidsrc", "short.ink", "gofile", "mp4upload", "streamwish", "vembed", "vidplay", "vidcloud", "filejoker", "streamhls", "playercdn", "playhydrax", "jeniusplay", "playcinematic", "player4u", "hownetwork", "emturbovid", "majorplay", "f16"
+            "fastream", "streamhub", "vidsrc", "short.ink", "gofile", "mp4upload", "streamwish", "vembed", "vidplay", "vidcloud", "filejoker", "streamhls", "playercdn", "playhydrax", "jeniusplay", "playcinematic", "player4u", "hownetwork", "emturbovid", "majorplay", "f16", "cinemaz.top", "cinemaz.cc", "cinemaz.club", "abyssplayer", "abyss.to", "sssrr.org"
         ).any { low.contains(it) }
     }
 
@@ -1136,7 +1299,10 @@ object Nonton01Extractor {
             low.contains("doubleclick") ||
             low.contains("/wp-content/themes/") ||
             low.endsWith(".css") ||
-            low.endsWith(".js")
+            low.endsWith(".js") ||
+            low.contains("decafeligiblyhad.com") ||
+            low.contains("pixel.morphify.net") ||
+            low.contains("pagead2.googlesyndication.com")
     }
 
     private fun canRecurseInto(embed: String, pageUrl: String): Boolean {
