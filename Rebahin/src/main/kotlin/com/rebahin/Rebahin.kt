@@ -1,226 +1,155 @@
-package com.rebahin
+package com.indo
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.mvvm.logError
-import com.lagradost.cloudstream3.mvvm.safeApiCall
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import org.jsoup.nodes.Element
-import java.net.URI
-import java.util.concurrent.atomic.AtomicInteger
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONObject
 
-open class Rebahin : MainAPI() {
-    companion object {
-        // Single point of domain rotation. Update here when the site moves.
-        const val DOMAIN = "https://rebahinxxi3.hair"
-
-        val baseHeaders =
-            mapOf(
-                "User-Agent" to
-                    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                    "Chrome/124.0.0.0 Mobile Safari/537.36",
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-            )
-    }
-
-    override var mainUrl = DOMAIN
-    private var directUrl: String? = null
+class Rebahin : MainAPI() {
+    override var mainUrl = "https://139.59.197.199"
     override var name = "Rebahin"
     override val hasMainPage = true
     override var lang = "id"
-    open var mainServer = DOMAIN
-    override val supportedTypes =
-        setOf(TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.AsianDrama)
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    /**
-     * Wraps app.get with up to [maxRetries] attempts, uniform headers, and a 30s timeout.
-     * Returns null on exhaustion so callsites stay null-safe.
-     */
-    private suspend fun safeGet(
-        url: String,
-        referer: String? = "$mainUrl/",
-        maxRetries: Int = 3,
-    ): com.lagradost.nicehttp.NiceResponse? {
-        var lastError: Throwable? = null
-        repeat(maxRetries) { attempt ->
-            try {
-                return app.get(
-                    url,
-                    referer = referer,
-                    headers = baseHeaders,
-                    timeout = 30L,
-                )
-            } catch (t: Throwable) {
-                lastError = t
-                if (attempt < maxRetries - 1) {
-                    kotlinx.coroutines.delay(700L * (attempt + 1))
+    override val mainPage = mainPageOf(
+        "$mainUrl/" to "Home"
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val sections = mutableListOf<HomePageList>()
+        getApiSection("Movies", page, "api/movies")?.let { sections.add(it) }
+        getApiSection("TV Series", page, "api/tv")?.let { sections.add(it) }
+        return newHomePageResponse(sections)
+    }
+
+    private suspend fun getApiSection(name: String, page: Int, apiPath: String): HomePageList? {
+        val resp = app.get("$mainUrl/$apiPath?page=$page&limit=24")
+        val text = resp.text ?: return null
+        val data = try { JSONObject(text).optJSONArray("data") } catch (e: Exception) { return null }
+        if (data == null) return null
+        val items = (0 until data.length()).mapNotNull { i ->
+            val item = data.optJSONObject(i) ?: return@mapNotNull null
+            val id = item.optString("id", "")
+            val title = item.optString("title", "")
+            if (id.isBlank() || title.isBlank()) return@mapNotNull null
+            val posterPath = item.optString("posterPath", "")
+            val poster = if (posterPath.isNotBlank()) "https://image.tmdb.org/t/p/w500$posterPath" else null
+            val type = item.optString("type", "movie")
+            val voteAvg = if (item.has("voteAverage")) item.optDouble("voteAverage", -1.0).let { if (it < 0) null else it } else null
+            val href = if (type == "tv") "/tv/$id" else "/movies/$id"
+            if (type == "tv")
+                newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                    this.posterUrl = poster; this.score = Score.from10(voteAvg)
                 }
-            }
+            else
+                newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                    this.posterUrl = poster; this.score = Score.from10(voteAvg)
+                }
         }
-        logError(lastError ?: Exception("Rebahin safeGet failed: $url"))
-        return null
+        return if (items.isEmpty()) null else HomePageList(name, items)
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest,
-    ): HomePageResponse {
-        val urls =
-            listOf(
-                Pair("Featured", "xtab1"),
-                Pair("Film Terbaru", "xtab2"),
-                Pair("Romance", "xtab3"),
-                Pair("Drama", "xtab4"),
-                Pair("Action", "xtab5"),
-                Pair("Scifi", "xtab6"),
-                Pair("Tv Series Terbaru", "stab1"),
-                Pair("Anime Series", "stab2"),
-                Pair("Drakor Series", "stab3"),
-                Pair("West Series", "stab4"),
-                Pair("China Series", "stab5"),
-                Pair("Japan Series", "stab6"),
-            )
-
-        // Fan out all 12 tab fetches concurrently. Was previously a serial for-loop
-        // which made first paint take 12× longer than necessary.
-        val items =
-            urls.amap { (header, tab) ->
-                val home =
-                    safeGet("$mainUrl/wp-content/themes/indoxxi/ajax-top-$tab.php")
-                        ?.document
-                        ?.select("div.ml-item")
-                        ?.mapNotNull { it.toSearchResult() }
-                        .orEmpty()
-                if (home.isNotEmpty()) HomePageList(header, home) else null
-            }.filterNotNull()
-
-        if (items.isEmpty()) throw ErrorLoadingException()
-        return newHomePageResponse(items)
-    }
-
-    fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("span.mli-info > h2")?.text() ?: return null
-        val href = this.selectFirst("a")!!.attr("href")
-        val type =
-            if (this.select("span.mli-quality").isNotEmpty()) TvType.Movie else TvType.TvSeries
-        return if (type == TvType.Movie) {
-            val posterUrl = fixUrlNull(this.select("img").attr("src"))
-            val quality = getQualityFromString(this.select("span.mli-quality").text().trim())
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = posterUrl
-                this.quality = quality
-            }
-        } else {
-            val posterUrl =
-                fixUrlNull(
-                    this.select("img").attr("src").ifEmpty {
-                        this.select("img").attr("data-original")
-                    },
-                )
-            val episode =
-                this
-                    .select("div.mli-eps > span")
-                    .text()
-                    .replace(Regex("[^0-9]"), "")
-                    .toIntOrNull()
-            newAnimeSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = posterUrl
-                addSub(episode)
-            }
+    private fun findMatchingBraceAny(s: String, start: Int, close: Char): Int {
+        val open = if (close == '}') '{' else '['
+        var depth = 1
+        var i = start + 1
+        while (depth > 0 && i < s.length) {
+            if (s[i] == '"') {
+                i++
+                while (i < s.length && s[i] != '"') {
+                    if (s[i] == '\\') i++
+                    i++
+                }
+            } else if (s[i] == open) depth++
+            else if (s[i] == close) depth--
+            i++
         }
+        return if (depth == 0) i - 1 else -1
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
-        val document =
-            safeGet("$mainUrl/?s=$encoded")?.document ?: return emptyList()
-        return document.select("div.ml-item").mapNotNull { it.toSearchResult() }
+        val resp = app.get("$mainUrl/api/search?q=$query")
+        val text = resp.text ?: return emptyList()
+        val data = try { JSONObject(text).optJSONArray("data") } catch (e: Exception) { return emptyList() }
+        if (data == null) return emptyList()
+        return (0 until data.length()).mapNotNull { i ->
+            val item = data.optJSONObject(i) ?: return@mapNotNull null
+            val id = item.optString("id", "")
+            val title = item.optString("title", "")
+            if (id.isBlank() || title.isBlank()) return@mapNotNull null
+            val posterPath = item.optString("posterPath", "")
+            val poster = if (posterPath.isNotBlank()) "https://image.tmdb.org/t/p/w500$posterPath" else null
+            val type = item.optString("type", "movie")
+            val voteAvg = if (item.has("voteAverage")) item.optDouble("voteAverage", -1.0).let { if (it < 0) null else it } else null
+            val href = if (type == "tv") "/tv/$id" else "/movies/$id"
+            if (type == "tv") {
+                newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) { this.posterUrl = poster; this.score = Score.from10(voteAvg) }
+            } else {
+                newMovieSearchResponse(title, fixUrl(href), TvType.Movie) { this.posterUrl = poster; this.score = Score.from10(voteAvg) }
+            }
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val req = safeGet(url)
-            ?: throw ErrorLoadingException("Rebahin page unreachable: $url")
-        directUrl = getBaseUrl(req.url)
-        val document = req.document
-        val title = document.selectFirst("h3[itemprop=name]")?.ownText()?.trim()
-            ?: url.substringAfterLast("/").replace("-", " ").trim().ifBlank { "Untitled" }
-        val poster =
-            document
-                .select(".mvic-desc > div.thumb.mvic-thumb")
-                .attr("style")
-                .substringAfter("url(")
-                .substringBeforeLast(")")
-                .ifBlank { null }
-        val tags = document.select("span[itemprop=genre]").map { it.text() }
+        val resp = app.get(url)
+        val doc = resp.document
+        val raw = resp.text ?: ""
+        val html = raw.replace("\\\"", "\"")
 
-        val year =
-            document
-                .selectFirst(".mvici-right > p:nth-child(3)")
-                ?.ownText()
-                ?.trim()
-                ?.let { Regex("([0-9]{4}?)-").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
-        val tvType = if (url.contains("/series/")) TvType.TvSeries else TvType.Movie
-        val description = document.select("span[itemprop=reviewBody] > p").text().trim()
-        val trailer = fixUrlNull(document.selectFirst("div.modal-body-trailer iframe")?.attr("src"))
-        val rating = document.selectFirst("span[itemprop=ratingValue]")?.text()
-        val duration =
-            document
-                .selectFirst(".mvici-right > p:nth-child(1)")
-                ?.ownText()
-                ?.replace(Regex("[^0-9]"), "")
-                ?.toIntOrNull()
-        val actors = document.select("span[itemprop=actor] > a").map { it.select("span").text() }
+        val title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: doc.selectFirst("h1")?.text()?.trim()
+            ?: throw ErrorLoadingException("Title not found")
 
-        val baseLink = fixUrlNull(document.select("div#mv-info > a").attr("href"))
-            ?: throw ErrorLoadingException("Rebahin: no source link found on $url")
+        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.ifBlank { null }
+        val description = doc.selectFirst("meta[property=og:description]")?.attr("content")?.ifBlank { null }
+        val year = Regex("(\\b20\\d{2}\\b)").find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val tags = Regex("\"genres\":\\[([^\\]]+)\\]").find(html)?.let { m ->
+            Regex("\"name\":\"([^\"]+)\"").findAll(m.value).map { it.groupValues[1] }.toList()
+        } ?: doc.select("a[href*=genre], a[href*=category]").map { it.text() }.filter { it.isNotBlank() }
 
-        return if (tvType == TvType.TvSeries) {
-            val episodes =
-                safeGet(baseLink)
-                    ?.document
-                    ?.select("div#list-eps > a")
-                    ?.map { Pair(it.text(), it.attr("data-iframe")) }
-                    ?.groupBy { it.first }
-                    ?.map { eps ->
-                        newEpisode(
-                            eps.value.map { fixUrl(base64Decode(it.second)) }.toString(),
-                        ) {
-                            this.name = eps.key
-                            this.episode = eps.key.filter { it.isDigit() }.toIntOrNull()
-                        }
-                    }.orEmpty()
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.tags = tags
-                addScore(rating)
-                this.duration = duration
-                addActors(actors)
-                addTrailer(trailer)
+        val voteAvg = Regex("\"voteAverage\":([0-9.]+)").find(html)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+        val score = Score.from10(voteAvg)
+
+        val isSeries = url.contains("/tv/")
+        return if (isSeries) {
+            val episodeUrls = mutableListOf<Episode>()
+            val episodesMatch = Regex("\"episodes\":\\[([^\\]]+)\\]").find(html)
+            if (episodesMatch != null) {
+                val epsJson = episodesMatch.groupValues[1]
+                Regex("\"episodeNumber\":(\\d+),\"seasonNumber\":(\\d+)").findAll(epsJson).forEach { ep ->
+                    val epNum = ep.groupValues[1].toIntOrNull()
+                    val seasonNum = ep.groupValues[2].toIntOrNull()
+                    if (epNum != null) {
+                        val epUrl = if (seasonNum != null) "$url/season-$seasonNum/episode-$epNum"
+                        else "$url/season-1/episode-$epNum"
+                        episodeUrls.add(newEpisode(epUrl) {
+                            this.name = "Eps $epNum"
+                            this.episode = epNum
+                            this.season = seasonNum ?: 1
+                        })
+                    }
+                }
+            }
+            if (episodeUrls.isEmpty()) {
+                doc.select("a[href*=/episode-]").forEach { a ->
+                    val href = a.attr("href").ifBlank { return@forEach }
+                    val epNum = Regex("episode-(\\d+)$").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    if (epNum != null) {
+                        episodeUrls.add(newEpisode(fixUrl(href)) {
+                            this.name = "Eps $epNum"
+                            this.episode = epNum
+                        })
+                    }
+                }
+            }
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeUrls) {
+                posterUrl = poster; plot = description; this.tags = tags; this.year = year; this.score = score
             }
         } else {
-            val links =
-                app
-                    .get(baseLink)
-                    .document
-                    .select("div#server-list div.server-wrapper div[id*=episode]")
-                    .map { fixUrl(base64Decode(it.attr("data-iframe"))) }
-                    .toString()
-            newMovieLoadResponse(title, url, TvType.Movie, links) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.tags = tags
-                addScore(rating)
-                this.duration = duration
-                addActors(actors)
-                addTrailer(trailer)
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
+                posterUrl = poster; plot = description; this.tags = tags; this.year = year; this.score = score
             }
         }
     }
@@ -229,242 +158,61 @@ open class Rebahin : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val resolvedCount = AtomicInteger(0)
-        data
-            .removeSurrounding("[", "]")
-            .split(",")
-            .map { it.trim().trim('[', ']', ' ') }
-            .filter { it.startsWith("http") }
-            .distinct()
-            .amap { link ->
-                safeApiCall {
-                    val emitted = when {
-                        link.startsWith(mainServer) ->
-                            invokeLokalSource(link, subtitleCallback, callback)
-                        link.contains("/iembed/", true) ->
-                            invokeIembed(link, subtitleCallback, callback)
-                        link.contains("199.87.210.226/player/", true) ->
-                            invokeJuicyPlayer(link, subtitleCallback, callback)
-                        else ->
-                            invokeExtractorOrFallback(link, subtitleCallback, callback)
-                    }
-                    if (emitted) resolvedCount.incrementAndGet()
+        val resp = app.get(data)
+        val raw = resp.text ?: return true
+        val html = raw.replace("\\\"", "\"")
+
+        var pos = 0
+        while (true) {
+            val srcIdx = html.indexOf("\"sources\":[", pos)
+            val playIdx = html.indexOf("\"playerSources\":[", pos)
+            val idx = when {
+                srcIdx >= 0 && playIdx >= 0 -> minOf(srcIdx, playIdx)
+                srcIdx >= 0 -> srcIdx
+                playIdx >= 0 -> playIdx
+                else -> break
+            }
+            pos = idx + 1
+            val arrayStart = html.indexOf('[', idx) + 1
+            if (arrayStart <= 0) continue
+            val arrayEnd = findMatchingBraceAny(html, arrayStart - 1, ']')
+            if (arrayEnd < 0) continue
+            val arrayContent = html.substring(arrayStart, arrayEnd)
+            var objPos = 0
+            while (true) {
+                val objStart = arrayContent.indexOf('{', objPos)
+                if (objStart < 0) break
+                val objEnd = findMatchingBraceAny(arrayContent, objStart, '}')
+                if (objEnd < 0) break
+                val obj = arrayContent.substring(objStart, objEnd + 1)
+                val videoUrl = Regex("\"playbackUrl\":\"([^\"]+)\"").find(obj)?.groupValues?.getOrNull(1)
+                val quality = Regex("\"quality\":\"([^\"]+)\"").find(obj)?.groupValues?.getOrNull(1) ?: "FHD"
+                if (videoUrl != null) {
+                    callback(newExtractorLink("Rebahin", "Rebahin - $quality", videoUrl) {
+                        this.quality = parseQuality(quality)
+                        this.referer = "$mainUrl/"
+                    })
                 }
-            }
-
-        return resolvedCount.get() > 0
-    }
-
-    private suspend fun invokeLokalSource(
-        url: String,
-        subCallback: (SubtitleFile) -> Unit,
-        sourceCallback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        val document =
-            runCatching {
-                app.get(
-                    url,
-                    allowRedirects = false,
-                    referer = directUrl,
-                    headers = baseHeaders + mapOf("Accept" to
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
-                    timeout = 30L,
-                ).document
-            }.getOrNull() ?: return false
-
-        var emitted = false
-        document.select("script").find { it.data().contains("window.juicyData") }?.data()?.let { script ->
-            Regex("\"file\":\\s?\"(.+.m3u8)\"").find(script)?.groupValues?.getOrNull(1)?.let { link ->
-                M3u8Helper
-                    .generateM3u8(
-                        name,
-                        link,
-                        referer = "$mainServer/",
-                        headers = mapOf("Accept" to "*/*", "Origin" to mainServer),
-                    ).forEach {
-                        emitted = true
-                        sourceCallback.invoke(it)
-                    }
-            }
-
-            val subData =
-                Regex("\"?tracks\"?:\\s\\n?\\[(.*)],").find(script)?.groupValues?.getOrNull(1)
-                    ?: Regex("\"?tracks\"?:\\s\\n?\\[\\s*(?s:(.+)],\\n\\s*\"sources)")
-                        .find(script)
-                        ?.groupValues
-                        ?.getOrNull(1)
-            tryParseJson<List<Tracks>>("[$subData]")?.map {
-                subCallback.invoke(
-                    SubtitleFile(
-                        getLanguage(it.label ?: return@map null),
-                        if (it.file?.contains(".srt") == true) it.file else return@map null,
-                    ),
-                )
+                objPos = objEnd + 1
             }
         }
-        return emitted
-    }
-
-
-    private suspend fun invokeIembed(
-        url: String,
-        subCallback: (SubtitleFile) -> Unit,
-        sourceCallback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        val source = Regex("[?&]source=([^&]+)").find(url)?.groupValues?.getOrNull(1)
-        val decoded = source?.let { runCatching { base64Decode(it) }.getOrNull() }
-        if (!decoded.isNullOrBlank()) {
-            return when {
-                decoded.contains("199.87.210.226/player/", true) ->
-                    invokeJuicyPlayer(decoded, subCallback, sourceCallback)
-                else -> invokeExtractorOrFallback(decoded, subCallback, sourceCallback)
-            }
-        }
-
-        val iframe = safeGet(url)
-            ?.document
-            ?.selectFirst("iframe[src]")
-            ?.attr("src")
-            ?.let { fixUrl(it) }
-            ?: return false
-        return when {
-            iframe.contains("199.87.210.226/player/", true) ->
-                invokeJuicyPlayer(iframe, subCallback, sourceCallback)
-            else -> invokeExtractorOrFallback(iframe, subCallback, sourceCallback)
-        }
-    }
-
-    private suspend fun invokeJuicyPlayer(
-        url: String,
-        subCallback: (SubtitleFile) -> Unit,
-        sourceCallback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        val playerBase = getBaseUrl(url)
-        val html = app.get(
-            url,
-            referer = "$mainUrl/",
-            headers = baseHeaders,
-            timeout = 30L,
-        ).text
-
-        val decodedConfig = decodeJuicyConfig(html) ?: return invokeExtractorOrFallback(url, subCallback, sourceCallback)
-        var emitted = false
-        Regex("\"kind\":\"(?!thumbnails)([^\"]+)\"[^{}]*\"file\":\"([^\"]+)\"[^{}]*\"label\":\"([^\"]+)\"")
-            .findAll(decodedConfig)
-            .forEach { match ->
-                val file = unescapeJsUrl(match.groupValues[2])
-                val label = match.groupValues[3]
-                if (file.endsWith(".srt", true) || file.endsWith(".vtt", true)) {
-                    subCallback.invoke(SubtitleFile(getLanguage(label), file))
-                }
-            }
-
-        Regex("\"file\":\"([^\"]+\\.m3u8[^\"]*)\"")
-            .findAll(decodedConfig)
-            .map { unescapeJsUrl(it.groupValues[1]) }
-            .distinct()
-            .forEach { m3u8 ->
-                M3u8Helper.generateM3u8(
-                    "Rebahin Juicy",
-                    m3u8,
-                    referer = "$playerBase/",
-                    headers = mapOf(
-                        "Accept" to "*/*",
-                        "Origin" to playerBase,
-                        "Referer" to "$playerBase/",
-                    ),
-                ).forEach {
-                    emitted = true
-                    sourceCallback.invoke(it)
-                }
-            }
-
-        return emitted
-    }
-
-    private suspend fun invokeExtractorOrFallback(
-        link: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        val resolvedCount = AtomicInteger(0)
-        val ref = directUrl?.let { "$it/" } ?: "$mainServer/"
-        loadExtractor(link, ref, subtitleCallback) { ext ->
-            resolvedCount.incrementAndGet()
-            callback.invoke(ext)
-        }
-        if (resolvedCount.get() > 0) return true
-
-        val host = runCatching { URI(link).host }.getOrNull()?.removePrefix("www.") ?: "Embed"
-        callback.invoke(
-            newExtractorLink(host, host, link) {
-                this.referer = ref
-                this.quality = Qualities.Unknown.value
-            },
-        )
         return true
     }
 
-    private fun decodeJuicyConfig(html: String): String? {
-        val callBody = Regex("_juicycodes\\((?s:(.*?))\\);", RegexOption.DOT_MATCHES_ALL)
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return null
-        val encoded = Regex("\"([^\"]*)\"")
-            .findAll(callBody)
-            .joinToString("") { it.groupValues[1] }
-            .ifBlank { return null }
-        if (encoded.length <= 3) return null
-
-        val salt = encoded.takeLast(3).map { it.code - 100 }.joinToString("").toIntOrNull() ?: return null
-        val payload = encoded
-            .dropLast(3)
-            .replace('_', '+')
-            .replace('-', '/')
-            .let { it + "=".repeat((4 - it.length % 4) % 4) }
-        val rawSymbols = runCatching { base64Decode(payload).rot13().rot13() }.getOrNull() ?: return null
-        val symbolMap = listOf('`', '%', '-', '+', '*', '$', '!', '_', '^', '=')
-        val digits =
-            buildString {
-                rawSymbols.forEach { symbol ->
-                    val index = symbolMap.indexOf(symbol)
-                    if (index < 0) return null
-                    append(index)
-                }
-            }
-        if (digits.length < 4) return null
-
-        return digits.chunked(4).mapNotNull { block ->
-            block.toIntOrNull()?.minus(salt)?.takeIf { it > 0 }?.toChar()
-        }.joinToString("")
-    }
-
-    private fun String.rot13(): String = map { char ->
-        when (char) {
-            in 'a'..'m', in 'A'..'M' -> char + 13
-            in 'n'..'z', in 'N'..'Z' -> char - 13
-            else -> char
+    private fun parseQuality(q: String): Int {
+        return when {
+            q.contains("4K", true) || q.contains("2160", true) -> 4
+            q.contains("1080", true) -> 3
+            q.contains("720", true) -> 2
+            q.contains("480", true) || q.contains("360", true) -> 1
+            else -> 3
         }
-    }.joinToString("")
-
-    private fun unescapeJsUrl(url: String): String = url
-        .replace("\\/", "/")
-        .replace("\\u0026", "&")
-        .replace("\\&", "&")
-
-    private fun getLanguage(str: String): String = when {
-        str.contains("indonesia", true) || str.contains("bahasa", true) -> "Indonesian"
-        else -> str
     }
 
-    private fun getBaseUrl(url: String): String = URI(url).let { "${it.scheme}://${it.host}" }
-
-    private data class Tracks(
-        @JsonProperty("file") val file: String? = null,
-        @JsonProperty("label") val label: String? = null,
-        @JsonProperty("kind") val kind: String? = null,
-    )
+    private fun fixUrl(url: String): String {
+        if (url.startsWith("http")) return url
+        return "$mainUrl$url"
+    }
 }
