@@ -10,6 +10,11 @@ buildscript {
         ?.toString()
         ?: "master-SNAPSHOT"
 
+    val kotlinVersion = project
+        .findProperty("kotlin.version")
+        ?.toString()
+        ?: "2.3.0"
+
     repositories {
         google()
         mavenCentral()
@@ -30,7 +35,7 @@ buildscript {
 
         // Kotlin
         classpath(
-            "org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0"
+            "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
         )
     }
 }
