@@ -13,5 +13,6 @@ class PornhoarderProvider: Plugin() {
         registerExtractorAPI(StreamTape())
         registerExtractorAPI(Wishonly())
         registerExtractorAPI(PornhoarderPlaymogo())
+        registerExtractorAPI(PornhoarderDirtyVideo())
     }
 }

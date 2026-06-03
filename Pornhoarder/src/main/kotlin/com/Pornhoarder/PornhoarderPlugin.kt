@@ -189,6 +189,39 @@ class PornhoarderPlugin : MainAPI() {
         return results.distinct().filter { it.isPlayableCandidate() }
     }
 
+    private fun pornhoarderOrigin(url: String): String {
+        val cleaned = url.substringBefore("?").trimEnd('/')
+        val scheme = cleaned.substringBefore("://", "https")
+        val host = cleaned.substringAfter("://", cleaned).substringBefore("/")
+        return "$scheme://$host"
+    }
+
+    private suspend fun fetchPornhoarderPlayerHtml(playerUrl: String, referer: String): String? {
+        val origin = pornhoarderOrigin(playerUrl)
+        val headers = mapOf(
+            "Origin" to origin,
+            "Referer" to playerUrl,
+            "Content-Type" to "application/x-www-form-urlencoded"
+        )
+
+        val postHtml = runCatching {
+            app.post(
+                playerUrl,
+                referer = playerUrl,
+                requestBody = FormBody.Builder().addEncoded("play", "").build(),
+                headers = headers
+            ).text
+        }.getOrNull()
+
+        if (!postHtml.isNullOrBlank() && collectPlayerCandidates(postHtml, playerUrl).isNotEmpty()) {
+            return postHtml
+        }
+
+        return runCatching {
+            app.get(playerUrl, referer = referer).text
+        }.getOrNull()
+    }
+
     private suspend fun resolvePlayerCandidate(
         playerUrl: String,
         referer: String,
@@ -199,15 +232,42 @@ class PornhoarderPlugin : MainAPI() {
             return tryLoadExtractor(playerUrl, referer, subtitleCallback, callback)
         }
 
-        val playerDoc = runCatching {
-            app.get(playerUrl, referer = referer).text
-        }.getOrNull() ?: return false
+        val playerDoc = fetchPornhoarderPlayerHtml(playerUrl, referer) ?: return false
 
-        val nested = collectPlayerCandidates(playerDoc, playerUrl).filterNot { it.isPornhoarderPlayer() }
-        for (nestedUrl in nested.take(6)) {
+        val nested = collectPlayerCandidates(playerDoc, playerUrl)
+            .filterNot { it.isPornhoarderPlayer() }
+            .sortedWith(compareByDescending<String> {
+                val lower = it.lowercase()
+                lower.contains("playmogo.com") || lower.contains("dirtyvideo.fun") || lower.contains("voe.sx")
+            })
+
+        for (nestedUrl in nested.take(8)) {
             if (tryLoadExtractor(nestedUrl, playerUrl, subtitleCallback, callback)) return true
         }
         return false
+    }
+
+    private fun extractVideoId(url: String): String? {
+        return url.substringBefore("?").trimEnd('/').substringAfterLast('/').takeIf { it.length > 16 }
+    }
+
+    private suspend fun collectAlternateServerCandidates(pageHtml: String, pageUrl: String): List<String> {
+        val document = org.jsoup.Jsoup.parse(pageHtml, pageUrl)
+        val alternates = document.select(".server-list a[href], a[href*='/watch/']")
+            .mapNotNull { absoluteUrl(it.attr("href"), pageUrl) }
+            .filter { it.contains("/watch/") && it != pageUrl }
+            .distinct()
+            .take(4)
+
+        val candidates = mutableListOf<String>()
+        for (alternate in alternates) {
+            extractVideoId(alternate)?.let { id ->
+                candidates.add("https://pornhoarder.net/player_t.php?video=$id")
+            }
+            val html = runCatching { app.get(alternate, referer = pageUrl).text }.getOrNull() ?: continue
+            candidates.addAll(collectPlayerCandidates(html, alternate))
+        }
+        return candidates.distinct()
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
@@ -217,12 +277,13 @@ class PornhoarderPlugin : MainAPI() {
 
         val candidates = collectPlayerCandidates(pageHtml, data).toMutableList()
 
-        val videoId = data.substringBefore("?").trimEnd('/').substringAfterLast('/').takeIf { it.length > 16 }
-        if (videoId != null) {
+        extractVideoId(data)?.let { videoId ->
             candidates.add("https://pornhoarder.net/player_t.php?video=$videoId")
         }
 
-        for (candidate in candidates.distinct().filter { it.isPlayableCandidate() }.take(8)) {
+        candidates.addAll(collectAlternateServerCandidates(pageHtml, data))
+
+        for (candidate in candidates.distinct().filter { it.isPlayableCandidate() }.take(12)) {
             if (resolvePlayerCandidate(candidate, data, subtitleCallback, callback)) {
                 return true
             }
