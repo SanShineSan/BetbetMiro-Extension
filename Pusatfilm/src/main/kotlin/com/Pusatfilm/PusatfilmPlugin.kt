@@ -10,5 +10,7 @@ class PusatfilmPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(Pusatfilm())
         registerExtractorAPI(Kotakajaib())
+        registerExtractorAPI(PusatfilmHydrax())
+        registerExtractorAPI(PusatfilmDood())
     }
 }

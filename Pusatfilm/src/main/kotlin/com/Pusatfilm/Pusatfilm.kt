@@ -18,7 +18,7 @@ import java.net.URLEncoder
 import java.util.Locale
 
 class Pusatfilm : MainAPI() {
-    override var mainUrl = "https://v2.pusatfilm21info.net"
+    override var mainUrl = "https://v3.pusatfilm21info.com"
     override var name = "Pusatfilm"
     override val hasMainPage = true
     override val hasDownloadSupport = true
@@ -34,7 +34,7 @@ class Pusatfilm : MainAPI() {
         "film-terbaru/page/%d/" to "Film Terbaru",
         "trending/page/%d/" to "Film Trending",
         "genre/action/page/%d/" to "Film Action",
-        "series-terbaru/page/%d/" to "Series Terbaru",
+        "series-netflix/page/%d/" to "Series Netflix",
         "drama-korea/page/%d/" to "Drama Korea",
         "west-series/page/%d/" to "West Series",
         "drama-china/page/%d/" to "Drama China"
@@ -118,27 +118,39 @@ class Pusatfilm : MainAPI() {
             ?.replace(Regex("\\D"), "")
             ?.toIntOrNull()
 
-        val tvType = if (url.contains("/tv/") || document.select("div.vid-episodes a, div.gmr-listseries a").isNotEmpty()) {
+        val episodeElements = document.select(
+            "div.vid-episodes a[href*='/eps/'], div.gmr-listseries a[href*='/eps/'], a[href*='/eps/']"
+        )
+        val tvType = if (url.contains("/tv/") || episodeElements.isNotEmpty()) {
             TvType.TvSeries
         } else {
             TvType.Movie
         }
 
         return if (tvType == TvType.TvSeries) {
-            val episodes = document.select("div.vid-episodes a, div.gmr-listseries a")
+            val episodes = episodeElements
                 .mapNotNull { eps ->
                     val href = fixUrlNull(eps.attr("href")) ?: return@mapNotNull null
-                    val name = eps.text().trim().ifBlank { "Episode" }
-                    val episode = Regex("""(?i)episode\s*(\d+)""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                        ?: name.split(" ").lastOrNull()?.filter { it.isDigit() }?.toIntOrNull()
-                    val season = Regex("""(?i)season\s*(\d+)""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                        ?: name.split(" ").firstOrNull()?.filter { it.isDigit() }?.toIntOrNull()
+                    if (!href.contains("/eps/")) return@mapNotNull null
+                    val rawName = eps.text().trim()
+                    val episode = rawName.toIntOrNull()
+                        ?: Regex("""(?i)(?:episode|eps|e)[-\s]*(\d+)""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        ?: Regex("""(?i)episode-(\d+)""").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    val season = Regex("""(?i)season[-\s]*(\d+)""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        ?: Regex("""(?i)season-(\d+)""").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    val name = when {
+                        rawName.isBlank() && episode != null -> "Episode $episode"
+                        rawName.all { it.isDigit() } -> "Episode $rawName"
+                        rawName.isBlank() -> "Episode"
+                        else -> rawName
+                    }
                     newEpisode(href) {
                         this.name = name
                         this.season = season
                         this.episode = episode
                     }
                 }
+                .distinctBy { it.data }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
@@ -262,14 +274,23 @@ class Pusatfilm : MainAPI() {
 
         val posterUrl = fixUrlNull(selectFirst("a > img, img")?.getImageAttr())?.fixImageQuality()
         val ratingText = selectFirst("div.gmr-rating-item")?.ownText()?.trim()
-        val quality = select("div.gmr-qual, div.gmr-quality-item > a").text().trim().replace("-", "")
+        val qualityElement = selectFirst("div.gmr-qual, div.gmr-quality-item > a")
+        val quality = qualityElement?.text()?.trim()?.replace("-", "").orEmpty()
+        val isSeries = href.contains("/tv/") ||
+            qualityElement?.hasClass("tag-episode") == true ||
+            quality.matches(Regex("""(?i)s\d+\s*e\d+"""))
 
-        return if (quality.isEmpty()) {
-            val episode = Regex("Episode\\s?([0-9]+)")
-                .find(title)
+        return if (isSeries) {
+            val episode = Regex("""(?i)e\s*(\d+)""")
+                .find(quality)
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.toIntOrNull()
+                ?: Regex("""Episode\s?([0-9]+)""")
+                    .find(title)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
                 ?: select("div.gmr-numbeps > span").text().toIntOrNull()
 
             newAnimeSearchResponse(title, href, TvType.TvSeries) {
@@ -280,7 +301,7 @@ class Pusatfilm : MainAPI() {
         } else {
             newMovieSearchResponse(title, href, TvType.Movie) {
                 this.posterUrl = posterUrl
-                addQuality(quality)
+                if (quality.isNotBlank()) addQuality(quality)
                 this.score = Score.from10(ratingText?.toDoubleOrNull())
             }
         }
@@ -458,6 +479,7 @@ class Pusatfilm : MainAPI() {
         return lower.contains("kotakajaib") || lower.contains("embed") || lower.contains("player") ||
             lower.contains("stream") || lower.contains("file") || lower.contains("video") ||
             lower.contains("m3u8") || lower.contains("mp4") || lower.contains("webm") ||
+            lower.contains("hydrax") || lower.contains("rapidplay") || lower.contains("turbovid") ||
             lower.contains("gdplay") || lower.contains("gdrive") || lower.contains("dood") ||
             lower.contains("streamtape") || lower.contains("filemoon") || lower.contains("vidhide") ||
             lower.contains("voe") || lower.contains("mixdrop") || lower.contains("upstream") ||

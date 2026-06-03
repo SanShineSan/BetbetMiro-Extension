@@ -1,6 +1,8 @@
 package com.pusatfilm
 
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.extractors.DoodLaExtractor
+import com.lagradost.cloudstream3.extractors.VidHidePro
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.base64Decode
 import com.lagradost.cloudstream3.fixUrl
@@ -194,6 +196,7 @@ open class Kotakajaib : ExtractorApi() {
         return lower.contains("kotakajaib") || lower.contains("embed") || lower.contains("player") ||
             lower.contains("stream") || lower.contains("file") || lower.contains("video") ||
             lower.contains("m3u8") || lower.contains("mp4") || lower.contains("webm") ||
+            lower.contains("hydrax") || lower.contains("rapidplay") || lower.contains("turbovid") ||
             lower.contains("gdplay") || lower.contains("gdrive") || lower.contains("dood") ||
             lower.contains("streamtape") || lower.contains("filemoon") || lower.contains("vidhide") ||
             lower.contains("voe") || lower.contains("mixdrop") || lower.contains("upstream") ||
@@ -220,4 +223,15 @@ open class Kotakajaib : ExtractorApi() {
             String(android.util.Base64.decode(padded, android.util.Base64.DEFAULT))
         }.getOrNull()
     }
+}
+
+
+class PusatfilmHydrax : VidHidePro() {
+    override var name = "Hydrax"
+    override var mainUrl = "https://playhydrax.com"
+}
+
+class PusatfilmDood : DoodLaExtractor() {
+    override var name = "Dood"
+    override var mainUrl = "https://dood.la"
 }
