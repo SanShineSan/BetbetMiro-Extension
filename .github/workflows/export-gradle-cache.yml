@@ -5,6 +5,8 @@ on:
   push:
     paths:
       - ".github/workflows/export-gradle-cache.yml"
+      - "build.gradle.kts"
+      - "gradle.properties"
 
 permissions:
   contents: read
@@ -27,10 +29,22 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      - name: Resolve Cloudstream jar URL
+        id: cloudstream
+        run: |
+          JAR_URL="$(grep '^cloudstream.jar.url=' gradle.properties | cut -d= -f2-)"
+          if [ -z "$JAR_URL" ]; then
+            echo "cloudstream.jar.url is missing from gradle.properties"
+            exit 1
+          fi
+          echo "jar_url=$JAR_URL" >> "$GITHUB_OUTPUT"
+
       - name: Download Cloudstream jar
         run: |
           mkdir -p "$HOME/.gradle/caches/cloudstream/cloudstream"
-          curl -L --retry 3 --fail             -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar"             "https://github.com/recloudstream/cloudstream/releases/download/pre-release/classes.jar"
+          curl -L --retry 3 --fail \
+            -o "$HOME/.gradle/caches/cloudstream/cloudstream/cloudstream.jar" \
+            "${{ steps.cloudstream.outputs.jar_url }}"
           ls -lah "$HOME/.gradle/caches/cloudstream/cloudstream"
 
       - name: Populate Gradle cache

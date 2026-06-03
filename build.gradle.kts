@@ -3,6 +3,16 @@ import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
+val cloudstreamGradlePluginVersion = providers
+    .gradleProperty("cloudstream.gradle.plugin.version")
+    .orElse("22be73619eb679c2df2c685fa3ba48ce923e68cb")
+    .get()
+
+val cloudstreamApiVersion = providers
+    .gradleProperty("cloudstream.api.version")
+    .orElse("pre-release")
+    .get()
+
 buildscript {
 
     repositories {
@@ -20,7 +30,7 @@ buildscript {
 
         // CloudStream Gradle Plugin
         classpath(
-            "com.github.recloudstream:gradle:master-SNAPSHOT"
+            "com.github.recloudstream:gradle:$cloudstreamGradlePluginVersion"
         )
 
         // Kotlin
@@ -126,7 +136,7 @@ subprojects {
         // =========================
 
         cloudstream(
-            "com.lagradost:cloudstream3:pre-release"
+            "com.lagradost:cloudstream3:$cloudstreamApiVersion"
         )
 
         // =========================
