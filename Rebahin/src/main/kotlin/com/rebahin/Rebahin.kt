@@ -340,7 +340,7 @@ open class Rebahin : MainAPI() {
         return true
     }
 
-    private fun emitM3u8(
+    private suspend fun emitM3u8(
         url: String,
         playerBase: String,
         sourceCallback: (ExtractorLink) -> Unit,
