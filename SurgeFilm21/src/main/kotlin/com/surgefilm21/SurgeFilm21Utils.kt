@@ -29,7 +29,8 @@ internal fun String.cleanTitleSf21(): String {
 
 internal fun String?.absUrlSf21(baseUrl: String): String? {
     val raw = this?.cleanSf21()?.trim()?.takeIf { it.isNotBlank() } ?: return null
-    if (raw.startsWith("javascript:", true) || raw.startsWith("data:", true) || raw == "#") return null
+    if (raw.startsWith("javascript:", true) || raw.startsWith("data:", true) || raw.startsWith("about:", true) || raw == "#") return null
+    if (raw.contains("\${") || raw.contains(" ") || raw.startsWith(",")) return null
 
     return when {
         raw.startsWith("//") -> "https:$raw"
@@ -49,6 +50,19 @@ internal fun String.isVideoUrlSf21(): Boolean {
 internal fun String.isNoiseUrlSf21(): Boolean {
     val lower = lowercase()
     return lower.contains("facebook.com") ||
+        lower.contains("ads.d21.media") ||
+        lower.contains("pixel.morphify.net") ||
+        lower.contains("poster.sf21.space/aff") ||
+        lower.contains("static.cloudflareinsights.com") ||
+        lower.contains("cdnjs.cloudflare.com") ||
+        lower.contains("cdn.jsdelivr.net") ||
+        lower.contains("fonts.googleapis.com") ||
+        lower.contains("fonts.gstatic.com") ||
+        lower.contains("cdn.tailwindcss.com") ||
+        lower.contains("ui-avatars.com") ||
+        lower.contains("googletagmanager.com") ||
+        lower.contains("histats.com") ||
+        lower.contains("sf21.team") ||
         lower.contains("telegram") ||
         lower.contains("instagram") ||
         lower.contains("twitter.com") ||

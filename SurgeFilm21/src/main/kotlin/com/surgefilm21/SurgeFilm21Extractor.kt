@@ -7,13 +7,17 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.getAndUnpack
 
 object SurgeFilm21Extractor {
     private val candidatePatterns = listOf(
         Regex("""<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""(?:file|src|source|video|videoUrl|video_url|hls|url|embed|embed_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""(?:data-src|data-fallback|data-embed|data-video|data-url|data-link)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""switchServer\(\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["'](https?://[^"']*player-proxy\.php[^"']*)["']""", RegexOption.IGNORE_CASE),
+        Regex("""(?:file|src|source|video|videoUrl|video_url|hls|url|embed|embed_url|embed_frame_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
         Regex("""["']((?:https?:)?//[^"']+(?:\.m3u8|\.mp4|\.webm|\.mpd)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["'](https?://[^"']*(?:dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive.google)[^"']*)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["'](https?://[^"']*(?:abyssplayer|abyss\.to|minochinos|bysejikuar|rupertisdivingintoocean|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive.google)[^"']*)["']""", RegexOption.IGNORE_CASE),
         Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video)[^"']*)["']""", RegexOption.IGNORE_CASE)
     )
 
@@ -41,11 +45,10 @@ object SurgeFilm21Extractor {
             }
 
             runCatching {
-                val success = loadExtractor(url, referer, subtitleCallback, callback)
-                if (success) found = true
+                loadExtractor(url, referer, subtitleCallback) { link -> emit(link) }
             }
 
-            if (depth >= 2 || isKnownExternal(url)) return
+            if (depth >= 3 || isKnownExternal(url)) return
 
             val response = runCatching {
                 app.get(url, headers = SurgeFilm21Sepeda.baseHeaders + mapOf("Referer" to referer), referer = referer, timeout = 15000L)
@@ -56,21 +59,26 @@ object SurgeFilm21Extractor {
             if (contentType.startsWith("video/") || contentType.contains("mpegurl") || contentType.contains("dash") || contentType.contains("octet-stream") || (contentLength != null && contentLength > 5_000_000L)) return
 
             val body = runCatching { response.text.cleanSf21() }.getOrNull() ?: return
-            collectCandidates(body, url).forEach { resolve(it, url, depth + 1) }
+            for (candidate in collectCandidates(body, url)) {
+                try { resolve(candidate, url, depth + 1) } catch (_: Throwable) {}
+            }
         }
 
         val html = SurgeFilm21Sepeda.getText(pageUrl, SurgeFilm21Provider.DEFAULT_MAIN_URL).cleanSf21()
         val document = SurgeFilm21Parser.parseDocumentFromHtml(html, pageUrl)
 
-        document.select("iframe[src], iframe[data-src], embed[src], video source[src], video[src], source[src], a[href*='.mp4'], a[href*='.m3u8'], a[href*='.webm'], a[href*='embed'], a[href*='player'], [data-src], [data-embed], [data-video], [data-url], [data-link]")
-            .forEach { element ->
-                listOf("src", "data-src", "href", "data-embed", "data-video", "data-url", "data-link")
-                    .map { element.attr(it) }
-                    .firstOrNull { it.isNotBlank() }
-                    ?.let { candidate -> runCatching { resolve(candidate, pageUrl, 0) } }
+        for (element in document.select("iframe[src], iframe[data-src], embed[src], video source[src], video[src], source[src], a[href*='.mp4'], a[href*='.m3u8'], a[href*='.webm'], a[href*='embed'], a[href*='player'], [data-src], [data-embed], [data-video], [data-url], [data-link]")) {
+            val candidate = listOf("src", "data-src", "href", "data-embed", "data-video", "data-url", "data-link")
+                .map { element.attr(it) }
+                .firstOrNull { it.isNotBlank() }
+            if (candidate != null) {
+                try { resolve(candidate, pageUrl, 0) } catch (_: Throwable) {}
             }
+        }
 
-        collectCandidates(html, pageUrl).forEach { resolve(it, pageUrl, 0) }
+        for (candidate in collectCandidates(html, pageUrl)) {
+            try { resolve(candidate, pageUrl, 0) } catch (_: Throwable) {}
+        }
         return found
     }
 
@@ -78,21 +86,27 @@ object SurgeFilm21Extractor {
         val clean = html.cleanSf21()
         val out = linkedSetOf<String>()
 
+        fun collectFrom(text: String, currentBase: String = baseUrl) {
+            val normalized = text.cleanSf21()
+            candidatePatterns.forEach { pattern ->
+                pattern.findAll(normalized).forEach { match ->
+                    match.groupValues.getOrNull(1)?.absUrlSf21(currentBase)?.let(out::add)
+                }
+            }
+        }
+
+        collectFrom(clean)
+
         Regex("""atob\(["']([^"']+)["']\)""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .mapNotNull { decodeBase64Sf21(it.groupValues[1]) }
-            .forEach { decoded ->
-                candidatePatterns.forEach { pattern ->
-                    pattern.findAll(decoded.cleanSf21()).forEach { match ->
-                        match.groupValues.getOrNull(1)?.absUrlSf21(baseUrl)?.let(out::add)
-                    }
-                }
-            }
+            .forEach { decoded -> collectFrom(decoded, baseUrl) }
 
-        candidatePatterns.forEach { pattern ->
-            pattern.findAll(clean).forEach { match ->
-                match.groupValues.getOrNull(1)?.absUrlSf21(baseUrl)?.let(out::add)
-            }
+        if (clean.contains("eval(function(p,a,c,k,e,d)", ignoreCase = true)) {
+            runCatching { getAndUnpack(clean) }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() && it != clean }
+                ?.let { unpacked -> collectFrom(unpacked, baseUrl) }
         }
 
         return out.filterNot { it.isNoiseUrlSf21() }.toCollection(linkedSetOf())
