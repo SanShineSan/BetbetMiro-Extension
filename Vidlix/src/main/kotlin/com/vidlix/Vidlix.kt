@@ -32,6 +32,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Base64
@@ -57,8 +58,11 @@ class Vidlix : MainAPI() {
 
     private val siteHeaders = mapOf(
         "User-Agent" to USER_AGENT,
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+        "Upgrade-Insecure-Requests" to "1"
     )
 
     override val mainPage = mainPageOf(
@@ -302,7 +306,7 @@ class Vidlix : MainAPI() {
         val payload = parseAbyssPayload(html) ?: return false
         val mediaJson = decryptAbyssMedia(payload) ?: return false
         val root = runCatching { JSONObject(mediaJson) }.getOrNull() ?: return false
-        val mp4 = root.optJSONObject("mp4") ?: return false
+        val mp4 = root.optJSONObject("mp4") ?: root
         var found = false
 
         val labels = mutableMapOf<Int, String>()
@@ -316,32 +320,36 @@ class Vidlix : MainAPI() {
             }
         }
 
-        // Current AbyssPlayer payload from HAR no longer exposes {url,path} in sources.
-        // The browser consumes mp4.fristDatas[*].url, which points to the playable .fd range source.
-        mp4.optJSONArray("fristDatas")?.let { firstData ->
-            for (index in 0 until firstData.length()) {
-                val item = firstData.optJSONObject(index) ?: continue
-                val videoUrl = item.optString("url").trim()
-                if (videoUrl.isBlank()) continue
-                val label = labels[item.optInt("res_id", -1)]
-                    ?: item.optString("codec").takeIf { it.isNotBlank() }
-                    ?: "AbyssPlayer"
-                if (emitAbyssDirect(videoUrl, label, callback)) found = true
+        listOf("fristDatas", "firstDatas", "data", "files").forEach { arrayName ->
+            mp4.optJSONArray(arrayName)?.let { items ->
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val videoUrl = listOf("url", "file", "src", "source").firstNotNullOfOrNull { key ->
+                        item.optString(key).trim().takeIf { it.isPlayableCandidate() }
+                    } ?: continue
+                    val label = labels[item.optInt("res_id", -1)]
+                        ?: item.optString("label").takeIf { it.isNotBlank() }
+                        ?: item.optString("codec").takeIf { it.isNotBlank() }
+                        ?: "AbyssPlayer"
+                    if (emitAbyssDirect(videoUrl, label, callback)) found = true
+                }
             }
         }
 
         if (found) return true
 
-        // Backward compatible fallback for older Abyss payload shapes.
         mp4.optJSONArray("sources")?.let { sources ->
             for (index in 0 until sources.length()) {
                 val source = sources.optJSONObject(index) ?: continue
                 if (!source.optBoolean("status", true)) continue
+                val direct = listOf("url", "file", "src", "source").firstNotNullOfOrNull { key ->
+                    source.optString(key).trim().takeIf { it.isPlayableCandidate() }
+                }
                 val host = source.optString("url").trimEnd('/')
                 val path = source.optString("path").trimStart('/')
-                if (host.isBlank() || path.isBlank()) continue
+                val resolved = direct ?: if (host.isNotBlank() && path.isNotBlank()) "$host/$path" else null
                 val label = source.optString("label", "AbyssPlayer")
-                if (emitAbyssDirect("$host/$path", label, callback)) found = true
+                if (resolved != null && emitAbyssDirect(resolved, label, callback)) found = true
             }
         }
 
@@ -371,9 +379,9 @@ class Vidlix : MainAPI() {
     }
 
     private fun parseAbyssPayload(html: String): AbyssPayload? {
-        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=]+)["']""")
+        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=_-]+)["']""")
             .find(html)?.groupValues?.getOrNull(1) ?: return null
-        val json = runCatching { String(Base64.getDecoder().decode(encoded), Charsets.ISO_8859_1) }.getOrNull() ?: return null
+        val json = decodeBase64String(encoded) ?: return null
         val node = runCatching { JSONObject(json) }.getOrNull() ?: return null
         val slug = node.optString("slug")
         val md5Id = node.optString("md5_id")
@@ -381,6 +389,13 @@ class Vidlix : MainAPI() {
         val media = node.optString("media")
         if (slug.isBlank() || md5Id.isBlank() || userId.isBlank() || media.isBlank()) return null
         return AbyssPayload(slug, md5Id, userId, media)
+    }
+
+    private fun decodeBase64String(value: String): String? {
+        val normalized = value.trim().replace('-', '+').replace('_', '/')
+            .let { it + "=".repeat((4 - it.length % 4) % 4) }
+        return runCatching { String(Base64.getDecoder().decode(normalized), Charsets.ISO_8859_1) }
+            .getOrElse { runCatching { String(Base64.getUrlDecoder().decode(value), Charsets.ISO_8859_1) }.getOrNull() }
     }
 
     private fun decryptAbyssMedia(payload: AbyssPayload): String? {
@@ -410,25 +425,26 @@ class Vidlix : MainAPI() {
 
     private fun parseCards(document: Document, defaultType: TvType): List<SearchResponse> {
         val seen = linkedSetOf<String>()
-        return document.select("a.linkpop[href*=/post/], .featured-video a[href*=/post/], .masonry a[href*=/post/], .item-terkait a[href*=/post/], a[href*=/post/]")
+        return document.select("a[href*=/post/], article:has(a[href*=/post/]), .post:has(a[href*=/post/]), .item:has(a[href*=/post/]), .video:has(a[href*=/post/]), .masonry:has(a[href*=/post/])")
             .mapNotNull { it.toSearchResult(defaultType) }
             .filter { seen.add(it.url) }
     }
 
     private fun Element.toSearchResult(defaultType: TvType): SearchResponse? {
-        val href = absoluteUrl(attr("href")) ?: return null
+        val anchor = when {
+            tagName() == "a" && attr("href").contains("/post/") -> this
+            else -> selectFirst("a[href*=/post/]")
+        } ?: return null
+        val href = absoluteUrl(anchor.attr("href")) ?: return null
         if (!href.contains("/post/")) return null
         val text = text().trim()
-        val title = selectFirst("h2.title, .title")?.text()?.cleanTitle()
-            ?: attr("title").cleanTitle().ifBlank { null }
+        val title = selectFirst("h2.title, h3.title, .title, .judul, .name")?.text()?.cleanTitle()
+            ?: anchor.attr("title").cleanTitle().ifBlank { null }
             ?: selectFirst("img")?.attr("alt")?.cleanTitle()?.ifBlank { null }
+            ?: anchor.text().cleanCardText().ifBlank { null }
             ?: text.cleanCardText().ifBlank { null }
             ?: return null
-        val poster = absoluteUrl(
-            selectFirst("img")?.attr("data-src")
-                ?: selectFirst("img")?.attr("data-original")
-                ?: selectFirst("img")?.attr("src")
-        )
+        val poster = extractImageUrl(this) ?: extractImageUrl(anchor)
         val type = when {
             text.contains("Series", true) || title.contains("Season", true) || defaultType == TvType.TvSeries -> TvType.TvSeries
             else -> TvType.Movie
@@ -441,38 +457,97 @@ class Vidlix : MainAPI() {
 
     private suspend fun fetchProxyDocument(proxyUrl: String, referer: String): Document? {
         val js = runCatching {
-            app.get(proxyUrl, headers = siteHeaders + mapOf("Accept" to "application/javascript,*/*;q=0.8"), referer = referer).text
+            app.get(
+                proxyUrl,
+                headers = siteHeaders + mapOf(
+                    "Accept" to "application/javascript,text/javascript,*/*;q=0.8",
+                    "X-Requested-With" to "XMLHttpRequest"
+                ),
+                referer = referer
+            ).text
         }.getOrNull() ?: return null
         val html = unwrapDocumentWrite(js)
-        return Jsoup.parse(html, proxyUrl)
+        return Jsoup.parse("$html\n<script>$js</script>", proxyUrl)
     }
 
     private fun extractProxyCandidates(document: Document): List<VideoCandidate> {
         val candidates = mutableListOf<VideoCandidate>()
-        document.select("div.video-con[video]").forEachIndexed { index, element ->
+        val sourceHtml = document.html().htmlUnescape().unescapeJs()
+
+        document.select("div.video-con[video], [video]").forEachIndexed { index, element ->
             val url = element.attr("video").trim().htmlUnescape()
-            val fixedUrl = absoluteUrl(url) ?: return@forEachIndexed
+            val fixedUrl = normalizeMediaUrl(url) ?: return@forEachIndexed
             candidates.add(
                 VideoCandidate(
                     url = fixedUrl,
-                    name = element.selectFirst(".v-titles .title")?.text()?.trim().takeUnless { it.isNullOrBlank() }
+                    name = element.selectFirst(".v-titles .title, .title, [title]")?.text()?.trim().takeUnless { it.isNullOrBlank() }
+                        ?: element.attr("title").takeIf { it.isNotBlank() }
                         ?: "Episode ${index + 1}",
-                    posterUrl = absoluteUrl(element.selectFirst("img")?.attr("src"))
+                    posterUrl = extractImageUrl(element)
                 )
             )
         }
-        document.select("iframe[src], video[src], source[src], [data-src], [data-video], [data-url], [data-embed], [data-iframe]").forEach { element ->
-            listOf("src", "data-src", "data-video", "data-url", "data-embed", "data-iframe").forEach { attr ->
+
+        val mediaAttrs = listOf(
+            "src", "href", "video", "data-src", "data-video", "data-url",
+            "data-embed", "data-iframe", "data-file", "data-link", "data-player",
+            "file", "url"
+        )
+        document.select("iframe, video, source, a, [src], [href], [video], [data-src], [data-video], [data-url], [data-embed], [data-iframe], [data-file], [data-link], [data-player]").forEach { element ->
+            mediaAttrs.forEach { attr ->
                 val url = element.attr(attr).trim().htmlUnescape()
-                if (url.isNotBlank() && (url.contains("abyssplayer", true) || isDirectMedia(url))) {
-                    absoluteUrl(url)?.let { candidates.add(VideoCandidate(it, element.attr("title").ifBlank { null }, null)) }
+                if (url.isPlayableCandidate()) {
+                    normalizeMediaUrl(url)?.let { candidates.add(VideoCandidate(it, element.attr("title").ifBlank { null }, extractImageUrl(element))) }
                 }
             }
         }
-        Regex("""https?://[^'"<>\s]+?(?:abyssplayer\.com|abyss\.to)[^'"<>\s]*""", RegexOption.IGNORE_CASE)
-            .findAll(document.html())
-            .forEach { absoluteUrl(it.value.htmlUnescape())?.let { url -> candidates.add(VideoCandidate(url, null, null)) } }
-        return candidates.distinctBy { it.url }
+
+        listOf(
+            Regex("""https?://[^'"<>\s\\]+?(?:abyssplayer\.com|abyss\.to)[^'"<>\s\\]*""", RegexOption.IGNORE_CASE),
+            Regex("""https?://[^'"<>\s\\]+?\.(?:m3u8|mp4|webm|mkv)(?:\?[^'"<>\s\\]*)?""", RegexOption.IGNORE_CASE),
+            Regex("""(?:video|file|source|src|url)\s*[:=]\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+        ).forEach { regex ->
+            regex.findAll(sourceHtml).forEach { match ->
+                val raw = match.groupValues.getOrNull(1).takeIf { !it.isNullOrBlank() } ?: match.value
+                if (raw.isPlayableCandidate()) {
+                    normalizeMediaUrl(raw)?.let { candidates.add(VideoCandidate(it, null, null)) }
+                }
+            }
+        }
+
+        return candidates.distinctBy { it.url.substringBefore("#") }
+    }
+
+    private fun extractImageUrl(element: Element): String? {
+        element.selectFirst("img, [style*=background]")?.let { image ->
+            listOf("data-src", "data-original", "data-lazy-src", "data-bg", "data-background", "src", "poster").forEach { attr ->
+                val value = image.attr(attr).trim().takeIf { it.isNotBlank() && !it.startsWith("data:", true) }
+                if (value != null) return absoluteUrl(value)
+            }
+            Regex("""url\((['"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
+                .find(image.attr("style"))?.groupValues?.getOrNull(2)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return absoluteUrl(it) }
+        }
+        Regex("""url\((['"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
+            .find(element.attr("style"))?.groupValues?.getOrNull(2)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return absoluteUrl(it) }
+        return null
+    }
+
+    private fun normalizeMediaUrl(raw: String): String? {
+        val cleaned = raw.trim().htmlUnescape().unescapeJs()
+            .replace("\\/", "/")
+            .trim(' ', '"', '\'', '`')
+        return absoluteUrl(cleaned)
+    }
+
+    private fun String.isPlayableCandidate(): Boolean {
+        val value = trim().htmlUnescape().unescapeJs().replace("\\/", "/")
+        return value.contains("abyssplayer", true) ||
+            value.contains("abyss.to", true) ||
+            isDirectMedia(value)
     }
 
     private fun detailValue(document: Document, label: String): String? {
@@ -494,21 +569,95 @@ class Vidlix : MainAPI() {
 
     private fun pagedUrl(base: String, page: Int): String {
         if (page <= 1) return base
-        return base.trimEnd('/') + "/page/$page"
+        val separator = if (base.contains("?")) "&" else "?"
+        return base.trimEnd('/') + "${separator}page=$page"
     }
 
     private fun unwrapDocumentWrite(script: String): String {
-        val marker = "document.writeln("
-        val start = script.indexOf(marker)
-        if (start < 0) return script
-        var body = script.substring(start + marker.length).trim()
-        body = body.removeSuffix(";").trim()
-        if (body.endsWith(")")) body = body.dropLast(1).trim()
-        if (body.length < 2) return body
-        val quote = body.first()
-        val last = body.lastIndexOf(quote)
-        val raw = if ((quote == '`' || quote == '"' || quote == '\'') && last > 0) body.substring(1, last) else body
-        return raw.unescapeJs()
+        val chunks = mutableListOf<String>()
+        Regex("""document\.(?:write|writeln)\s*\(""", RegexOption.IGNORE_CASE)
+            .findAll(script)
+            .forEach { match ->
+                val expression = readJsCallArgument(script, match.range.last + 1)
+                val decoded = decodeJsExpression(expression)
+                if (decoded.isNotBlank()) chunks.add(decoded)
+            }
+        if (chunks.isNotEmpty()) return chunks.joinToString("")
+
+        Regex("""atob\s*\(\s*['"]([A-Za-z0-9+/=_-]+)['"]\s*\)""", RegexOption.IGNORE_CASE)
+            .find(script)?.groupValues?.getOrNull(1)
+            ?.let { decodeBase64String(it) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
+        return script.unescapeJs()
+    }
+
+    private fun readJsCallArgument(source: String, start: Int): String {
+        var quote: Char? = null
+        var escaped = false
+        var depth = 0
+        for (index in start until source.length) {
+            val char = source[index]
+            if (quote != null) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == quote -> quote = null
+                }
+                continue
+            }
+            when (char) {
+                '\'', '"', '`' -> quote = char
+                '(' -> depth++
+                ')' -> {
+                    if (depth == 0) return source.substring(start, index)
+                    depth--
+                }
+            }
+        }
+        return source.substring(start)
+    }
+
+    private fun decodeJsExpression(expression: String): String {
+        val trimmed = expression.trim()
+        val literals = extractJsStringLiterals(trimmed)
+        val joined = if (literals.isNotEmpty()) literals.joinToString("") else trimmed
+        val decoded = when {
+            trimmed.contains("atob", true) -> literals.firstOrNull()?.let { decodeBase64String(it) } ?: joined
+            trimmed.contains("unescape", true) || trimmed.contains("decodeURIComponent", true) -> runCatching { URLDecoder.decode(joined, "UTF-8") }.getOrDefault(joined)
+            else -> joined
+        }
+        return decoded.unescapeJs()
+    }
+
+    private fun extractJsStringLiterals(source: String): List<String> {
+        val values = mutableListOf<String>()
+        var index = 0
+        while (index < source.length) {
+            val quote = source[index]
+            if (quote != '\'' && quote != '"' && quote != '`') {
+                index++
+                continue
+            }
+            val builder = StringBuilder()
+            index++
+            var escaped = false
+            while (index < source.length) {
+                val char = source[index++]
+                when {
+                    escaped -> {
+                        builder.append('\\').append(char)
+                        escaped = false
+                    }
+                    char == '\\' -> escaped = true
+                    char == quote -> break
+                    else -> builder.append(char)
+                }
+            }
+            values.add(builder.toString().unescapeJs())
+        }
+        return values
     }
 
     private fun String.unescapeJs(): String {
