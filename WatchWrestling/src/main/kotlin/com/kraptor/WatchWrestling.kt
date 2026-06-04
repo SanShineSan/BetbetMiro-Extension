@@ -1,15 +1,14 @@
 package com.kraptor
 
-import android.util.Log
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.utils.AppContextUtils.html
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import org.jsoup.nodes.Element
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicInteger
 
 class WatchWrestling : MainAPI() {
     override var mainUrl = "https://watchwrestling.ae"
@@ -18,7 +17,10 @@ class WatchWrestling : MainAPI() {
     override var lang = "id"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.Live)
-    //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,
+
+    private val userAgent =
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/149.0.0.0 Mobile Safari/537.36"
 
     override val mainPage = mainPageOf(
         "${mainUrl}/" to "Wrestling",
@@ -46,7 +48,8 @@ class WatchWrestling : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("${mainUrl}/?s=${query}").document
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val document = app.get("${mainUrl}/?s=$encoded").document
 
         return document.select("div.loop-content div.item").mapNotNull { it.toSearchResult() }
     }
@@ -90,94 +93,223 @@ class WatchWrestling : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
     ): Boolean = coroutineScope {
         val document = app.get(data).document
-        val jobs = mutableListOf<kotlinx.coroutines.Job>()
+        val emitted = AtomicInteger(0)
+        val serverLinks = extractServerLinks(document)
 
-        val scripts = document.select("script")
-        var hiddenHtml = ""
+        if (serverLinks.isEmpty()) return@coroutineScope false
 
-        scripts.forEach { script ->
-            val content = script.data()
-            if (content.contains("episodeRepeater") && content.contains("textarea")) {
-                hiddenHtml = content.substringAfter("<textarea", "").substringAfter("'>", "").substringBefore("</textarea>")
-                if (hiddenHtml.isEmpty()) {
-                    hiddenHtml = content.substringAfter("<textarea", "").substringAfter("\">", "").substringBefore("</textarea>")
-                }
-            }
-        }
-
-        if (hiddenHtml.isEmpty()) return@coroutineScope false
-
-        val innerDoc = org.jsoup.Jsoup.parse(hiddenHtml)
-        val repeaters = innerDoc.select("div.episodeRepeater")
-
-        repeaters.forEach { block ->
-            val hostTitle = block.selectFirst("h1")?.text()
-                ?.replace("Watch ", "", ignoreCase = true)
-                ?.replace("HD", "", ignoreCase = true)
-                ?.replace("720P", "", ignoreCase = true)
-                ?.trim() ?: "Server"
-
-            val links = block.select("a")
-
-            links.forEach { linkElement ->
-                var videoUrl = linkElement.attr("href")
-                val partLabel = linkElement.text().trim()
-
-                if (videoUrl.isNotBlank()) {
-                    if (videoUrl.startsWith("//")) {
-                        videoUrl = "https:$videoUrl"
-                    }
-
-                    val job = launch {
-                        try {
-                            loadCustomExtractor(
-                                name = "$hostTitle-$partLabel",
-                                url = videoUrl,
-                                referer = data,
-                                subtitleCallback = subtitleCallback,
-                                callback = callback
-                            )
-                        } catch (e: Exception) {
-                        }
-                    }
-                    jobs.add(job)
-                }
+        val jobs = serverLinks.map { server ->
+            launch {
+                val resolved = resolveServerLink(server, data, subtitleCallback, callback)
+                if (resolved > 0) emitted.addAndGet(resolved)
             }
         }
 
         jobs.joinAll()
-        true
+        emitted.get() > 0
     }
 
-    suspend fun loadCustomExtractor(
+    private data class ServerLink(
+        val name: String,
+        val url: String,
+    )
+
+    private fun extractServerLinks(document: org.jsoup.nodes.Document): List<ServerLink> {
+        val hiddenHtml = buildString {
+            document.select("script").forEach { script ->
+                Regex("<textarea[^>]*>([\\s\\S]*?)</textarea>", RegexOption.IGNORE_CASE)
+                    .findAll(script.data())
+                    .forEach { appendLine(cleanEmbeddedHtml(it.groupValues[1])) }
+            }
+        }
+
+        val innerDoc = if (hiddenHtml.isNotBlank()) org.jsoup.Jsoup.parse(hiddenHtml) else document
+        val links = mutableListOf<ServerLink>()
+
+        innerDoc.select("div.episodeRepeater").forEach { block ->
+            val hostTitle = block.selectFirst("h1")?.text()?.cleanServerName() ?: "Server"
+            block.select("a[href]").forEach { linkElement ->
+                val videoUrl = normalizeUrl(linkElement.attr("href"))
+                val partLabel = linkElement.text().trim().ifBlank { "Part" }
+                if (videoUrl.isPlayableCandidate()) {
+                    links.add(ServerLink("$hostTitle-$partLabel", videoUrl))
+                }
+            }
+        }
+
+        if (links.isEmpty()) {
+            innerDoc.select("a.responsive_custom_btn[href], a[href*='snaptik.ae'], iframe[src], source[src], video[src]").forEach { element ->
+                val videoUrl = normalizeUrl(element.attr("href").ifBlank { element.attr("src") })
+                if (videoUrl.isPlayableCandidate()) {
+                    links.add(ServerLink(element.text().trim().ifBlank { "Server" }, videoUrl))
+                }
+            }
+        }
+
+        return links.distinctBy { it.url }
+    }
+
+    private suspend fun resolveServerLink(
+        server: ServerLink,
+        pageUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Int {
+        val url = normalizeUrl(server.url)
+        return when {
+            url.contains("snaptik.ae/read.php", ignoreCase = true) ->
+                resolveSnaptik(server.name, url, pageUrl, subtitleCallback, callback)
+
+            url.contains("fastvid.xyz", ignoreCase = true) ->
+                resolveIframePage(server.name, url, pageUrl, subtitleCallback, callback)
+
+            url.contains("linux-developers.top/vgroupWRSc/vsecureWRSc", ignoreCase = true) ->
+                resolveLinuxSecure(server.name, url, subtitleCallback, callback)
+
+            url.contains(".m3u8", ignoreCase = true) ->
+                emitM3u8(server.name, url, pageUrl, callback)
+
+            else -> loadCustomExtractor(server.name, url, pageUrl, subtitleCallback, callback)
+        }
+    }
+
+    private suspend fun resolveSnaptik(
+        name: String,
+        url: String,
+        pageUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Int {
+        val id = url.queryParam("id")
+        val host = url.queryParam("host")
+
+        if (!id.isNullOrBlank() && !host.isNullOrBlank() && host.startsWith("tuberep_", ignoreCase = true)) {
+            val mirror = host.substringAfterLast("_").filter { it.isDigit() }
+            if (mirror.isNotBlank()) {
+                val secureUrl = "https://451nj1za7g9v2kexgxatdrh.linux-developers.top/vgroupWRSc/vsecureWRSc/?line=$id$mirror&waiting=C&background=grey"
+                val resolved = resolveLinuxSecure(name, secureUrl, subtitleCallback, callback)
+                if (resolved > 0) return resolved
+            }
+        }
+
+        val document = runCatching { app.get(url, referer = pageUrl).document }.getOrNull() ?: return 0
+        val iframe = document.selectFirst("iframe[src]")?.attr("src")?.let { normalizeUrl(it) } ?: return 0
+        return resolveServerLink(ServerLink(name, iframe), url, subtitleCallback, callback)
+    }
+
+    private suspend fun resolveIframePage(
+        name: String,
+        url: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Int {
+        val direct = loadCustomExtractor(name, url, referer, subtitleCallback, callback)
+        if (direct > 0) return direct
+
+        val document = runCatching { app.get(url, referer = referer).document }.getOrNull() ?: return 0
+        val iframe = document.selectFirst("iframe[src]")?.attr("src")?.let { normalizeUrl(it) } ?: return 0
+        return resolveServerLink(ServerLink(name, iframe), url, subtitleCallback, callback)
+    }
+
+    private suspend fun resolveLinuxSecure(
+        name: String,
+        url: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Int {
+        val document = runCatching { app.get(url, referer = url).document }.getOrNull() ?: return 0
+        val html = document.html()
+        val m3u8 = Regex("""src:\s*['\"]([^'\"]+\.m3u8[^'\"]*)""", RegexOption.IGNORE_CASE)
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: Regex("""<source[^>]+src=['\"]([^'\"]+\.m3u8[^'\"]*)""", RegexOption.IGNORE_CASE)
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+
+        return if (!m3u8.isNullOrBlank()) {
+            emitM3u8(name, normalizeUrl(m3u8), url, callback)
+        } else {
+            loadCustomExtractor(name, url, url, subtitleCallback, callback)
+        }
+    }
+
+    private suspend fun emitM3u8(
+        name: String,
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit,
+    ): Int {
+        val headers = mapOf(
+            "Referer" to referer,
+            "User-Agent" to userAgent,
+            "Accept" to "*/*",
+        )
+        var count = 0
+        M3u8Helper.generateM3u8(name, url, referer = referer, headers = headers).forEach { link ->
+            count++
+            callback.invoke(link)
+        }
+        return count
+    }
+
+    private suspend fun loadCustomExtractor(
         name: String? = null,
         url: String,
         referer: String? = null,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
-        quality: Int? = null,
-    ) {
+    ): Int {
+        var count = 0
         loadExtractor(url, referer, subtitleCallback) { link ->
-            if (link.url.isNotBlank() && (link.url.startsWith("http") || link.url.startsWith("https"))) {
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    callback.invoke(
-                        newExtractorLink(
-                            source = name ?: link.source,
-                            name = name ?: link.name,
-                            url = link.url,
-                        ) {
-                            this.quality = quality ?: link.quality
-                            this.type = link.type
-                            this.referer = link.referer
-                            this.headers = link.headers
-                            this.extractorData = link.extractorData
-                        }
-                    )
-                }
+            if (link.url.isNotBlank() && (link.url.startsWith("http://") || link.url.startsWith("https://"))) {
+                count++
+                callback.invoke(link)
             }
         }
+        return count
     }
+
+    private fun String.cleanServerName(): String = this
+        .replace("Watch ", "", ignoreCase = true)
+        .replace("HD", "", ignoreCase = true)
+        .replace("720P", "", ignoreCase = true)
+        .trim()
+        .ifBlank { "Server" }
+
+    private fun cleanEmbeddedHtml(html: String): String = html
+        .replace("\\\"", "\"")
+        .replace("\\'", "'")
+        .replace("\\/", "/")
+        .replace("&amp;", "&")
+
+    private fun normalizeUrl(url: String): String {
+        val cleaned = url.trim().removeSurrounding("\"").removeSurrounding("'").replace("&amp;", "&")
+        return when {
+            cleaned.startsWith("//") -> "https:$cleaned"
+            cleaned.startsWith("/") -> fixUrl(cleaned)
+            else -> cleaned
+        }
     }
+
+    private fun String.isPlayableCandidate(): Boolean {
+        if (isBlank()) return false
+        if (equals("about:blank", ignoreCase = true)) return false
+        if (contains("javascript:", ignoreCase = true)) return false
+        if (contains("google", ignoreCase = true) || contains("doubleclick", ignoreCase = true)) return false
+        return startsWith("http://") || startsWith("https://") || startsWith("//")
+    }
+
+    private fun String.queryParam(name: String): String? = runCatching {
+        substringAfter("?", "")
+            .split("&")
+            .firstOrNull { it.substringBefore("=") == name }
+            ?.substringAfter("=", "")
+            ?.let { URLDecoder.decode(it, "UTF-8") }
+    }.getOrNull()
+}
