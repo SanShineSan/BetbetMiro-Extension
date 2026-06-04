@@ -1,4 +1,4 @@
-package com.sad25kag.kanatanime
+package com.sad25kag.kanaanime
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin

@@ -1,10 +1,11 @@
-package com.sad25kag.kanatanime
+package com.sad25kag.kanaanime
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.addEpisodes
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URI
@@ -118,7 +119,7 @@ class KanatAnime : MainAPI() {
 
             callback(newExtractorLink(name, label, clean, if (clean.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
                 this.referer = referer
-                this.quality = qualityFromName("$label $clean")
+                this.quality = getQualityFromName("$label $clean")
                 this.headers = mapOf(
                     "Referer" to referer,
                     "User-Agent" to USER_AGENT,
