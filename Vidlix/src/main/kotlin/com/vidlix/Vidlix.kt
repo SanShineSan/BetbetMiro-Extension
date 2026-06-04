@@ -13,8 +13,6 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -129,8 +127,9 @@ class Vidlix : MainAPI() {
         val title = document.selectFirst("h1.title, h1[itemprop=headline], h1")?.text()?.cleanTitle()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.cleanTitle()
             ?: throw ErrorLoadingException("Vidlix: title not found")
-        val poster = fixUrlNull(
-            document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = absoluteUrl(
+            document.selectFirst("img.cover")?.attr("src")
+                ?: document.selectFirst("meta[property=og:image]")?.attr("content")
                 ?: document.selectFirst(".cover img, img[itemprop=image], img")?.attr("src")
         )
         val description = document.selectFirst(".deskripsi, [itemprop=description], meta[name=description]")
@@ -144,7 +143,7 @@ class Vidlix : MainAPI() {
             ?: document.text().extractYear()
         val duration = detailValue(document, "Durasi")?.durationToMinutes()
         val rating = detailValue(document, "Rating")?.substringBefore(" ")?.trim()?.takeIf { it.isNotBlank() }
-        val jsProxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { fixUrl(it) }
+        val jsProxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { absoluteUrl(it) }
         val proxyDocument = jsProxyUrl?.let { fetchProxyDocument(it, url) }
         val videoCandidates = proxyDocument?.let { extractProxyCandidates(it) }.orEmpty()
         val isSeries = isSeriesPage(document) || videoCandidates.size > 1
@@ -220,13 +219,13 @@ class Vidlix : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val fixedUrl = fixUrl(rawUrl.htmlUnescape()).trim()
-        if (fixedUrl.isBlank() || !visited.add(fixedUrl.substringBefore("#"))) return false
+        val fixedUrl = absoluteUrl(rawUrl) ?: return false
+        if (!visited.add(fixedUrl.substringBefore("#"))) return false
 
         return when {
             fixedUrl.contains("/post/") && fixedUrl.contains("vidlix.net") -> {
                 val document = app.get(fixedUrl, headers = siteHeaders, referer = referer).document
-                val proxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { fixUrl(it) }
+                val proxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { absoluteUrl(it) }
                     ?: return false
                 resolveCandidate(proxyUrl, fixedUrl, visited, subtitleCallback, callback)
             }
@@ -296,40 +295,79 @@ class Vidlix : MainAPI() {
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val pageUrl = fixUrl(url)
+        val pageUrl = absoluteUrl(url) ?: return false
         val html = runCatching {
             app.get(pageUrl, headers = siteHeaders, referer = referer).text
         }.getOrNull() ?: return false
         val payload = parseAbyssPayload(html) ?: return false
         val mediaJson = decryptAbyssMedia(payload) ?: return false
         val root = runCatching { JSONObject(mediaJson) }.getOrNull() ?: return false
-        val sources = root.optJSONObject("mp4")?.optJSONArray("sources") ?: return false
+        val mp4 = root.optJSONObject("mp4") ?: return false
         var found = false
 
-        for (index in 0 until sources.length()) {
-            val source = sources.optJSONObject(index) ?: continue
-            if (!source.optBoolean("status", true)) continue
-            val host = source.optString("url").trimEnd('/')
-            val path = source.optString("path").trimStart('/')
-            if (host.isBlank() || path.isBlank()) continue
-            val label = source.optString("label", "AbyssPlayer")
-            val videoUrl = "$host/$path"
-            callback.invoke(
-                newExtractorLink(
-                    source = "AbyssPlayer",
-                    name = "AbyssPlayer $label",
-                    url = videoUrl,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    this.referer = "https://abyssplayer.com/"
-                    this.quality = getQualityFromName(label).takeIf { it != Qualities.Unknown.value }
-                        ?: getQualityFromName(videoUrl)
-                    this.headers = playbackHeaders("https://abyssplayer.com/")
-                }
-            )
-            found = true
+        val labels = mutableMapOf<Int, String>()
+        mp4.optJSONArray("sources")?.let { sources ->
+            for (index in 0 until sources.length()) {
+                val source = sources.optJSONObject(index) ?: continue
+                if (!source.optBoolean("status", true)) continue
+                val resId = source.optInt("res_id", -1)
+                val label = source.optString("label").takeIf { it.isNotBlank() }
+                if (resId > 0 && label != null) labels[resId] = label
+            }
         }
+
+        // Current AbyssPlayer payload from HAR no longer exposes {url,path} in sources.
+        // The browser consumes mp4.fristDatas[*].url, which points to the playable .fd range source.
+        mp4.optJSONArray("fristDatas")?.let { firstData ->
+            for (index in 0 until firstData.length()) {
+                val item = firstData.optJSONObject(index) ?: continue
+                val videoUrl = item.optString("url").trim()
+                if (videoUrl.isBlank()) continue
+                val label = labels[item.optInt("res_id", -1)]
+                    ?: item.optString("codec").takeIf { it.isNotBlank() }
+                    ?: "AbyssPlayer"
+                if (emitAbyssDirect(videoUrl, label, callback)) found = true
+            }
+        }
+
+        if (found) return true
+
+        // Backward compatible fallback for older Abyss payload shapes.
+        mp4.optJSONArray("sources")?.let { sources ->
+            for (index in 0 until sources.length()) {
+                val source = sources.optJSONObject(index) ?: continue
+                if (!source.optBoolean("status", true)) continue
+                val host = source.optString("url").trimEnd('/')
+                val path = source.optString("path").trimStart('/')
+                if (host.isBlank() || path.isBlank()) continue
+                val label = source.optString("label", "AbyssPlayer")
+                if (emitAbyssDirect("$host/$path", label, callback)) found = true
+            }
+        }
+
         return found
+    }
+
+    private suspend fun emitAbyssDirect(
+        videoUrl: String,
+        label: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val fixed = absoluteUrl(videoUrl) ?: return false
+        callback.invoke(
+            newExtractorLink(
+                source = "AbyssPlayer",
+                name = "AbyssPlayer $label",
+                url = fixed,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = "https://abyssplayer.com/"
+                this.quality = getQualityFromName(label).takeIf { it != Qualities.Unknown.value }
+                    ?: getQualityFromName(fixed)
+                this.headers = playbackHeaders("https://abyssplayer.com/")
+            }
+        )
+        return true
     }
 
     private fun parseAbyssPayload(html: String): AbyssPayload? {
@@ -378,7 +416,7 @@ class Vidlix : MainAPI() {
     }
 
     private fun Element.toSearchResult(defaultType: TvType): SearchResponse? {
-        val href = fixUrlNull(attr("href")) ?: return null
+        val href = absoluteUrl(attr("href")) ?: return null
         if (!href.contains("/post/")) return null
         val text = text().trim()
         val title = selectFirst("h2.title, .title")?.text()?.cleanTitle()
@@ -386,7 +424,7 @@ class Vidlix : MainAPI() {
             ?: selectFirst("img")?.attr("alt")?.cleanTitle()?.ifBlank { null }
             ?: text.cleanCardText().ifBlank { null }
             ?: return null
-        val poster = fixUrlNull(
+        val poster = absoluteUrl(
             selectFirst("img")?.attr("data-src")
                 ?: selectFirst("img")?.attr("data-original")
                 ?: selectFirst("img")?.attr("src")
@@ -413,28 +451,27 @@ class Vidlix : MainAPI() {
         val candidates = mutableListOf<VideoCandidate>()
         document.select("div.video-con[video]").forEachIndexed { index, element ->
             val url = element.attr("video").trim().htmlUnescape()
-            if (url.isNotBlank()) {
-                candidates.add(
-                    VideoCandidate(
-                        url = fixUrl(url),
-                        name = element.selectFirst(".v-titles .title")?.text()?.trim().takeUnless { it.isNullOrBlank() }
-                            ?: "Episode ${index + 1}",
-                        posterUrl = fixUrlNull(element.selectFirst("img")?.attr("src"))
-                    )
+            val fixedUrl = absoluteUrl(url) ?: return@forEachIndexed
+            candidates.add(
+                VideoCandidate(
+                    url = fixedUrl,
+                    name = element.selectFirst(".v-titles .title")?.text()?.trim().takeUnless { it.isNullOrBlank() }
+                        ?: "Episode ${index + 1}",
+                    posterUrl = absoluteUrl(element.selectFirst("img")?.attr("src"))
                 )
-            }
+            )
         }
         document.select("iframe[src], video[src], source[src], [data-src], [data-video], [data-url], [data-embed], [data-iframe]").forEach { element ->
             listOf("src", "data-src", "data-video", "data-url", "data-embed", "data-iframe").forEach { attr ->
                 val url = element.attr(attr).trim().htmlUnescape()
                 if (url.isNotBlank() && (url.contains("abyssplayer", true) || isDirectMedia(url))) {
-                    candidates.add(VideoCandidate(fixUrl(url), element.attr("title").ifBlank { null }, null))
+                    absoluteUrl(url)?.let { candidates.add(VideoCandidate(it, element.attr("title").ifBlank { null }, null)) }
                 }
             }
         }
         Regex("""https?://[^'"<>\s]+?(?:abyssplayer\.com|abyss\.to)[^'"<>\s]*""", RegexOption.IGNORE_CASE)
             .findAll(document.html())
-            .forEach { candidates.add(VideoCandidate(it.value.htmlUnescape(), null, null)) }
+            .forEach { absoluteUrl(it.value.htmlUnescape())?.let { url -> candidates.add(VideoCandidate(url, null, null)) } }
         return candidates.distinctBy { it.url }
     }
 
@@ -488,6 +525,14 @@ class Vidlix : MainAPI() {
             .replace("\\t", " ")
             .replace("\\\\", "\\")
             .htmlUnescape()
+    }
+
+    private fun absoluteUrl(raw: String?): String? {
+        val value = raw?.trim()?.htmlUnescape()?.takeIf { it.isNotBlank() } ?: return null
+        if (value.startsWith("//")) return "https:$value"
+        if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
+        if (value.startsWith("/")) return mainUrl.trimEnd('/') + value
+        return mainUrl.trimEnd('/') + "/" + value.trimStart('/')
     }
 
     private fun String.htmlUnescape(): String {
