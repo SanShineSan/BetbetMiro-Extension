@@ -8,10 +8,12 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
@@ -90,12 +92,12 @@ class Vidlix : MainAPI() {
         }
 
         return newHomePageResponse(
-            list = HomePageList(request.name, list, isHorizontalImages = true),
+            HomePageList(request.name, list, isHorizontalImages = true),
             hasNext = list.isNotEmpty() && !request.data.startsWith("home:")
         )
     }
 
-    override suspend fun search(query: String, page: Int): com.lagradost.cloudstream3.SearchResponseList? {
+    override suspend fun search(query: String, page: Int): SearchResponseList {
         val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
         val searchUrls = listOf(
             "$mainUrl/search/$encoded",
@@ -141,7 +143,7 @@ class Vidlix : MainAPI() {
         val year = document.selectFirst(".date, [itemprop=datePublished]")?.text()?.extractYear()
             ?: document.text().extractYear()
         val duration = detailValue(document, "Durasi")?.durationToMinutes()
-        val rating = detailValue(document, "Rating")?.substringBefore(" ")?.toDoubleOrNull()
+        val rating = detailValue(document, "Rating")?.substringBefore(" ")?.trim()?.takeIf { it.isNotBlank() }
         val jsProxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { fixUrl(it) }
         val proxyDocument = jsProxyUrl?.let { fetchProxyDocument(it, url) }
         val videoCandidates = proxyDocument?.let { extractProxyCandidates(it) }.orEmpty()
