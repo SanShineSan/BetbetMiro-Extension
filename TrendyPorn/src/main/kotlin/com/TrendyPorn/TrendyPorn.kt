@@ -5,6 +5,18 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
 class TrendyPorn : MainAPI() {
+    private val browserHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+    )
+
+    private val videoHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36",
+        "Accept" to "*/*",
+        "Referer" to "https://www.trendyporn.com/"
+    )
+
     override var mainUrl              = "https://www.trendyporn.com"
     override var name                 = "TrendyPorn"
     override val hasMainPage          = true
@@ -70,18 +82,60 @@ class TrendyPorn : MainAPI() {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-        ): Boolean {
+    ): Boolean {
+        if (data.isBlank()) return false
 
-        val document = app.get(data).document
-        val link = document.select("source").attr("src")
+        val response = app.get(data, referer = "$mainUrl/", headers = browserHeaders)
+        val document = response.document
+        val html = response.text
+        val emitted = linkedSetOf<String>()
 
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = link
+        suspend fun emitVideo(rawUrl: String?, label: String? = null) {
+            val link = rawUrl
+                ?.replace("\\/", "/")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: return
+
+            val fixedLink = fixUrl(link)
+            if (!fixedLink.startsWith("http", true)) return
+            if (!fixedLink.contains(".mp4", true) && !fixedLink.contains(".webm", true)) return
+            if (fixedLink.contains("images.trendyporn.com", true) || fixedLink.contains("/thumbs/", true)) return
+            if (!emitted.add(fixedLink)) return
+
+            val quality = label?.let { getQualityFromName(it) } ?: Qualities.Unknown.value
+            val displayName = label?.takeIf { it.isNotBlank() }?.let { "$name $it" } ?: name
+
+            callback.invoke(
+                newExtractorLink(
+                    source = name,
+                    name = displayName,
+                    url = fixedLink,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.headers = videoHeaders
+                    this.quality = quality
+                }
             )
-        )
-        return true
+        }
+
+        document.select("video source[src], video[src], source[src]").forEach { element ->
+            val label = element.attr("label").ifBlank { element.attr("res") }.ifBlank { element.attr("type") }
+            emitVideo(element.attr("src"), label)
+        }
+
+        Regex("""(?i)(https?:\/\/[^\s"'<>]+?\.(?:mp4|webm)(?:\?[^\s"'<>]*)?)""").findAll(html).forEach { match ->
+            emitVideo(match.groupValues[1])
+        }
+
+        document.select("track[kind=subtitles][src], track[kind=captions][src]").forEach { track ->
+            val subtitleUrl = fixUrlNull(track.attr("src")) ?: return@forEach
+            if (subtitleUrl.endsWith(".vtt", true) || subtitleUrl.endsWith(".srt", true)) {
+                subtitleCallback.invoke(SubtitleFile(track.attr("srclang").ifBlank { "Unknown" }, subtitleUrl))
+            }
+        }
+
+        return emitted.isNotEmpty()
     }
 }
