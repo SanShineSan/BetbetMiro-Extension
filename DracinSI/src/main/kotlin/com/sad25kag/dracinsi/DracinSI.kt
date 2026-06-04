@@ -139,7 +139,7 @@ class DracinSI : MainAPI() {
         }
     }
 
-    private fun Document.toEpisodeLoadResponse(url: String): LoadResponse {
+    private suspend fun Document.toEpisodeLoadResponse(url: String): LoadResponse {
         val title = selectFirst(".video-title, h1, meta[property=og:title], title")
             ?.textOrContent()
             ?.replace(Regex("\\s+"), " ")
