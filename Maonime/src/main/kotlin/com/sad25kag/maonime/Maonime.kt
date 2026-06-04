@@ -212,12 +212,9 @@ class Maonime : MainAPI() {
             ?: return null
         val title = cleanTitle(rawTitle) ?: rawTitle
         val poster = selectFirst("img")?.imageUrl() ?: anchor.selectFirst("img")?.imageUrl()
-        val episode = selectFirst(".epx, .eggepisode")?.text()?.let { Regex("""(\d+)""").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
-
         return newMovieSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = poster
             this.posterHeaders = mapOf("Referer" to "$mainUrl/")
-            this.quality = episode?.let { SearchQuality.Episode(it) }
         }
     }
 
