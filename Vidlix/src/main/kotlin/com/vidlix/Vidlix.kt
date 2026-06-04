@@ -509,9 +509,9 @@ class Vidlix : MainAPI() {
         }
 
         listOf(
-            Regex("""https?://(?:[^'"<>\s\\/]+\.)?(?:abyssplayer\.com|abyss\.to)[^'"<>\s\\]*""", RegexOption.IGNORE_CASE),
+            Regex("""https?://(?:[^'"<>\s\/]+\.)?(?:abyssplayer\.com|abyss\.to|jeniusplay|majorplay|playmogo|streamwish|filemoon|dood|vidhide|voe|mixdrop|streamtape|mp4upload)[^'"<>\s\\]*""", RegexOption.IGNORE_CASE),
             Regex("""https?://[^'"<>\s\\]+?\.(?:m3u8|mp4|webm|mkv)(?:\?[^'"<>\s\\]*)?""", RegexOption.IGNORE_CASE),
-            Regex("""(?:video|file|source|src|url)\s*[:=]\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            Regex("""(?:video|file|source|src|url|iframe|embed)\s*[:=]\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
         ).forEach { regex ->
             regex.findAll(sourceHtml).forEach { match ->
                 val raw = match.groupValues.getOrNull(1).takeIf { !it.isNullOrBlank() } ?: match.value
@@ -550,10 +550,14 @@ class Vidlix : MainAPI() {
     }
 
     private fun String.isPlayableCandidate(): Boolean {
-        val value = trim().htmlUnescape().unescapeJs().replace("\\/", "/")
-        return value.contains("abyssplayer", true) ||
-            value.contains("abyss.to", true) ||
-            isDirectMedia(value)
+        val value = trim().htmlUnescape().unescapeJs().replace("\\/", "/").lowercase()
+        if (isDirectMedia(value)) return true
+
+        val knownHosts = listOf(
+            "abyssplayer", "abyss.to", "jeniusplay", "majorplay", "playmogo", "streamwish",
+            "filemoon", "dood", "vidhide", "voe", "mixdrop", "streamtape", "mp4upload", "e2e"
+        )
+        return knownHosts.any { value.contains(it) }
     }
 
     private fun withVidlixReferer(url: String, referer: String): String {
