@@ -154,13 +154,13 @@ class Vidlix : MainAPI() {
 
         return if (isSeries) {
             val episodes = videoCandidates.mapIndexed { index, candidate ->
-                newEpisode(candidate.url) {
+                newEpisode(withVidlixReferer(candidate.url, url)) {
                     this.name = candidate.name ?: "Episode ${index + 1}"
                     this.episode = index + 1
                     this.posterUrl = candidate.posterUrl ?: poster
                 }
             }.ifEmpty {
-                listOf(newEpisode(jsProxyUrl ?: url) {
+                listOf(newEpisode(withVidlixReferer(jsProxyUrl ?: url, url)) {
                     this.name = title
                     this.posterUrl = poster
                 })
@@ -175,7 +175,8 @@ class Vidlix : MainAPI() {
                 rating?.let { addScore(it) }
             }
         } else {
-            val data = videoCandidates.joinToString("\n") { it.url }.ifBlank { jsProxyUrl ?: url }
+            val data = videoCandidates.joinToString("\n") { withVidlixReferer(it.url, url) }
+                .ifBlank { withVidlixReferer(jsProxyUrl ?: url, url) }
             newMovieLoadResponse(title, url, TvType.Movie, data) {
                 this.posterUrl = poster
                 this.plot = description
@@ -223,29 +224,32 @@ class Vidlix : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val fixedUrl = absoluteUrl(rawUrl) ?: return false
-        if (!visited.add(fixedUrl.substringBefore("#"))) return false
+        val candidateData = parseVidlixCandidate(rawUrl)
+        val fixedUrl = absoluteUrl(candidateData.url) ?: return false
+        val requestUrl = fixedUrl.substringBefore("#")
+        val requestReferer = candidateData.referer ?: referer
+        if (!visited.add(requestUrl)) return false
 
         return when {
-            fixedUrl.contains("/post/") && fixedUrl.contains("vidlix.net") -> {
-                val document = app.get(fixedUrl, headers = siteHeaders, referer = referer).document
+            requestUrl.contains("/post/") && requestUrl.contains("vidlix.net") -> {
+                val document = app.get(requestUrl, headers = siteHeaders, referer = requestReferer).document
                 val proxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { absoluteUrl(it) }
                     ?: return false
-                resolveCandidate(proxyUrl, fixedUrl, visited, subtitleCallback, callback)
+                resolveCandidate(withVidlixReferer(proxyUrl, requestUrl), requestUrl, visited, subtitleCallback, callback)
             }
-            fixedUrl.contains("js_proxy.php") -> {
-                val proxyDocument = fetchProxyDocument(fixedUrl, referer) ?: return false
+            requestUrl.contains("js_proxy.php") -> {
+                val proxyDocument = fetchProxyDocument(requestUrl, requestReferer) ?: return false
                 var found = false
                 extractProxyCandidates(proxyDocument).forEach { candidate ->
-                    if (resolveCandidate(candidate.url, fixedUrl, visited, subtitleCallback, callback)) found = true
+                    if (resolveCandidate(withVidlixReferer(candidate.url, requestUrl), requestUrl, visited, subtitleCallback, callback)) found = true
                 }
                 found
             }
-            fixedUrl.contains("abyssplayer.com", true) || fixedUrl.contains("abyss.to", true) -> {
-                resolveAbyssPlayer(fixedUrl, referer, callback) || runGenericExtractor(fixedUrl, referer, subtitleCallback, callback)
+            requestUrl.contains("abyssplayer.com", true) || requestUrl.contains("abyss.to", true) -> {
+                resolveAbyssPlayer(requestUrl, requestReferer, callback) || runGenericExtractor(requestUrl, requestReferer, subtitleCallback, callback)
             }
-            isDirectMedia(fixedUrl) -> emitDirect(fixedUrl, referer, callback)
-            else -> runGenericExtractor(fixedUrl, referer, subtitleCallback, callback)
+            isDirectMedia(requestUrl) -> emitDirect(requestUrl, requestReferer, callback)
+            else -> runGenericExtractor(requestUrl, requestReferer, subtitleCallback, callback)
         }
     }
 
@@ -460,8 +464,10 @@ class Vidlix : MainAPI() {
             app.get(
                 proxyUrl,
                 headers = siteHeaders + mapOf(
-                    "Accept" to "application/javascript,text/javascript,*/*;q=0.8",
-                    "X-Requested-With" to "XMLHttpRequest"
+                    "Accept" to "*/*",
+                    "Sec-Fetch-Site" to "same-origin",
+                    "Sec-Fetch-Mode" to "no-cors",
+                    "Sec-Fetch-Dest" to "script"
                 ),
                 referer = referer
             ).text
@@ -503,7 +509,7 @@ class Vidlix : MainAPI() {
         }
 
         listOf(
-            Regex("""https?://[^'"<>\s\\]+?(?:abyssplayer\.com|abyss\.to)[^'"<>\s\\]*""", RegexOption.IGNORE_CASE),
+            Regex("""https?://(?:[^'"<>\s\\/]+\.)?(?:abyssplayer\.com|abyss\.to)[^'"<>\s\\]*""", RegexOption.IGNORE_CASE),
             Regex("""https?://[^'"<>\s\\]+?\.(?:m3u8|mp4|webm|mkv)(?:\?[^'"<>\s\\]*)?""", RegexOption.IGNORE_CASE),
             Regex("""(?:video|file|source|src|url)\s*[:=]\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
         ).forEach { regex ->
@@ -548,6 +554,24 @@ class Vidlix : MainAPI() {
         return value.contains("abyssplayer", true) ||
             value.contains("abyss.to", true) ||
             isDirectMedia(value)
+    }
+
+    private fun withVidlixReferer(url: String, referer: String): String {
+        if (url.isBlank()) return url
+        val encodedReferer = URLEncoder.encode(referer, "UTF-8")
+        return "$url#vidlixReferer=$encodedReferer"
+    }
+
+    private fun parseVidlixCandidate(rawData: String): VidlixCandidateData {
+        val marker = "#vidlixReferer="
+        val value = rawData.trim().trim('[', ']')
+        val markerIndex = value.indexOf(marker)
+        if (markerIndex < 0) return VidlixCandidateData(value, null)
+        val url = value.substring(0, markerIndex)
+        val referer = runCatching {
+            URLDecoder.decode(value.substring(markerIndex + marker.length), "UTF-8")
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        return VidlixCandidateData(url, referer)
     }
 
     private fun detailValue(document: Document, label: String): String? {
@@ -736,6 +760,11 @@ class Vidlix : MainAPI() {
         val url: String,
         val name: String?,
         val posterUrl: String?
+    )
+
+    private data class VidlixCandidateData(
+        val url: String,
+        val referer: String?
     )
 
     private data class AbyssPayload(
