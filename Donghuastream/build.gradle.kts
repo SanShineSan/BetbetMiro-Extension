@@ -1,7 +1,7 @@
 version = 6
 
 cloudstream {
-    description = "Donghuastream dan SeaTV untuk donghua / Chinese anime."
+    description = "Donghuastream untuk donghua / Chinese anime."
     language = "id"
     authors = listOf("BetbetMiro")
 

@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class DonghuastreamProvider : Plugin() {
     override fun load(context: Context) {
         Donghuastream.context = context
-        SeaTV.context = context
 
         registerMainAPI(Donghuastream())
 
