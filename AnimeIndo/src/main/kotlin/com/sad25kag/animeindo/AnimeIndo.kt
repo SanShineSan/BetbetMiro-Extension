@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
+import java.net.URLDecoder
 import java.net.URLEncoder
 
 class AnimeIndo : MainAPI() {
@@ -35,6 +36,7 @@ class AnimeIndo : MainAPI() {
         "$mainUrl/genres/comedy/" to "Comedy",
         "$mainUrl/genres/demons/" to "Demons",
         "$mainUrl/genres/donghua/" to "Donghua",
+        "$mainUrl/genres/echhi/" to "Echhi",
         "$mainUrl/genres/drama/" to "Drama",
         "$mainUrl/genres/fantasy/" to "Fantasy",
         "$mainUrl/genres/game/" to "Game",
@@ -120,6 +122,14 @@ class AnimeIndo : MainAPI() {
             .trim()
     }
 
+    private fun isMoviePost(title: String?, url: String): Boolean {
+        val value = listOf(title.orEmpty(), url.substringAfterLast('/').replace('-', ' '))
+            .joinToString(" ")
+            .lowercase()
+        return value.contains("movie") || value.contains("film")
+    }
+
+
     private fun isBlockedTitle(title: String): Boolean {
         val normalized = title.trim().lowercase()
         return normalized in setOf(
@@ -178,10 +188,11 @@ class AnimeIndo : MainAPI() {
         if (title.length < 2 || isBlockedTitle(title)) return null
 
         val episodeNumber = parseEpisodeNumber(title).takeIf { isEpisodeUrl(fixedHref) }
-        val resultUrl = if (isEpisodeUrl(fixedHref) && !preferMovie) episodeToAnimeUrl(fixedHref) else fixedHref
+        val isMoviePost = isMoviePost(title, fixedHref)
+        val resultUrl = if (isEpisodeUrl(fixedHref) && !preferMovie && !isMoviePost) episodeToAnimeUrl(fixedHref) else fixedHref
         val poster = (card.imageAttr() ?: link.imageAttr())?.let { fixUrlNull(it) }
         val tvType = when {
-            preferMovie || fixedHref.contains("/movie/", true) || title.contains("movie", true) || title.contains("film", true) -> TvType.AnimeMovie
+            preferMovie || fixedHref.contains("/movie/", true) || isMoviePost -> TvType.AnimeMovie
             title.contains("ova", true) || title.contains("special", true) -> TvType.OVA
             else -> TvType.Anime
         }
@@ -272,7 +283,9 @@ class AnimeIndo : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val initialDocument = app.get(url).document
         val episodePage = isEpisodeUrl(url)
-        val animeUrl = if (url.contains("/anime/", true)) {
+        val initialTitle = normalizeTitle(initialDocument.selectFirst("h1.title, h1.entry-title, h1, h2")?.text().orEmpty())
+        val moviePost = episodePage && isMoviePost(initialTitle, url)
+        val animeUrl = if (url.contains("/anime/", true) || moviePost) {
             url
         } else if (episodePage) {
             initialDocument.selectFirst("div.navi a[href*=/anime/], a[href*=/anime/]")
@@ -286,7 +299,7 @@ class AnimeIndo : MainAPI() {
         val document = if (animeUrl == url) initialDocument else app.get(animeUrl).document
 
         val fallbackTitle = if (episodePage) {
-            normalizeTitle(initialDocument.selectFirst("h1.title, h1.entry-title, h1, h2")?.text().orEmpty())
+            initialTitle
                 .replace(Regex("(?i)\\s*episode\\s*\\d+.*$"), "")
                 .trim()
                 .takeIf { it.isNotBlank() && !isBlockedTitle(it) }
@@ -330,7 +343,7 @@ class AnimeIndo : MainAPI() {
             .distinctBy { it.data }
             .sortedBy { it.episode ?: Int.MAX_VALUE }
 
-        if (episodes.isEmpty() && !url.contains("/anime/", true) && !episodePage) {
+        if (moviePost || (episodes.isEmpty() && !url.contains("/anime/", true) && !episodePage)) {
             return newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
                 posterUrl = poster
                 plot = description
@@ -353,12 +366,18 @@ class AnimeIndo : MainAPI() {
     }
 
     private fun cleanPlayerUrl(rawUrl: String?): String? {
-        val cleaned = rawUrl
+        var cleaned = rawUrl
             ?.trim()
             ?.replace("&amp;", "&")
             ?.replace("\\/", "/")
             ?.takeIf { it.isNotBlank() }
             ?: return null
+
+        repeat(2) {
+            cleaned = runCatching { URLDecoder.decode(cleaned, "UTF-8") }.getOrDefault(cleaned)
+                .replace("&amp;", "&")
+                .replace("\\/", "/")
+        }
 
         if (cleaned == "#" || cleaned.startsWith("javascript:", true) || cleaned.startsWith("mailto:", true)) {
             return null
@@ -373,7 +392,10 @@ class AnimeIndo : MainAPI() {
 
     private fun isPlayableServerUrl(url: String): Boolean {
         val lower = url.lowercase()
-        if (lower.startsWith(mainUrl.lowercase()) && !lower.contains("btube3.php")) return false
+        if (lower.startsWith(mainUrl.lowercase()) && !listOf(
+                "btube3.php", "yup.php", "yup", "xtwap", "gdplayer", "gdriveplayer",
+                "player", "embed", "iframe", "source", "server", "video", "ajax", "mp4"
+            ).any { lower.contains(it) }) return false
         if (
             lower.contains("/anime/") ||
             lower.contains("/genres/") ||
@@ -385,9 +407,14 @@ class AnimeIndo : MainAPI() {
 
         return listOf(
             "btube3.php",
+            "b-tube",
+            "btube",
+            "cepat",
             "xtwap.top",
+            "xtwap",
             "gdplayer",
             "gdriveplayer",
+            "gdrive",
             "drive.google",
             "mp4upload",
             "yup",
@@ -414,6 +441,24 @@ class AnimeIndo : MainAPI() {
         serverUrls.add(url)
     }
 
+    private fun addServerUrlsFromText(serverUrls: MutableList<String>, text: String?) {
+        if (text.isNullOrBlank()) return
+        var decoded = text
+            .replace("&amp;", "&")
+            .replace("\\/", "/")
+        repeat(2) {
+            decoded = runCatching { URLDecoder.decode(decoded, "UTF-8") }.getOrDefault(decoded)
+                .replace("&amp;", "&")
+                .replace("\\/", "/")
+        }
+        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+""")
+            .findAll(decoded)
+            .forEach { addServerUrl(serverUrls, it.value) }
+        Regex("""(?i)(?:src|file|url|href|data-video|data-url|data-iframe|data-src|data-link|data-href|data-file)\s*[:=]\s*["']([^"']+)["']""")
+            .findAll(decoded)
+            .forEach { addServerUrl(serverUrls, it.groupValues[1]) }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -427,20 +472,29 @@ class AnimeIndo : MainAPI() {
             addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
         }
 
-        document.select("a.server[data-video], [data-video], [data-url], [data-iframe], [data-src], a[href]").forEach { element ->
+        document.select("a.server[data-video], [data-video], [data-url], [data-iframe], [data-src], [data-link], [data-href], [data-file], [onclick], a[href], button, option[value]").forEach { element ->
             addServerUrl(serverUrls, element.attr("data-video"))
             addServerUrl(serverUrls, element.attr("data-url"))
             addServerUrl(serverUrls, element.attr("data-iframe"))
             addServerUrl(serverUrls, element.attr("data-src"))
+            addServerUrl(serverUrls, element.attr("data-link"))
+            addServerUrl(serverUrls, element.attr("data-href"))
+            addServerUrl(serverUrls, element.attr("data-file"))
+            addServerUrl(serverUrls, element.attr("value"))
+            addServerUrlsFromText(serverUrls, element.attr("onclick"))
 
             val href = element.attr("href")
             val label = element.text()
             if (
                 label.contains("download", true) ||
                 label.contains("gdrive", true) ||
+                label.contains("google", true) ||
+                label.contains("drive", true) ||
                 label.contains("mp4", true) ||
                 label.contains("b-tube", true) ||
+                label.contains("btube", true) ||
                 label.contains("cepat", true) ||
+                label.contains("yup", true) ||
                 isPlayableServerUrl(cleanPlayerUrl(href).orEmpty())
             ) {
                 addServerUrl(serverUrls, href)
@@ -448,11 +502,12 @@ class AnimeIndo : MainAPI() {
         }
 
         val html = document.html()
-        Regex("""(?i)(?:src|file|url|href)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|xtwap|gdriveplayer|gdplayer|mp4upload|yup|dailymotion|ok\.ru)[^"']*)["']""")
+        addServerUrlsFromText(serverUrls, html)
+        Regex("""(?i)(?:src|file|url|href)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"']*)["']""")
             .findAll(html)
             .forEach { addServerUrl(serverUrls, it.groupValues[1]) }
 
-        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+(?:m3u8|mp4|embed|player|btube3|xtwap|gdriveplayer|gdplayer|mp4upload|yup|dailymotion|ok\.ru)[^"'<>\s]*""")
+        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"'<>\s]*""")
             .findAll(html)
             .forEach { addServerUrl(serverUrls, it.value) }
 
@@ -531,7 +586,7 @@ enum class AnimeIndoTagCategory(val title: String, val tagsList: List<String>) {
     SLICE_OF_LIFE("Slice of Life", listOf("Slice of Life", "Iyashikei", "Kids", "Workplace")),
     SPORTS_GAMES("Sports & Games", listOf("Sports", "Racing", "Strategy Game", "Game")),
     ARTS_CULTURE("Arts & Music", listOf("Music", "Idol", "Historical", "Performing Arts")),
-    MATURE("Mature & Ecchi", listOf("Ecchi", "Harem", "Reverse Harem")),
+    MATURE("Mature & Ecchi", listOf("Ecchi", "Echhi", "Harem", "Reverse Harem")),
     DEMOGRAPHICS("Demographics", listOf("Shounen", "Shoujo", "Seinen", "Josei")),
     OTHER("Other", listOf("Donghua"));
 
