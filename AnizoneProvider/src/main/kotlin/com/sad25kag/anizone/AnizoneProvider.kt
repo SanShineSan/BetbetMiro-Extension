@@ -53,10 +53,24 @@ class AnizoneProvider : MainAPI() {
         "sort:release-asc" to "Rilis Terlama",
         "sort:added-asc" to "Pertama Ditambahkan",
         "sort:added-desc" to "Terakhir Ditambahkan",
-        "tag:/tag/xottt75h" to "Aksi",
-        "tag:/tag/bio3ygrp" to "Komedi",
-        "tag:/tag/s1ssghb1" to "Fantasi",
-        "tag:/tag/hmi0gccz" to "Manga"
+        "type:TV Series" to "TV Series",
+        "type:OVA" to "OVA",
+        "type:Movie" to "Movie",
+        "type:Web" to "Web",
+        "type:TV Special" to "TV Special",
+        "type:Music Video" to "Music Video",
+        "type:Other" to "Other",
+        "type:Unknown" to "Unknown",
+        "tag-name:Action" to "Aksi",
+        "tag-name:Adventure" to "Petualangan",
+        "tag-name:Comedy" to "Komedi",
+        "tag-name:Fantasy" to "Fantasi",
+        "tag-name:Manga" to "Manga",
+        "tag-name:Novel" to "Novel",
+        "tag-name:Romance" to "Romantis",
+        "tag-name:Shounen" to "Shounen",
+        "tag-name:Seinen" to "Seinen",
+        "tag-name:School Life" to "Kehidupan Sekolah"
     )
 
     private val snapshotAnimeKey = "anime_snapshot_key"
@@ -71,6 +85,7 @@ class AnizoneProvider : MainAPI() {
     )
 
     private var cookies = mutableMapOf<String, String>()
+    private val tagPathCache = mutableMapOf<String, String>()
 
     private fun translateGenre(name: String): String {
         return when (name.trim().lowercase(Locale.ROOT)) {
@@ -222,14 +237,20 @@ class AnizoneProvider : MainAPI() {
             val data = request.data
             val path = when {
                 data.startsWith("tag:") -> data.removePrefix("tag:")
+                data.startsWith("tag-name:") -> resolveTagPath(data.removePrefix("tag-name:"))
+                    ?: return emptyHomePage(request.name)
                 else -> "/anime"
             }
             val sort = when {
                 data.startsWith("sort:") -> data.removePrefix("sort:").ifBlank { "release-desc" }
                 else -> "release-desc"
             }
+            val type = when {
+                data.startsWith("type:") -> data.removePrefix("type:").trim()
+                else -> ""
+            }
 
-            buildLiveWireHomePage(path, sort, page, request.name)
+            buildLiveWireHomePage(path, sort, type, page, request.name)
         } catch (e: Exception) {
             Log.e("AniZone", "Gagal memproses getMainPage: ${e.message}")
             emptyHomePage(request.name)
@@ -239,16 +260,54 @@ class AnizoneProvider : MainAPI() {
     private suspend fun buildLiveWireHomePage(
         path: String,
         sort: String,
+        type: String,
         page: Int,
         title: String
     ): HomePageResponse {
+        var doc = try {
+            fetchHomeDocument(path, sort, type, page)
+        } catch (e: Exception) {
+            if (type.isBlank()) throw e
+            Log.e("AniZone", "Type filter Livewire gagal untuk '$type', fallback filter lokal: ${e.message}")
+            fetchHomeDocument(path, sort, "", maxOf(page, 5))
+        }
+
+        var elements = parseAnimeElements(doc)
+            .filter { type.isBlank() || cardMatchesType(it, type) }
+
+        if (elements.isEmpty() && type.isNotBlank()) {
+            doc = fetchHomeDocument(path, sort, "", maxOf(page, 5))
+            elements = parseAnimeElements(doc).filter { cardMatchesType(it, type) }
+        }
+
+        val home = elements.map { toResult(it) }
+
+        return if (home.isEmpty()) {
+            emptyHomePage(title)
+        } else {
+            newHomePageResponse(
+                HomePageList(title, home, isHorizontalImages = false),
+                hasNext = hasLoadMore(doc)
+            )
+        }
+    }
+
+    private suspend fun fetchHomeDocument(
+        path: String,
+        sort: String,
+        type: String,
+        page: Int
+    ): Document {
         snapshots[snapshotAnimeKey] = ""
         val initialized = initializeLiveWire(path)
-        if (!initialized) return emptyHomePage(title)
+        if (!initialized) return Jsoup.parse("")
+
+        val updates = mutableMapOf<String, Any?>("sort" to sort)
+        if (type.isNotBlank()) updates["type"] = type
 
         var responseJson = liveWireBuilder(
             snapshotAnimeKey,
-            mapOf("sort" to sort),
+            updates,
             emptyList(),
             cookies,
             true,
@@ -278,15 +337,32 @@ class AnizoneProvider : MainAPI() {
             doc = getHtmlFromWire(responseJson)
         }
 
-        val home = parseAnimeElements(doc).map { toResult(it) }
+        return doc
+    }
 
-        return if (home.isEmpty()) {
-            emptyHomePage(title)
-        } else {
-            newHomePageResponse(
-                HomePageList(title, home, isHorizontalImages = false),
-                hasNext = hasLoadMore(doc)
-            )
+    private suspend fun resolveTagPath(tagName: String): String? {
+        val key = tagName.trim().lowercase(Locale.ROOT)
+        if (key.isBlank()) return null
+        tagPathCache[key]?.let { return it }
+
+        return try {
+            val doc = app.get("$mainUrl/tag").document
+            for (link in doc.select("a[href*='/tag/']")) {
+                val cleanName = link.text()
+                    .replace(Regex("\\s+"), " ")
+                    .substringBefore("(")
+                    .trim()
+
+                if (cleanName.equals(tagName.trim(), ignoreCase = true)) {
+                    val path = pathFromUrl(normalizeUrl(link.attr("href")))
+                    tagPathCache[key] = path
+                    return path
+                }
+            }
+            null
+        } catch (e: Exception) {
+            Log.e("AniZone", "Gagal resolve tag '$tagName': ${e.message}")
+            null
         }
     }
 
@@ -299,6 +375,23 @@ class AnizoneProvider : MainAPI() {
 
     private fun hasLoadMore(doc: Document): Boolean {
         return doc.selectFirst("div[x-intersect~=loadMore], .h-12[x-intersect~=loadMore]") != null
+    }
+
+    private fun cardMatchesType(element: Element, type: String): Boolean {
+        val normalizedType = type.trim().lowercase(Locale.ROOT)
+        if (normalizedType.isBlank()) return true
+        val ownText = element.text().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+        return when (normalizedType) {
+            "tv series" -> ownText.contains("tv series")
+            "tv special" -> ownText.contains("tv special")
+            "music video" -> ownText.contains("music video")
+            "movie" -> ownText.contains("movie")
+            "ova" -> ownText.contains("ova")
+            "web" -> ownText.contains("web")
+            "other" -> ownText.contains("other")
+            "unknown" -> ownText.contains("unknown")
+            else -> ownText.contains(normalizedType)
+        }
     }
 
     private fun parseAnimeElements(doc: Document): List<Element> {
@@ -512,6 +605,52 @@ class AnizoneProvider : MainAPI() {
             } ?: 0L
     }
 
+    private fun extractMediaUrls(doc: Document): List<String> {
+        val urls = mutableListOf<String>()
+
+        doc.select("media-player[src], video[src], video source[src], source[type*=mpegurl][src], source[src*=.m3u8], a[href*=.m3u8]")
+            .forEach { element ->
+                element.attr("src").takeIf { it.isNotBlank() }?.let { urls.add(it) }
+                element.attr("href").takeIf { it.isNotBlank() }?.let { urls.add(it) }
+            }
+
+        val scriptText = doc.select("script").joinToString("\n") { it.data().ifBlank { it.html() } }
+        val normalizedScriptText = scriptText
+            .replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("\\u002f", "/")
+            .replace("&amp;", "&")
+
+        listOf(scriptText, normalizedScriptText).forEach { text ->
+            Regex("""https?://[^"'\s<>]+?\.m3u8(?:\?[^"'\s<>]*)?""")
+                .findAll(text)
+                .map { it.value }
+                .forEach { urls.add(it) }
+
+            Regex("""(?<!:)//[^"'\s<>]+?\.m3u8(?:\?[^"'\s<>]*)?""")
+                .findAll(text)
+                .map { it.value }
+                .forEach { urls.add(it) }
+        }
+
+        return urls
+            .map { it.trim().trim('\'', '"') }
+            .filter { it.isNotBlank() && !it.startsWith("blob:", ignoreCase = true) }
+            .distinct()
+    }
+
+    private fun cleanMediaUrl(url: String): String {
+        return normalizeUrl(
+            url.trim()
+                .trim('\'', '"')
+                .replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
+                .replace("\\u0026", "&")
+                .replace("&amp;", "&")
+        )
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -535,19 +674,10 @@ class AnizoneProvider : MainAPI() {
         var emitted = false
 
         suspend fun emitPlayer(doc: Document, sourceName: String) {
-            val mediaPlayer = doc.selectFirst("media-player")
-            val directSource = doc.selectFirst("video source[src], source[type*=mpegurl][src], source[src*=.m3u8], a[href*=.m3u8]")
-            val rawUrl = mediaPlayer?.attr("src")?.takeIf { it.isNotBlank() }
-                ?: directSource?.attr("src")?.takeIf { it.isNotBlank() }
-                ?: directSource?.attr("href")?.takeIf { it.isNotBlank() }
-                ?: return
+            val mediaUrls = extractMediaUrls(doc)
+            if (mediaUrls.isEmpty()) return
 
-            if (rawUrl.startsWith("blob:", ignoreCase = true)) return
-
-            val masterUrl = normalizeUrl(rawUrl)
-            if (!emittedUrls.add(masterUrl)) return
-
-            mediaPlayer?.select("track[kind=subtitles], track")?.forEach {
+            doc.select("track[src], media-player track[src]").forEach {
                 val subtitleUrl = it.attr("src").takeIf { src -> src.isNotBlank() } ?: return@forEach
                 subtitleCallback.invoke(
                     newSubtitleFile(
@@ -557,27 +687,34 @@ class AnizoneProvider : MainAPI() {
                 )
             }
 
+            // HAR playback evidence from seiryuu.vid-cdn.xyz uses Origin + root Referer without Cookie.
+            // Keep media headers close to the browser playback flow so encrypted HLS keys/segments inherit the same access context.
             val baseHeaders = mapOf(
                 "Origin" to mainUrl,
                 "Accept" to "*/*",
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Cookie" to cookie.map { "${it.key}=${it.value}" }.joinToString("; ")
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
             )
 
-            callback.invoke(
-                newExtractorLink(
-                    sourceName.ifBlank { name },
-                    name,
-                    masterUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = "$mainUrl/"
-                    this.quality = 0
-                    this.headers = baseHeaders
-                }
-            )
+            mediaUrls.forEach { rawUrl ->
+                val masterUrl = cleanMediaUrl(rawUrl)
+                if (masterUrl.startsWith("blob:", ignoreCase = true)) return@forEach
+                if (!emittedUrls.add(masterUrl)) return@forEach
 
-            emitted = true
+                callback.invoke(
+                    newExtractorLink(
+                        sourceName.ifBlank { name },
+                        name,
+                        masterUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "$mainUrl/"
+                        this.quality = 0
+                        this.headers = baseHeaders
+                    }
+                )
+
+                emitted = true
+            }
         }
 
         val serverButtons = web.getAllElements()
@@ -590,11 +727,13 @@ class AnizoneProvider : MainAPI() {
 
         emitPlayer(web, firstName)
 
-        for (button in serverButtons.drop(1)) {
+        for (button in serverButtons) {
             val videoParam = Regex("""setVideo\(([^)]*)\)""")
                 .find(button.attr("wire:click"))
                 ?.groupValues
                 ?.getOrNull(1)
+                ?.split(",")
+                ?.firstOrNull()
                 ?.trim()
                 ?.trim('\'', '"')
                 ?.takeIf { it.isNotBlank() }
