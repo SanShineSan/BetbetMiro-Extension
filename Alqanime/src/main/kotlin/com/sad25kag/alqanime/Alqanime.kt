@@ -51,27 +51,67 @@ class Alqanime : MainAPI() {
         "$mainUrl/advanced-search/page/%d/?type[]=movie&order=update" to "Film Layar Lebar",
         "$mainUrl/popular/page/%d/" to "Popular",
         "$mainUrl/tag/action/page/%d/" to "Action",
+        "$mainUrl/tag/adult-cast/page/%d/" to "Adult Cast",
         "$mainUrl/tag/adventure/page/%d/" to "Adventure",
+        "$mainUrl/tag/anthropomorphic/page/%d/" to "Anthropomorphic",
+        "$mainUrl/tag/avant-garde/page/%d/" to "Avant Garde",
+        "$mainUrl/tag/award-winning/page/%d/" to "Award Winning",
+        "$mainUrl/tag/boys-love/page/%d/" to "Boys Love",
+        "$mainUrl/tag/cars/page/%d/" to "Cars",
+        "$mainUrl/tag/cgdct/page/%d/" to "CGDCT",
+        "$mainUrl/tag/childcare/page/%d/" to "Childcare",
+        "$mainUrl/tag/combat-sports/page/%d/" to "Combat Sports",
         "$mainUrl/tag/comedy/page/%d/" to "Comedy",
+        "$mainUrl/tag/crossdressing/page/%d/" to "Crossdressing",
+        "$mainUrl/tag/delinquents/page/%d/" to "Delinquents",
+        "$mainUrl/tag/dementia/page/%d/" to "Dementia",
         "$mainUrl/tag/demons/page/%d/" to "Demons",
+        "$mainUrl/tag/detective/page/%d/" to "Detective",
+        "$mainUrl/tag/donghua/page/%d/" to "Donghua",
         "$mainUrl/tag/drama/page/%d/" to "Drama",
         "$mainUrl/tag/ecchi/page/%d/" to "Ecchi",
+        "$mainUrl/tag/educational/page/%d/" to "Educational",
+        "$mainUrl/tag/erotica/page/%d/" to "Erotica",
         "$mainUrl/tag/fantasy/page/%d/" to "Fantasy",
+        "$mainUrl/tag/gag-humor/page/%d/" to "Gag Humor",
+        "$mainUrl/tag/girls-love/page/%d/" to "Girls Love",
+        "$mainUrl/tag/gore/page/%d/" to "Gore",
+        "$mainUrl/tag/gourmet/page/%d/" to "Gourmet",
         "$mainUrl/tag/harem/page/%d/" to "Harem",
+        "$mainUrl/tag/hentong/page/%d/" to "Hentong",
+        "$mainUrl/tag/high-stakes-game/page/%d/" to "High Stakes Game",
         "$mainUrl/tag/historical/page/%d/" to "Historical",
         "$mainUrl/tag/horror/page/%d/" to "Horror",
+        "$mainUrl/tag/idols-female/page/%d/" to "Idols (Female)",
+        "$mainUrl/tag/idols-male/page/%d/" to "Idols (Male)",
         "$mainUrl/tag/isekai/page/%d/" to "Isekai",
+        "$mainUrl/tag/iyashikei/page/%d/" to "Iyashikei",
         "$mainUrl/tag/josei/page/%d/" to "Josei",
         "$mainUrl/tag/kids/page/%d/" to "Kids",
+        "$mainUrl/tag/korea/page/%d/" to "Korea",
+        "$mainUrl/tag/love-polygon/page/%d/" to "Love Polygon",
+        "$mainUrl/tag/love-status-quo/page/%d/" to "Love Status Quo",
         "$mainUrl/tag/magic/page/%d/" to "Magic",
+        "$mainUrl/tag/magical-sex-shift/page/%d/" to "Magical Sex Shift",
+        "$mainUrl/tag/mahou-shoujo/page/%d/" to "Mahou Shoujo",
+        "$mainUrl/tag/malaysia/page/%d/" to "Malaysia",
         "$mainUrl/tag/martial-arts/page/%d/" to "Martial Arts",
         "$mainUrl/tag/mecha/page/%d/" to "Mecha",
+        "$mainUrl/tag/medical/page/%d/" to "Medical",
         "$mainUrl/tag/military/page/%d/" to "Military",
         "$mainUrl/tag/music/page/%d/" to "Music",
         "$mainUrl/tag/mystery/page/%d/" to "Mystery",
+        "$mainUrl/tag/mythology/page/%d/" to "Mythology",
+        "$mainUrl/tag/organized-crime/page/%d/" to "Organized Crime",
+        "$mainUrl/tag/otaku-culture/page/%d/" to "Otaku Culture",
         "$mainUrl/tag/parody/page/%d/" to "Parody",
+        "$mainUrl/tag/performing-arts/page/%d/" to "Performing Arts",
+        "$mainUrl/tag/pets/page/%d/" to "Pets",
         "$mainUrl/tag/police/page/%d/" to "Police",
         "$mainUrl/tag/psychological/page/%d/" to "Psychological",
+        "$mainUrl/tag/racing/page/%d/" to "Racing",
+        "$mainUrl/tag/reincarnation/page/%d/" to "Reincarnation",
+        "$mainUrl/tag/reverse-harem/page/%d/" to "Reverse Harem",
         "$mainUrl/tag/romance/page/%d/" to "Romance",
         "$mainUrl/tag/samurai/page/%d/" to "Samurai",
         "$mainUrl/tag/school/page/%d/" to "School",
@@ -79,12 +119,25 @@ class Alqanime : MainAPI() {
         "$mainUrl/tag/seinen/page/%d/" to "Seinen",
         "$mainUrl/tag/shoujo/page/%d/" to "Shoujo",
         "$mainUrl/tag/shounen/page/%d/" to "Shounen",
+        "$mainUrl/tag/showbiz/page/%d/" to "Showbiz",
         "$mainUrl/tag/slice-of-life/page/%d/" to "Slice of Life",
         "$mainUrl/tag/space/page/%d/" to "Space",
         "$mainUrl/tag/sports/page/%d/" to "Sports",
+        "$mainUrl/tag/strategy-game/page/%d/" to "Strategy Game",
+        "$mainUrl/tag/super-power/page/%d/" to "Super Power",
         "$mainUrl/tag/supernatural/page/%d/" to "Supernatural",
+        "$mainUrl/tag/survival/page/%d/" to "Survival",
+        "$mainUrl/tag/suspense/page/%d/" to "Suspense",
+        "$mainUrl/tag/team-sports/page/%d/" to "Team Sports",
         "$mainUrl/tag/thriller/page/%d/" to "Thriller",
-        "$mainUrl/tag/vampire/page/%d/" to "Vampire"
+        "$mainUrl/tag/time-travel/page/%d/" to "Time Travel",
+        "$mainUrl/tag/urban-fantasy/page/%d/" to "Urban Fantasy",
+        "$mainUrl/tag/us/page/%d/" to "US",
+        "$mainUrl/tag/vampire/page/%d/" to "Vampire",
+        "$mainUrl/tag/video-game/page/%d/" to "Video Game",
+        "$mainUrl/tag/villainess/page/%d/" to "Villainess",
+        "$mainUrl/tag/visual-arts/page/%d/" to "Visual Arts",
+        "$mainUrl/tag/workplace/page/%d/" to "Workplace"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -327,6 +380,10 @@ class Alqanime : MainAPI() {
                 if (tryAcefile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
             }
 
+            if (resolvedUrl.contains("hxfile.co", true)) {
+                if (tryHxfile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
+            }
+
             val directFromUrl = emitDirect(
                 source = name,
                 url = resolvedUrl,
@@ -467,6 +524,45 @@ class Alqanime : MainAPI() {
         return emitted
     }
 
+    private suspend fun tryHxfile(
+        url: String,
+        quality: Int,
+        callback: (ExtractorLink) -> Unit,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): Boolean {
+        val id = Regex("""hxfile\.co/(?:embed-)?([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+            .find(url.substringBefore("?"))
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.substringBefore(".")
+
+        val pages = linkedSetOf<String>()
+        pages.add(url)
+        if (id != null) {
+            pages.add("https://hxfile.co/embed-$id.html")
+        }
+
+        var emitted = false
+        for (pageUrl in pages) {
+            runCatching {
+                loadExtractor(pageUrl, "$mainUrl/", subtitleCallback) { link ->
+                    callback(
+                        newExtractorLink(link.source, link.name, link.url, link.type) {
+                            this.referer = link.referer
+                            this.quality = if (link.quality == Qualities.Unknown.value) quality else link.quality
+                            this.headers = link.headers
+                            this.extractorData = link.extractorData
+                        }
+                    )
+                    emitted = true
+                }
+            }
+            if (emitted) return true
+        }
+
+        return false
+    }
+
     private fun collectPlayableUrls(
         document: org.jsoup.nodes.Document,
         html: String,
@@ -543,6 +639,15 @@ class Alqanime : MainAPI() {
                 ?.groupValues
                 ?.getOrNull(1)
             if (id != null) return "https://acefile.co/player/$id"
+        }
+
+        if (cleanUrl.contains("hxfile.co", true)) {
+            val id = Regex("""hxfile\.co/(?:embed-)?([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+                .find(cleanUrl.substringBefore("?"))
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.substringBefore(".")
+            if (id != null) return "https://hxfile.co/embed-$id.html"
         }
 
         return fixUrl(cleanUrl)
