@@ -122,7 +122,7 @@ class AnizoneProvider : MainAPI() {
                 ?.takeIf { it.isNotBlank() }
                 ?: ""
 
-            val snapshot = getSnapshot(doc)
+            val snapshot = getSnapshot(doc, *componentNamesForPath(initialSlug))
 
             if (csrfToken.isBlank() || snapshot.isBlank()) {
                 Log.e("AniZone Init", "Inisialisasi gagal: token atau snapshot kosong.")
@@ -139,11 +139,45 @@ class AnizoneProvider : MainAPI() {
         }
     }
 
-    private fun getSnapshot(doc: Document): String {
-        return doc.selectFirst("main > div[wire:snapshot], main div[wire:snapshot], div[wire:snapshot]")
-            ?.attr("wire:snapshot")
-            ?.replace("&quot;", "\"")
+    private fun getSnapshot(doc: Document, vararg componentNames: String): String {
+        val snapshots = doc.getAllElements()
+            .mapNotNull { element ->
+                element.attr("wire:snapshot")
+                    .takeIf { it.isNotBlank() }
+                    ?.replace("&quot;", "\"")
+                    ?.replace("&amp;quot;", "\"")
+            }
+
+        if (snapshots.isEmpty()) return ""
+
+        if (componentNames.isNotEmpty()) {
+            snapshots.firstOrNull { snapshot ->
+                val name = snapshotComponentName(snapshot)
+                componentNames.any { wanted -> name == wanted }
+            }?.let { return it }
+        }
+
+        return snapshots.firstOrNull { snapshotComponentName(it).startsWith("pages.") }
+            ?: snapshots.first()
+    }
+
+    private fun snapshotComponentName(snapshot: String): String {
+        return Regex("""\"name\"\s*:\s*\"([^\"]+)\"""")
+            .find(snapshot)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\/", "/")
             ?: ""
+    }
+
+    private fun componentNamesForPath(path: String): Array<String> {
+        val parts = pathFromUrl(path).split("/").filter { it.isNotBlank() }
+        return when {
+            parts.size >= 3 && parts.firstOrNull() == "anime" -> arrayOf("pages.episode-show")
+            parts.size >= 2 && parts.firstOrNull() == "anime" -> arrayOf("pages.anime-detail")
+            parts.firstOrNull() == "tag" -> arrayOf("pages.tag-detail")
+            else -> arrayOf("pages.anime-index")
+        }
     }
 
     private fun getSnapshot(json: JSONObject): String {
@@ -176,7 +210,7 @@ class AnizoneProvider : MainAPI() {
             val initReq = app.get("$mainUrl$refererPath")
             val initDoc = initReq.document
             token = initDoc.selectFirst("script[data-csrf]")?.attr("data-csrf") ?: token
-            snapshots[snapshotKey] = getSnapshot(initDoc)
+            snapshots[snapshotKey] = getSnapshot(initDoc, *componentNamesForPath(refererPath))
             biscuit.putAll(initReq.cookies)
         }
 
@@ -292,6 +326,20 @@ class AnizoneProvider : MainAPI() {
         }
     }
 
+    private fun typeToSourceValue(type: String): String {
+        return when (type.trim().lowercase(Locale.ROOT)) {
+            "unknown" -> "1"
+            "tv series" -> "2"
+            "ova" -> "3"
+            "movie" -> "4"
+            "other" -> "5"
+            "web" -> "6"
+            "tv special" -> "7"
+            "music video" -> "8"
+            else -> type.trim()
+        }
+    }
+
     private suspend fun fetchHomeDocument(
         path: String,
         sort: String,
@@ -303,7 +351,7 @@ class AnizoneProvider : MainAPI() {
         if (!initialized) return Jsoup.parse("")
 
         val updates = mutableMapOf<String, Any?>("sort" to sort)
-        if (type.isNotBlank()) updates["type"] = type
+        if (type.isNotBlank()) updates["type"] = typeToSourceValue(type)
 
         var responseJson = liveWireBuilder(
             snapshotAnimeKey,
@@ -430,13 +478,51 @@ class AnizoneProvider : MainAPI() {
         return if (path.startsWith("/")) path else "/$path"
     }
 
+    private fun titleFromElement(post: Element, link: Element?): String {
+        return link?.text()?.trim()?.takeIf { it.isNotBlank() }
+            ?: link?.attr("title")?.takeIf { it.isNotBlank() && it != "displayAnimeTitle" }
+            ?: post.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
+            ?: titleFromXData(post)
+            ?: post.selectFirst("h1, h2, h3")?.text()?.trim()?.takeIf { it.isNotBlank() }
+            ?: "Unknown Title"
+    }
+
+    private fun titleFromXData(post: Element): String? {
+        val xData = post.attr("x-data").takeIf { it.isNotBlank() } ?: return null
+        val fallback = Regex("""getTitle\(this\.anmTitles,\s*(?:'([^']*)'|\"([^\"]*)\")""")
+            .find(xData)
+            ?.groupValues
+            ?.drop(1)
+            ?.firstOrNull { it.isNotBlank() }
+            ?.let { cleanTitleText(it) }
+            ?.takeIf { it.isNotBlank() }
+
+        if (!fallback.isNullOrBlank()) return fallback
+
+        return Regex("""\\u00225\\u0022:\\u0022(.*?)\\u0022""")
+            .find(xData)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { cleanTitleText(it) }
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun cleanTitleText(value: String): String {
+        return value
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&amp;", "&")
+            .replace("\\u0022", "\"")
+            .replace("\\/", "/")
+            .trim()
+            .trim('\"')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
     private fun toResult(post: Element): SearchResponse {
         val link = post.selectFirst("a.inline[href*='/anime/'], a[href*='/anime/']")
-        val title = link?.text()?.trim()?.takeIf { it.isNotBlank() }
-            ?: post.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
-            ?: post.selectFirst("h2, h3")?.text()?.trim()
-            ?: ""
-
+        val title = titleFromElement(post, link)
         val url = normalizeUrl(link?.attr("href") ?: "")
         val type = if (post.text().contains("Movie", ignoreCase = true)) {
             TvType.AnimeMovie
@@ -477,7 +563,7 @@ class AnizoneProvider : MainAPI() {
 
         val pageToken = doc.select("script[data-csrf]").attr("data-csrf")
         if (pageToken.isNotBlank()) token = pageToken
-        snapshots[snapshotEpisodeKey] = getSnapshot(doc)
+        snapshots[snapshotEpisodeKey] = getSnapshot(doc, *componentNamesForPath(slug))
 
         val title = doc.selectFirst("h1")?.text()
             ?: throw NotImplementedError("Unable to find title")
@@ -668,7 +754,7 @@ class AnizoneProvider : MainAPI() {
 
         val pageToken = web.select("script[data-csrf]").attr("data-csrf")
         if (pageToken.isNotBlank()) token = pageToken
-        snapshots[snapshotVideoKey] = getSnapshot(web)
+        snapshots[snapshotVideoKey] = getSnapshot(web, *componentNamesForPath(episodePath))
 
         val emittedUrls = mutableSetOf<String>()
         var emitted = false
