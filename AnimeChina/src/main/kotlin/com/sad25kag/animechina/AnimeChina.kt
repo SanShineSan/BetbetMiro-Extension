@@ -61,39 +61,50 @@ class AnimeChina : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        val canonicalUrl = canonicalSeriesUrl(url)
         val document = app.get(url, headers = browserHeaders).document
+        val metaDocument = if (url.contains("episode=", ignoreCase = true) && canonicalUrl != url) {
+            runCatching { app.get(canonicalUrl, headers = browserHeaders, referer = url).document }
+                .getOrDefault(document)
+        } else {
+            document
+        }
+
         val title = cleanTitle(
-            document.selectFirst("h1, h2[itemprop=name], .entry-title, .title")?.text()
+            metaDocument.selectFirst("h1, h2[itemprop=name], .entry-title, .title")?.text()
+                ?: metaDocument.selectFirst("meta[property=og:title]")?.attr("content")
+                ?: document.selectFirst("h1, h2[itemprop=name], .entry-title, .title")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
                 ?: document.title()
         ) ?: return null
 
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(url)
-            ?: document.selectFirst(".thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(url)
+        val poster = metaDocument.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(canonicalUrl)
+            ?: metaDocument.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(canonicalUrl)
+            ?: document.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(url)
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(url)
 
-        val plot = document.select(".entry-content p, .synopsis p, .desc p, .storyline p, article p")
-            .map { it.text().cleanText() }
-            .filter { paragraph -> paragraph.isNotBlank() && !paragraph.contains("Share on", true) && !paragraph.contains("Article Rating", true) }
-            .joinToString("\n\n")
-            .takeIf { it.isNotBlank() }
-            ?: document.selectFirst("meta[name=description]")?.attr("content")?.cleanText()
+        val plot = extractPlot(metaDocument)
+            ?: extractPlot(document)
+            ?: metaDocument.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.cleanText()?.takeIf { it.isGoodPlot(title) }
+            ?: document.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.cleanText()?.takeIf { it.isGoodPlot(title) }
 
-        val tags = document.select("a[href*='/genres/'], a[href*='/genre/'], a[rel=tag]")
-            .map { it.text().cleanText() }
-            .filter { it.isNotBlank() && !it.equals("All Genres", true) }
-            .distinct()
+        val tags = extractGenreTags(metaDocument)
+            .ifEmpty { extractGenreTags(document) }
 
-        val episodes = parseEpisodeList(document, url).distinctBy { it.data.normalizedKey() }
-        val recommendations = parseAnimeChinaCards(document)
-            .filterNot { it.url.normalizedKey() == url.normalizedKey() }
+        val episodes = parseEpisodeList(document, url)
+            .ifEmpty { parseEpisodeList(metaDocument, canonicalUrl) }
+            .distinctBy { it.data.normalizedKey() }
+        val recommendations = parseAnimeChinaCards(metaDocument)
+            .filterNot { it.url.normalizedKey() == canonicalUrl.normalizedKey() }
             .take(16)
 
-        return newTvSeriesLoadResponse(title, canonicalSeriesUrl(url), TvType.Anime, episodes) {
+        return newTvSeriesLoadResponse(title, canonicalUrl, TvType.Anime, episodes) {
             this.posterUrl = poster
+            this.backgroundPosterUrl = poster
             this.plot = plot
             this.tags = tags
             this.recommendations = recommendations
-            this.showStatus = detectStatus(document)
+            this.showStatus = detectStatus(metaDocument) ?: detectStatus(document)
         }
     }
 
@@ -269,13 +280,55 @@ class AnimeChina : MainAPI() {
         return listOf(
             "dailymotion", "filemoon", "streamtape", "streamsb", "sbembed", "vidhide", "vidguard",
             "voe", "mixdrop", "mp4upload", "dood", "sendvid", "ok.ru", "rumble", "youtube",
-            "googlevideo", "blogger", "drive.google", "cdn", "player", "embed"
+            "googlevideo", "blogger", "drive.google", "cdn", "player", "embed", "anichin.stream",
+            "abyssplayer", "short.ink", "flaswish", "racaty", "rubystream", "streamruby", "filelions",
+            "mega.nz"
         ).any { value.contains(it) }
     }
 
     private fun String.isDirectMediaLike(): Boolean {
         val lower = lowercase(Locale.ROOT).substringBefore("#")
         return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") || lower.contains("videoplayback")
+    }
+
+    private fun extractPlot(document: Document): String? {
+        return document.select(".the__content p, .info__ori .the__content p, .entry-content p, .synopsis p, .desc p, .storyline p, article p")
+            .map { it.text().cleanText() }
+            .filter { paragraph -> paragraph.isGoodPlot() }
+            .distinct()
+            .joinToString("\n\n")
+            .takeIf { it.isNotBlank() }
+    }
+
+    private fun extractGenreTags(document: Document): List<String> {
+        return document.select(".info__ori a[href*='/genres/'], .genres a[href*='/genres/'], a[href*='/genres/']")
+            .map { it.text().cleanText() }
+            .filter { it.isValidGenreTag() }
+            .distinct()
+    }
+
+    private fun String.isGoodPlot(title: String? = null): Boolean {
+        val value = cleanText()
+        if (value.isBlank()) return false
+        if (value.length < 20) return false
+        if (title != null && value.equals(title, ignoreCase = true)) return false
+        if (value.contains("Share on", true)) return false
+        if (value.contains("Article Rating", true)) return false
+        if (value.contains("Login", true) && value.contains("Register", true)) return false
+        if (value.contains("Nonton Donghua Sub Indo", true) && value.length < 90) return false
+        return true
+    }
+
+    private fun String.isValidGenreTag(): Boolean {
+        val value = cleanText()
+        if (value.isBlank() || value.equals("All Genres", true)) return false
+        if (Regex("""^\d{4}$""").matches(value)) return false
+        if (Regex("""^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*""", RegexOption.IGNORE_CASE).matches(value)) return false
+        if (Regex("""^\d{1,2}$""").matches(value)) return false
+        if (value.contains("Episode", true)) return false
+        if (value.contains("Subtitle", true)) return false
+        if (value.contains("Nonton", true)) return false
+        return true
     }
 
     private fun cleanCardTitle(raw: String): String {
