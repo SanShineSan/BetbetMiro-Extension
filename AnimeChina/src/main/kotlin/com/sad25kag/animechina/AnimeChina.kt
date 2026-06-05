@@ -27,14 +27,14 @@ class AnimeChina : MainAPI() {
     override val mainPage = mainPageOf(
         "" to "Latest Update",
         "ongoing/" to "Ongoing",
-        "index-list/" to "Index List",
-        "genre/action/" to "Action",
-        "genre/adventure/" to "Adventure",
-        "genre/fantasy/" to "Fantasy",
-        "genre/comedy/" to "Comedy",
-        "genre/cultivation/" to "Cultivation",
-        "genre/demons/" to "Demons",
-        "genre/drama/" to "Drama",
+        "genres/adventure/" to "Adventure",
+        "genres/fantasy/" to "Fantasy",
+        "genres/action/" to "Action",
+        "genres/action-fantasy/" to "Action Fantasy",
+        "genres/cultivation/" to "Cultivation",
+        "genres/comedy/" to "Comedy",
+        "genres/demons/" to "Demons",
+        "genres/drama/" to "Drama",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -78,12 +78,12 @@ class AnimeChina : MainAPI() {
             .takeIf { it.isNotBlank() }
             ?: document.selectFirst("meta[name=description]")?.attr("content")?.cleanText()
 
-        val tags = document.select("a[href*='/genre/'], a[rel=tag]")
+        val tags = document.select("a[href*='/genres/'], a[href*='/genre/'], a[rel=tag]")
             .map { it.text().cleanText() }
             .filter { it.isNotBlank() && !it.equals("All Genres", true) }
             .distinct()
 
-        val episodes = parseEpisodeList(document).distinctBy { it.data.normalizedKey() }
+        val episodes = parseEpisodeList(document, url).distinctBy { it.data.normalizedKey() }
         val recommendations = parseAnimeChinaCards(document)
             .filterNot { it.url.normalizedKey() == url.normalizedKey() }
             .take(16)
@@ -179,23 +179,37 @@ class AnimeChina : MainAPI() {
             ?: return null
         val title = cleanCardTitle(rawTitle).takeIf { it.length > 2 } ?: return null
         val poster = selectFirst("img")?.imageUrl(href)
-        return newMovieSearchResponse(title, canonicalSeriesUrl(href), TvType.Anime) {
+        val responseUrl = if (href.contains("episode=", ignoreCase = true)) href else canonicalSeriesUrl(href)
+        return newMovieSearchResponse(title, responseUrl, TvType.Anime) {
             this.posterUrl = poster
             this.posterHeaders = mapOf("Referer" to "$mainUrl/")
         }
     }
 
-    private fun parseEpisodeList(document: Document): List<Episode> {
-        val anchors = document.select("a[href*='/watch/'][href*='episode=']")
-        return anchors.mapNotNull { anchor ->
-            val href = anchor.attr("href").toAbsoluteUrl() ?: return@mapNotNull null
+    private fun parseEpisodeList(document: Document, baseUrl: String): List<Episode> {
+        val anchors = document.select("div.gsd a[href*='episode='], .gsd a[href*='episode=']")
+            .ifEmpty { document.select("a[href*='episode=']") }
+
+        val episodes = anchors.mapNotNull { anchor ->
+            val href = anchor.attr("href").toAbsoluteUrl(baseUrl) ?: return@mapNotNull null
             val episodeNumber = href.toEpisodeNumber() ?: anchor.text().toEpisodeNumber()
             newEpisode(href) {
                 this.name = anchor.text().cleanText().takeIf { it.isNotBlank() } ?: episodeNumber?.let { "Episode $it" }
                 this.episode = episodeNumber
                 this.posterUrl = anchor.selectFirst("img")?.imageUrl(href)
             }
-        }.sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name ?: "" })
+        }.distinctBy { it.data.normalizedKey() }
+            .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name ?: "" })
+
+        if (episodes.isNotEmpty()) return episodes
+
+        val currentEpisode = baseUrl.toEpisodeNumber() ?: return emptyList()
+        return listOf(
+            newEpisode(baseUrl) {
+                this.name = "Episode $currentEpisode"
+                this.episode = currentEpisode
+            }
+        )
     }
 
     private fun collectPlayerCandidates(document: Document, referer: String): LinkedHashSet<String> {
