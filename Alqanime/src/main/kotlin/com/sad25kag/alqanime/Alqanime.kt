@@ -546,14 +546,7 @@ class Alqanime : MainAPI() {
         for (pageUrl in pages) {
             runCatching {
                 loadExtractor(pageUrl, "$mainUrl/", subtitleCallback) { link ->
-                    callback(
-                        newExtractorLink(link.source, link.name, link.url, link.type) {
-                            this.referer = link.referer
-                            this.quality = if (link.quality == Qualities.Unknown.value) quality else link.quality
-                            this.headers = link.headers
-                            this.extractorData = link.extractorData
-                        }
-                    )
+                    callback(link)
                     emitted = true
                 }
             }
