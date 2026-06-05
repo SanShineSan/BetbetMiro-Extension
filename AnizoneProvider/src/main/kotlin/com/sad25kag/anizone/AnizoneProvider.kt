@@ -175,7 +175,7 @@ class AnizoneProvider : MainAPI() {
         return when {
             parts.size >= 3 && parts.firstOrNull() == "anime" -> arrayOf("pages.episode-show")
             parts.size >= 2 && parts.firstOrNull() == "anime" -> arrayOf("pages.anime-detail")
-            parts.firstOrNull() == "tag" -> arrayOf("pages.tag-detail")
+            parts.firstOrNull() == "tag" -> arrayOf("pages.tag-show", "pages.tag-detail")
             else -> arrayOf("pages.anime-index")
         }
     }
@@ -347,42 +347,65 @@ class AnizoneProvider : MainAPI() {
         page: Int
     ): Document {
         snapshots[snapshotAnimeKey] = ""
-        val initialized = initializeLiveWire(path)
-        if (!initialized) return Jsoup.parse("")
 
-        val updates = mutableMapOf<String, Any?>("sort" to sort)
-        if (type.isNotBlank()) updates["type"] = typeToSourceValue(type)
+        val initialReq = app.get("$mainUrl$path")
+        val initialDoc = initialReq.document
+        val initialToken = initialDoc.selectFirst("script[data-csrf]")?.attr("data-csrf") ?: ""
+        if (initialToken.isNotBlank()) token = initialToken
+        cookies = initialReq.cookies.toMutableMap()
+        snapshots[snapshotAnimeKey] = getSnapshot(initialDoc, *componentNamesForPath(path))
 
-        var responseJson = liveWireBuilder(
-            snapshotAnimeKey,
-            updates,
-            emptyList(),
-            cookies,
-            true,
-            path
-        )
+        var doc = initialDoc
+        val needsLiveWireUpdate = sort != "release-desc" || type.isNotBlank()
 
-        var doc = getHtmlFromWire(responseJson)
+        if (needsLiveWireUpdate && token.isNotBlank() && !snapshots[snapshotAnimeKey].isNullOrBlank()) {
+            val updates = mutableMapOf<String, Any?>("sort" to sort)
+            if (type.isNotBlank()) updates["type"] = typeToSourceValue(type)
+
+            try {
+                val responseJson = liveWireBuilder(
+                    snapshotAnimeKey,
+                    updates,
+                    emptyList(),
+                    cookies,
+                    true,
+                    path
+                )
+                val updatedDoc = getHtmlFromWire(responseJson)
+                if (parseAnimeElements(updatedDoc).isNotEmpty()) {
+                    doc = updatedDoc
+                }
+            } catch (e: Exception) {
+                Log.e("AniZone", "Livewire update gagal untuk '$path' sort='$sort' type='$type': ${e.message}")
+            }
+        }
 
         for (i in 1 until page) {
-            if (!hasLoadMore(doc)) break
+            if (!hasLoadMore(doc) || token.isBlank() || snapshots[snapshotAnimeKey].isNullOrBlank()) break
 
-            responseJson = liveWireBuilder(
-                snapshotAnimeKey,
-                emptyMap(),
-                listOf(
-                    mapOf(
-                        "path" to "",
-                        "method" to "loadMore",
-                        "params" to emptyList<String>()
-                    )
-                ),
-                cookies,
-                true,
-                path
-            )
+            try {
+                val responseJson = liveWireBuilder(
+                    snapshotAnimeKey,
+                    emptyMap(),
+                    listOf(
+                        mapOf(
+                            "path" to "",
+                            "method" to "loadMore",
+                            "params" to emptyList<String>()
+                        )
+                    ),
+                    cookies,
+                    true,
+                    path
+                )
 
-            doc = getHtmlFromWire(responseJson)
+                val nextDoc = getHtmlFromWire(responseJson)
+                if (parseAnimeElements(nextDoc).isEmpty()) break
+                doc = nextDoc
+            } catch (e: Exception) {
+                Log.e("AniZone", "loadMore gagal untuk '$path': ${e.message}")
+                break
+            }
         }
 
         return doc
