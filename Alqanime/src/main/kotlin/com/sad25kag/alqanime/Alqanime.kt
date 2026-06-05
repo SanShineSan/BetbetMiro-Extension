@@ -380,8 +380,8 @@ class Alqanime : MainAPI() {
                 if (tryAcefile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
             }
 
-            if (resolvedUrl.contains("hxfile.co", true)) {
-                if (tryHxfile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
+            if (resolvedUrl.contains("resharer.org", true)) {
+                if (tryReshare(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
             }
 
             val directFromUrl = emitDirect(
@@ -524,36 +524,125 @@ class Alqanime : MainAPI() {
         return emitted
     }
 
-    private suspend fun tryHxfile(
+    private suspend fun tryReshare(
         url: String,
         quality: Int,
         callback: (ExtractorLink) -> Unit,
         subtitleCallback: (SubtitleFile) -> Unit
     ): Boolean {
-        val id = Regex("""hxfile\.co/(?:embed-)?([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
-            .find(url.substringBefore("?"))
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.substringBefore(".")
+        val visited = linkedSetOf<String>()
+        val pageQueue = mutableListOf<String>()
 
-        val pages = linkedSetOf<String>()
-        pages.add(url)
-        if (id != null) {
-            pages.add("https://hxfile.co/embed-$id.html")
+        fun addPage(page: String) {
+            if (page.contains("resharer.org", true) && visited.add(page)) {
+                pageQueue.add(page)
+            }
         }
 
-        var emitted = false
-        for (pageUrl in pages) {
+        suspend fun emitCandidate(candidate: String, referer: String): Boolean {
+            val fixed = candidate.cleanEscaped()
+            if (fixed.isBlank() || fixed == referer || fixed == "#") return false
+
+            if (fixed.contains("pixeldrain.com/api/file/", true)) {
+                callback(newExtractorLink("ReShare", "ReShare", fixed) {
+                    this.referer = referer
+                    this.quality = quality
+                    this.headers = commonHeaders + mapOf("Referer" to referer)
+                })
+                return true
+            }
+
+            if (fixed.isPlayableMediaUrl()) {
+                val type = if (fixed.contains(".m3u8", true)) {
+                    ExtractorLinkType.M3U8
+                } else {
+                    ExtractorLinkType.VIDEO
+                }
+                callback(newExtractorLink("ReShare", "ReShare", fixed, type) {
+                    this.referer = referer
+                    this.quality = quality
+                    this.headers = commonHeaders + mapOf("Referer" to referer)
+                })
+                return true
+            }
+
+            if (!fixed.isLikelyResolvableUrl()) return false
+
+            var emitted = false
             runCatching {
-                loadExtractor(pageUrl, "$mainUrl/", subtitleCallback) { link ->
+                loadExtractor(fixed, referer, subtitleCallback) { link ->
                     callback(link)
                     emitted = true
                 }
             }
+            return emitted
+        }
+
+        addPage(url)
+        var emitted = false
+        var index = 0
+
+        while (index < pageQueue.size && index < 3) {
+            val pageUrl = pageQueue[index++]
+            val response = runCatching {
+                app.get(
+                    pageUrl,
+                    headers = commonHeaders + mapOf(
+                        "Referer" to "$mainUrl/",
+                        "Origin" to "https://resharer.org"
+                    ),
+                    referer = "$mainUrl/",
+                    timeout = 20000L
+                )
+            }.getOrNull() ?: continue
+
+            val document = response.document
+            val html = response.text.cleanEscaped()
+            val candidates = linkedSetOf<String>()
+
+            normalizeUrl(response.url, pageUrl)
+                ?.cleanEscaped()
+                ?.takeIf { it != pageUrl }
+                ?.let { candidates.add(it) }
+
+            document.select(
+                "a[href], form[action], button[data-url], button[data-href], " +
+                    "[data-url], [data-href], [data-link], [data-download]"
+            ).forEach { element ->
+                listOf("href", "action", "data-url", "data-href", "data-link", "data-download")
+                    .map { element.attr(it) }
+                    .mapNotNull { normalizeUrl(it, pageUrl) }
+                    .forEach { candidates.add(it) }
+            }
+
+            Regex("""https?://[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+                .findAll(html)
+                .map { it.value.cleanEscaped() }
+                .forEach { candidates.add(it) }
+
+            Regex("""https?%3A%2F%2F[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+                .findAll(html)
+                .map { runCatching { URLDecoder.decode(it.value, "UTF-8") }.getOrDefault(it.value) }
+                .map { it.cleanEscaped() }
+                .forEach { candidates.add(it) }
+
+            collectPlayableUrls(document, html, pageUrl).forEach { candidates.add(it) }
+
+            for (candidate in candidates) {
+                val normalized = normalizeUrl(candidate, pageUrl)?.cleanEscaped() ?: continue
+                if (normalized.contains("resharer.org", true)) {
+                    if (normalized != pageUrl) addPage(normalized)
+                    continue
+                }
+                if (emitCandidate(normalized, pageUrl)) {
+                    emitted = true
+                }
+            }
+
             if (emitted) return true
         }
 
-        return false
+        return emitted
     }
 
     private fun collectPlayableUrls(
@@ -634,15 +723,6 @@ class Alqanime : MainAPI() {
             if (id != null) return "https://acefile.co/player/$id"
         }
 
-        if (cleanUrl.contains("hxfile.co", true)) {
-            val id = Regex("""hxfile\.co/(?:embed-)?([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
-                .find(cleanUrl.substringBefore("?"))
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.substringBefore(".")
-            if (id != null) return "https://hxfile.co/embed-$id.html"
-        }
-
         return fixUrl(cleanUrl)
     }
 
@@ -694,6 +774,21 @@ class Alqanime : MainAPI() {
             .replace("\\\"", "\"")
             .trim('"', '\'', ',', ';')
             .trim()
+    }
+
+    private fun String.isLikelyResolvableUrl(): Boolean {
+        val lower = lowercase()
+        if (isPlayableMediaUrl()) return true
+        return lower.contains("download") ||
+            lower.contains("worker") ||
+            lower.contains("r2.dev") ||
+            lower.contains("workers.dev") ||
+            lower.contains("acefile.co") ||
+            lower.contains("mediafire.com") ||
+            lower.contains("pixeldrain.com") ||
+            lower.contains("gofile.io") ||
+            lower.contains("terabox") ||
+            lower.contains("drive.google.com")
     }
 
     private fun String.isPlayableMediaUrl(): Boolean {
