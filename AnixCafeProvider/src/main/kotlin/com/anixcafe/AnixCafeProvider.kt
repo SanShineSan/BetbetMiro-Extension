@@ -144,21 +144,15 @@ class AnixCafeProvider : MainAPI() {
                 val fixed = AnixCafeExtractorHelper.normalizeUrl(url, data) ?: return@mapNotNull null
                 fixed to label
             }
-            .filterNot { (url, label) ->
-                AnixCafeExtractorHelper.isNoiseFrame(url) ||
-                    AnixCafeExtractorHelper.isKnownBrokenCandidate(url, label)
-            }
+            .filterNot { (url, _) -> AnixCafeExtractorHelper.isNoiseFrame(url) }
             .distinctBy { it.first }
+            .sortedWith(
+                compareBy<Pair<String, String>> { (url, label) ->
+                    AnixCafeExtractorHelper.candidatePriority(url, label)
+                }.thenBy { (url, label) -> "$label $url" }
+            )
 
-        val okRuCandidates = normalizedCandidates
-            .filter { (url, label) -> AnixCafeExtractorHelper.isPreferredOkRuCandidate(url, label) }
-
-        val fallbackCandidates = normalizedCandidates
-            .filterNot { (url, label) -> AnixCafeExtractorHelper.isPreferredOkRuCandidate(url, label) }
-
-        val candidatesToResolve = okRuCandidates.ifEmpty { fallbackCandidates }
-
-        for ((url, label) in candidatesToResolve) {
+        for ((url, label) in normalizedCandidates) {
             AnixCafeExtractorHelper.resolveLink(
                 url = url,
                 label = label,
@@ -167,18 +161,21 @@ class AnixCafeProvider : MainAPI() {
                 subtitleCallback = subtitleCallback,
                 callback = safeCallback
             )
-            if (emitted && AnixCafeExtractorHelper.isPreferredOkRuCandidate(url, label)) break
         }
 
         if (!emitted) {
-            document.select(".soraddlx a[href], .dlbox a[href], .download a[href], a[href*='mirrored.to'], a[href*='terabox']")
+            document.select(".soraddlx a[href], .dlbox a[href], .download a[href], a[href*='mirrored.to'], a[href*='terabox'], a[href*='drive.google'], a[href*='pcloud']")
                 .mapNotNull { it.attr("abs:href").ifBlank { it.attr("href") }.takeIf(String::isNotBlank) }
                 .distinct()
-                .filterNot { AnixCafeExtractorHelper.isKnownBrokenCandidate(it) }
                 .forEach { url ->
-                    runCatching {
-                        loadExtractor(url, data, subtitleCallback, safeCallback)
-                    }
+                    AnixCafeExtractorHelper.resolveLink(
+                        url = url,
+                        label = "Download",
+                        referer = data,
+                        visited = visited,
+                        subtitleCallback = subtitleCallback,
+                        callback = safeCallback
+                    )
                 }
         }
 

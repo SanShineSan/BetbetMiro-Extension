@@ -103,9 +103,14 @@ object AnixCafeExtractorHelper {
             return
         }
 
+        if (isDailymotionCandidate(fixedUrl, label)) {
+            if (resolveDailymotion(fixedUrl, label, referer, callback)) return
+            return
+        }
+
         if (resolvePlaymogo(fixedUrl, label, referer, callback)) return
 
-        if (useGenericExtractor) {
+        if (useGenericExtractor && !isInternalPlayerCandidate(fixedUrl, label)) {
             runCatching { loadExtractor(fixedUrl, referer, subtitleCallback, callback) }
         }
 
@@ -211,14 +216,42 @@ object AnixCafeExtractorHelper {
     }
 
     fun isKnownBrokenCandidate(url: String, label: String = ""): Boolean {
-        if (isPreferredOkRuCandidate(url, label)) return false
-
         val value = "$url $label".lowercase()
-        return value.contains("dailymotion.com") ||
-            value.contains("dai.ly") ||
-            value.contains("videoplayer.vip") ||
+        return value.contains("youtube.com") ||
+            value.contains("youtu.be") ||
+            value.contains("trailer") ||
+            value.contains("/ads/") ||
+            value.contains("doubleclick") ||
+            value.contains("googlesyndication")
+    }
+
+    fun isDailymotionCandidate(url: String, label: String = ""): Boolean {
+        val value = "$url $label".lowercase()
+        return value.contains("dailymotion.com") || value.contains("dai.ly")
+    }
+
+    fun isInternalPlayerCandidate(url: String, label: String = ""): Boolean {
+        val value = "$url $label".lowercase()
+        return value.contains("videoplayer.vip") ||
+            value.contains("anixcafe video player") ||
             value.contains("anixcafe videoplayer") ||
-            value.contains("anixcafe video player")
+            value.contains("all in one")
+    }
+
+    fun candidatePriority(url: String, label: String = ""): Int {
+        val value = "$url $label".lowercase()
+        return when {
+            isPreferredOkRuCandidate(url, label) -> 0
+            isDirectMedia(url) -> 1
+            value.contains("dood") -> 2
+            isDailymotionCandidate(url, label) -> 3
+            isInternalPlayerCandidate(url, label) -> 4
+            value.contains("streamruby") -> 5
+            value.contains("streamsb") || value.contains("sbembed") || value.contains("sbrapid") || value.contains("playersb") -> 6
+            value.contains("abyss") || value.contains("fembed") || value.contains("femax") || value.contains("lulustream") -> 7
+            value.contains("drive.google") || value.contains("pcloud") || value.contains("terabox") -> 8
+            else -> 9
+        }
     }
 
     private suspend fun resolveDailymotion(
@@ -358,11 +391,11 @@ object AnixCafeExtractorHelper {
     }
 
     private fun extractDailymotionId(url: String): String? {
-        return Regex("""(?:video=|/video/)([A-Za-z0-9]+)""")
+        return Regex("""(?:video=|/video/|/embed/video/)([A-Za-z0-9]+)""")
             .find(url)
             ?.groupValues
             ?.getOrNull(1)
-            ?: Regex("""dailymotion\.com/embed/video/([A-Za-z0-9]+)""")
+            ?: Regex("""dai\.ly/([A-Za-z0-9]+)""")
                 .find(url)
                 ?.groupValues
                 ?.getOrNull(1)
@@ -407,7 +440,7 @@ object AnixCafeExtractorHelper {
 
         val patterns = listOf(
             Regex("""https?://[^\s"'<>\\]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'<>\\\s]*)?""", RegexOption.IGNORE_CASE),
-            Regex("""https?://[^\s"'<>\\]+?(?:ok\.ru|okru|playmogo|dood|streamwish|wishfast|filemoon|vidhide|vidguard|streamtape|mp4upload|mixdrop|voe)[^\s"'<>\\]*""", RegexOption.IGNORE_CASE),
+            Regex("""https?://[^\s"'<>\\]+?(?:ok\.ru|okru|odnoklassniki|playmogo|dailymotion|dai\.ly|videoplayer\.vip|dood|streamwish|wishfast|filemoon|vidhide|vidguard|streamtape|mp4upload|mixdrop|voe|streamruby|streamsb|sbembed|sbrapid|playersb|fembed|femax|abyss|lulustream|lulu|drive\.google|pcloud|terabox)[^\s"'<>\\]*""", RegexOption.IGNORE_CASE),
             Regex("""(?:file|src|source|video_url|videoUrl|play_url|playUrl|hls|url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
             Regex("""["']((?:/|//)[^"']+\.(?:m3u8|mp4|webm|txt)[^"']*)["']""", RegexOption.IGNORE_CASE),
         )
@@ -447,12 +480,11 @@ object AnixCafeExtractorHelper {
         val lower = url.lowercase()
         return !isNoiseFrame(url) &&
             !isKnownBrokenCandidate(url) &&
-            !lower.contains("youtube.com") &&
-            !lower.contains("youtu.be") &&
-            !lower.contains("trailer") &&
             (
                 isDirectMedia(url) ||
                     isPreferredOkRuCandidate(url) ||
+                    isDailymotionCandidate(url) ||
+                    isInternalPlayerCandidate(url) ||
                     lower.contains("playmogo") ||
                     lower.contains("dood") ||
                     lower.contains("streamwish") ||
@@ -463,7 +495,20 @@ object AnixCafeExtractorHelper {
                     lower.contains("streamtape") ||
                     lower.contains("mp4upload") ||
                     lower.contains("mixdrop") ||
-                    lower.contains("voe")
+                    lower.contains("voe") ||
+                    lower.contains("streamruby") ||
+                    lower.contains("streamsb") ||
+                    lower.contains("sbembed") ||
+                    lower.contains("sbrapid") ||
+                    lower.contains("playersb") ||
+                    lower.contains("fembed") ||
+                    lower.contains("femax") ||
+                    lower.contains("abyss") ||
+                    lower.contains("lulustream") ||
+                    lower.contains("lulu") ||
+                    lower.contains("drive.google") ||
+                    lower.contains("pcloud") ||
+                    lower.contains("terabox")
                 )
     }
 
