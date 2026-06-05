@@ -516,7 +516,7 @@ class AnizoneProvider : MainAPI() {
         val emittedUrls = mutableSetOf<String>()
         var emitted = false
 
-        fun emitPlayer(doc: Document, sourceName: String) {
+        suspend fun emitPlayer(doc: Document, sourceName: String) {
             val mediaPlayer = doc.selectFirst("media-player") ?: return
             val masterUrl = mediaPlayer.attr("src").takeIf { it.isNotBlank() } ?: return
 
@@ -564,13 +564,13 @@ class AnizoneProvider : MainAPI() {
 
         emitPlayer(web, firstName)
 
-        serverButtons.drop(1).forEach { button ->
+        for (button in serverButtons.drop(1)) {
             val videoId = Regex("""setVideo\(['"]?(\d+)['"]?\)""")
                 .find(button.attr("wire:click"))
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.toIntOrNull()
-                ?: return@forEach
+                ?: continue
 
             try {
                 val responseJson = liveWireBuilder(
