@@ -149,7 +149,7 @@ class BioskopGo : MainAPI() {
 
         val poster = findPoster(document, page)
         val text = cleanText(document.text())
-        val tags = document.select("a[href*='/genre/']")
+        val tags = document.select(".gmr-movie-on a[href*='/genre/'], a[href*='/genre/']")
             .map { cleanText(it.text()).substringBefore("(").trim() }
             .filter { it.length in 2..40 && !it.equals("Trailer", true) && !it.equals("Watch", true) && !it.contains("bioskopgo", true) }
             .distinct()
@@ -162,9 +162,10 @@ class BioskopGo : MainAPI() {
         val year = document.selectFirst("a[href*='/year/']")?.text()?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
             ?: Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull()
             ?: Regex("""\b(19|20)\d{2}\b""").find(text)?.value?.toIntOrNull()
-        val rating = document.selectFirst("[itemprop=ratingValue], .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")
+        val rating = document.selectFirst("[itemprop=ratingValue], .gmr-rating-item, .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")
             ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
-        val duration = Regex("""(?i)(\d{1,3})\s*(?:min|menit|m)\b""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val duration = document.selectFirst(".gmr-duration-item")?.text()?.let { Regex("""(?i)(\d{1,4})\s*(?:min|menit|m)?\b""").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
+            ?: Regex("""(?i)(\d{1,4})\s*(?:min|menit|m)\b""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val description = cleanDescription(
             document.selectFirst("meta[property=og:description], meta[name=description], .entry-content p, .post-content p, .description, .desc, .sinopsis, .storyline, [itemprop=description]")
                 ?.let { if (it.tagName().equals("meta", true)) it.attr("content") else it.text() }
@@ -307,17 +308,33 @@ class BioskopGo : MainAPI() {
 
     private fun parseListing(document: Document): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
-        document.select(cardSelector).forEach { element ->
-            element.toSearchResult()?.let { results[contentKey(it.url)] = it }
+
+        document.select(sourceCardSelector).forEach { element ->
+            (element.sourceCardResult() ?: element.toSearchResult())?.let { results[contentKey(it.url)] = it }
         }
+
         if (results.size < 6) {
-            document.select("article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], .result-item a[href], .video-block a[href], .poster a[href], .thumbnail a[href]")
-                .forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
+            document.select(cardSelector).forEach { element ->
+                (element.sourceCardResult() ?: element.toSearchResult())?.let { results[contentKey(it.url)] = it }
+            }
         }
+
         if (results.size < 6) {
-            document.select("a[href]")
-                .forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
+            document.select(
+                "article.item a[href], article.item-infinite a[href], h2.entry-title a[href], .entry-title a[href], " +
+                    "article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], " +
+                    ".result-item a[href], .video-block a[href], .poster a[href], .thumbnail a[href]"
+            ).forEach { anchor ->
+                anchor.toSearchResult()?.let { results[contentKey(it.url)] = it }
+            }
         }
+
+        if (results.size < 6) {
+            document.select("a[href]").forEach { anchor ->
+                anchor.toSearchResult()?.let { results[contentKey(it.url)] = it }
+            }
+        }
+
         return results.values.take(80)
     }
 
@@ -329,7 +346,9 @@ class BioskopGo : MainAPI() {
         val results = linkedMapOf<String, SearchResponse>()
 
         fun collectFrom(element: Element?) {
-            element?.select("a[href]")
+            element?.select(sourceCardSelector)
+                ?.forEach { card -> (card.sourceCardResult() ?: card.toSearchResult())?.let { results[contentKey(it.url)] = it } }
+            element?.select("h2.entry-title a[href], .entry-title a[href], article a[href], .item a[href], a[href]")
                 ?.forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
         }
 
@@ -345,16 +364,56 @@ class BioskopGo : MainAPI() {
         return results.values.take(30)
     }
 
+    private fun Element.sourceCardResult(): SearchResponse? {
+        val anchor = selectFirst(
+            "h2.entry-title a[href], h2 a[rel=bookmark][href], .entry-title a[href], " +
+                ".gmr-movie-title a[href], .movie-title a[href], .post-title a[href]"
+        ) ?: return null
+        val href = fixUrl(anchor.attr("href"), mainUrl) ?: return null
+        if (!isContentUrl(href)) return null
+
+        val title = cleanTitle(anchor.text()).ifBlank { titleFromUrl(href) }
+        if (!isUsefulTitle(title)) return null
+
+        val image = selectFirst(
+            "img.wp-post-image, img[data-src], img[data-original], img[data-lazy-src], " +
+                "img[data-lazy], img[data-wpfc-original-src], img[src], img[srcset]"
+        )
+        val poster = image?.imageUrl(mainUrl) ?: styleImage(mainUrl) ?: findNearbyImage(mainUrl)
+        val text = cleanText(text())
+        val type = inferType(href, title, text, 0, null)
+        val year = Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull()
+            ?: Regex("""\b(19|20)\d{2}\b""").find(text)?.value?.toIntOrNull()
+        val score = selectFirst(".gmr-rating-item, [itemprop=ratingValue], .rating, .score, .imdb, .vote")
+            ?.text()
+            ?.replace(",", ".")
+            ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
+
+        return if (type == TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                posterUrl = poster
+                this.year = year
+                score?.let { this.score = Score.from10(it) }
+            }
+        } else {
+            newMovieSearchResponse(title, href, type) {
+                posterUrl = poster
+                this.year = year
+                score?.let { this.score = Score.from10(it) }
+            }
+        }
+    }
+
     private fun Element.toSearchResult(): SearchResponse? {
         val anchor = contentAnchor() ?: return null
         val href = fixUrl(anchor.attr("href"), mainUrl) ?: return null
         if (!isContentUrl(href)) return null
         val container = anchor.bestContainer()
-        val image = container.selectFirst("img[data-src], img[data-original], img[data-lazy-src], img[data-lazy], img[data-wpfc-original-src], img[src], img[srcset]")
-            ?: anchor.selectFirst("img")
+        val image = container.selectFirst("img.wp-post-image, img[data-src], img[data-original], img[data-lazy-src], img[data-lazy], img[data-wpfc-original-src], img[src], img[srcset]")
+            ?: anchor.selectFirst("img.wp-post-image, img")
         val title = listOf(
-            container.selectFirst("h1, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
-            anchor.selectFirst("h1, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
+            container.selectFirst("h1, h2.entry-title, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
+            anchor.selectFirst("h1, h2.entry-title, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
             anchor.attr("aria-label"),
             anchor.attr("title"),
             image?.attr("alt"),
@@ -365,7 +424,7 @@ class BioskopGo : MainAPI() {
         val text = cleanText(container.text())
         val type = inferType(href, title, text, 0, null)
         val year = Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull() ?: Regex("""\b(19|20)\d{2}\b""").find(text)?.value?.toIntOrNull()
-        val score = container.selectFirst(".rating, .score, .imdb, .vote")?.text()?.replace(",", ".")?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
+        val score = container.selectFirst(".gmr-rating-item, [itemprop=ratingValue], .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
         return if (type == TvType.TvSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = poster
@@ -385,7 +444,7 @@ class BioskopGo : MainAPI() {
         if (`is`("a[href]")) {
             return takeIf { fixUrl(attr("href"), mainUrl)?.let { href -> isContentUrl(href) } == true }
         }
-        return select("h1 a[href], h2 a[href], h3 a[href], h4 a[href], .entry-title a[href], .title a[href], .name a[href], .judul a[href], .mli-title a[href], .post-title a[href], .movie-title a[href], a[href][title], a[href]")
+        return select("h2.entry-title a[href], h2 a[rel=bookmark][href], .entry-title a[href], .gmr-movie-title a[href], .movie-title a[href], .post-title a[href], h1 a[href], h2 a[href], h3 a[href], h4 a[href], .title a[href], .name a[href], .judul a[href], .mli-title a[href], a[href][title], a[href]")
             .firstOrNull { anchor ->
                 val href = fixUrl(anchor.attr("href"), mainUrl) ?: return@firstOrNull false
                 isContentUrl(href)
@@ -411,7 +470,7 @@ class BioskopGo : MainAPI() {
             }
         }
 
-        document.select(".episode-list, .episodes, .episodios, .season, .seasons, .tvseason, .tvshows, [class*=episode], [id*=episode], [class*=season], [id*=season]")
+        document.select(".gmr-listseries, .gmr-listseries-season, .episode-list, .episodes, .episodios, .season, .seasons, .tvseason, .tvshows, [class*=episode], [id*=episode], [class*=season], [id*=season]")
             .select("a[href]")
             .forEachIndexed { index, element -> addEpisode(element, index) }
 
@@ -423,7 +482,18 @@ class BioskopGo : MainAPI() {
 
     private fun parseRecommendations(document: Document, currentUrl: String): List<SearchResponse> =
         document.select(".related, .rekomendasi, .recommend, section, .owl-carousel")
-            .flatMap { section -> section.select(cardSelector).mapNotNull { it.toSearchResult() } }
+            .flatMap { section ->
+                val items = linkedMapOf<String, SearchResponse>()
+                section.select(sourceCardSelector).forEach { card ->
+                    (card.sourceCardResult() ?: card.toSearchResult())?.let { items[contentKey(it.url)] = it }
+                }
+                if (items.size < 6) {
+                    section.select(cardSelector).forEach { card ->
+                        (card.sourceCardResult() ?: card.toSearchResult())?.let { items[contentKey(it.url)] = it }
+                    }
+                }
+                items.values
+            }
             .distinctBy { contentKey(it.url) }
             .filterNot { contentKey(it.url) == contentKey(currentUrl) }
             .take(16)
@@ -594,8 +664,12 @@ class BioskopGo : MainAPI() {
     private fun inferType(url: String, title: String, text: String, episodeCount: Int, sourceType: String?): TvType {
         val clean = cleanText("$title $text").lowercase(Locale.ROOT)
         val path = try { URI(url).path.orEmpty().lowercase(Locale.ROOT) } catch (_: Throwable) { "" }
+        val normalizedPath = path.trim('/')
         return when {
-            episodeCount > 0 || sourceType == "tv" || sourceType == "episode" || path.contains("/tv/") || path.contains("/episode/") || path.contains("/eps/") || clean.contains("jumlah episode") || clean.contains("eps:") -> TvType.TvSeries
+            episodeCount > 0 || sourceType == "tv" || sourceType == "episode" ||
+                normalizedPath.startsWith("tv/") || normalizedPath.startsWith("eps/") ||
+                path.contains("/tv/") || path.contains("/eps/") || path.contains("/episode/") ||
+                clean.contains("jumlah episode") || clean.contains("eps:") -> TvType.TvSeries
             clean.contains("korea") || clean.contains("japan") || clean.contains("china") || clean.contains("thailand") -> TvType.AsianDrama
             else -> TvType.Movie
         }
@@ -658,7 +732,7 @@ class BioskopGo : MainAPI() {
         document.selectFirst("a.next, .pagination a:contains(Next), .page-numbers.next, a[href*='/page/${page + 1}/']") != null
 
     private fun findPoster(document: Document, baseUrl: String): String? {
-        listOf("meta[property=og:image]", "meta[name=twitter:image]", ".poster img", ".thumb img", ".cover img", ".entry-content img", "img[itemprop=image]", "article img").forEach { selector ->
+        listOf("meta[property=og:image]", "meta[name=twitter:image]", ".gmr-movie-data img", ".poster img", ".thumb img", ".cover img", ".entry-content img", "img[itemprop=image]", "article img").forEach { selector ->
             val element = document.selectFirst(selector) ?: return@forEach
             if (element.tagName().equals("meta", true)) {
                 fixUrl(element.attr("content"), baseUrl)?.takeIf { it.isImageLike() }?.let { return cleanImageUrl(it) }
@@ -698,7 +772,7 @@ class BioskopGo : MainAPI() {
         val text = cleanTitle(value)
         if (text.length < 2) return false
         val lower = text.lowercase(Locale.ROOT)
-        return lower !in setOf("home", "beranda", "watch", "watch movie", "watch film", "trailer", "kategori", "tahun", "negara", "sharer", "tweet", "next", "previous", "film semi") &&
+        return lower !in setOf("home", "beranda", "watch", "watch movie", "watch film", "tonton", "tonton film", "film lainnya", "trailer", "kategori", "tahun", "negara", "sharer", "tweet", "next", "previous", "film semi") &&
             !lower.contains("bioskopgo film") && !lower.contains("arwana") && !lower.contains("slot") && !lower.contains("togel") && !lower.contains("bet")
     }
 
@@ -786,7 +860,10 @@ class BioskopGo : MainAPI() {
     private val sf21Key = "kiemtienmua911ca".toByteArray()
     private val sf21Iv = "1234567890oiuytr".toByteArray()
 
+    private val sourceCardSelector = "article.item, article.item-infinite"
+
     private val cardSelector = listOf(
+        sourceCardSelector,
         "article", ".post", ".item", ".movie", ".film", ".ml-item", ".result-item", ".video-block", ".poster", ".thumbnail", ".owl-item", ".swiper-slide", ".box", ".col"
     ).joinToString(",")
 }
