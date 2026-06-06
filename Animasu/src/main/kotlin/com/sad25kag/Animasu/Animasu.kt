@@ -1,18 +1,16 @@
 package com.sad25kag.Animasu
 
+import android.util.Base64
 import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
-import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
+import java.net.URLEncoder
 
 class Animasu : MainAPI() {
 
@@ -29,7 +27,6 @@ class Animasu : MainAPI() {
     )
 
     companion object {
-
         private const val MAX_TOP_LEVEL_CANDIDATES = 18
         private const val MAX_DOWNLOAD_CANDIDATES = 8
         private const val MAX_NESTED_CANDIDATES = 10
@@ -59,7 +56,6 @@ class Animasu : MainAPI() {
         }
     }
 
-    // Menu lama dipertahankan; genre tambahan dibatasi ke kategori besar.
     override val mainPage = mainPageOf(
         "urutan=update" to "Baru diupdate",
         "status=&tipe=&urutan=publikasi" to "Baru ditambahkan",
@@ -78,168 +74,98 @@ class Animasu : MainAPI() {
         "genre%5B%5D=donghua&status=&tipe=&urutan=update" to "Donghua",
     )
 
+    private fun animasuHeaders(referer: String = mainUrl): Map<String, String> {
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to referer,
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control" to "no-cache",
+            "Pragma" to "no-cache",
+        )
+    }
+
+    private suspend fun getAnimasuDocument(url: String, referer: String = mainUrl) = app.get(
+        url,
+        referer = referer,
+        headers = animasuHeaders(referer),
+    ).document
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        val document = getAnimasuDocument("$mainUrl/pencarian/?${request.data}&halaman=$page")
 
-        val document =
-            app.get("$mainUrl/pencarian/?${request.data}&halaman=$page").document
-
-        val home = document.select("div.listupd div.bs").map {
-            it.toSearchResult()
-        }
+        val home = document.select("div.listupd div.bs")
+            .mapNotNull { it.toSearchResultOrNull() }
 
         return newHomePageResponse(request.name, home)
     }
 
-    private fun getProperAnimeLink(uri: String): String {
-        return if (uri.contains("/anime/")) {
-            uri
-        } else {
-
-            var title = uri.substringAfter("$mainUrl/")
-
-            title = when {
-                (title.contains("-episode")) && !(title.contains("-movie")) -> {
-                    title.substringBefore("-episode")
-                }
-
-                (title.contains("-movie")) -> {
-                    title.substringBefore("-movie")
-                }
-
-                else -> title
-            }
-
-            "$mainUrl/anime/$title"
-        }
-    }
-
-    private fun Element.toSearchResult(): AnimeSearchResponse {
-
-        val href =
-            getProperAnimeLink(
-                fixUrlNull(
-                    this.selectFirst("a")?.attr("href")
-                ).toString()
-            )
-
-        val title = this.select("div.tt").text().trim()
-
-        val posterUrl =
-            fixUrlNull(this.selectFirst("img")?.getImageAttr())
-
-        val epNum =
-            this.selectFirst("span.epx")
-                ?.text()
-                ?.filter { it.isDigit() }
-                ?.toIntOrNull()
-
-        return newAnimeSearchResponse(
-            title,
-            href,
-            TvType.Anime
-        ) {
-            this.posterUrl = posterUrl
-            addSub(epNum)
-        }
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
 
-        return app.get("$mainUrl/?s=$query")
-            .document
+        return getAnimasuDocument("$mainUrl/?s=$encodedQuery")
             .select("div.listupd div.bs")
-            .map {
-                it.toSearchResult()
-            }
+            .mapNotNull { it.toSearchResultOrNull() }
     }
 
     override suspend fun load(url: String): LoadResponse {
+        val document = getAnimasuDocument(url)
 
-        val document = app.get(url).document
+        val title = document.selectFirst("div.infox h1")
+            ?.text()
+            .orEmpty()
+            .replace("Sub Indo", "")
+            .trim()
+            .ifBlank { document.selectFirst("h1")?.text()?.trim().orEmpty() }
 
-        val title =
-            document.selectFirst("div.infox h1")
-                ?.text()
-                .toString()
-                .replace("Sub Indo", "")
-                .trim()
+        val poster = document.selectFirst("div.bigcontent img")?.getImageAttr()
+            ?: document.selectFirst(".thumb img, .poster img, img.wp-post-image")?.getImageAttr()
 
-        val poster =
-            document.selectFirst("div.bigcontent img")
-                ?.getImageAttr()
+        val table = document.selectFirst("div.infox div.spe")
+        val type = getType(table?.selectFirst("span:contains(Jenis:)")?.ownText())
+        val year = table?.selectFirst("span:contains(Rilis:)")
+            ?.ownText()
+            ?.substringAfterLast(",")
+            ?.trim()
+            ?.toIntOrNull()
+        val status = table?.selectFirst("span:contains(Status:) font")?.text()
+        val trailer = document.selectFirst("div.trailer iframe")?.attr("src")
 
-        val table =
-            document.selectFirst("div.infox div.spe")
-
-        val type =
-            getType(
-                table?.selectFirst("span:contains(Jenis:)")
-                    ?.ownText()
-            )
-
-        val year =
-            table?.selectFirst("span:contains(Rilis:)")
-                ?.ownText()
-                ?.substringAfterLast(",")
-                ?.trim()
+        val episodes = document.select("ul#daftarepisode > li").mapNotNull { item ->
+            val aTag = item.selectFirst("a") ?: return@mapNotNull null
+            val link = fixUrl(aTag.attr("href"))
+            val name = aTag.text().trim()
+            val episode = Regex("Episode\\s?(\\d+)")
+                .find(name)
+                ?.groupValues
+                ?.getOrNull(1)
                 ?.toIntOrNull()
 
-        val status =
-            table?.selectFirst("span:contains(Status:) font")
-                ?.text()
-
-        val trailer =
-            document.selectFirst("div.trailer iframe")
-                ?.attr("src")
-
-        val episodes =
-            document.select("ul#daftarepisode > li").mapNotNull {
-
-                val aTag = it.selectFirst("a")
-                    ?: return@mapNotNull null
-
-                val link = fixUrl(aTag.attr("href"))
-
-                val name = aTag.text()
-
-                val episode =
-                    Regex("Episode\\s?(\\d+)")
-                        .find(name)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.toIntOrNull()
-
-                newEpisode(link) {
-                    this.episode = episode
-                }
-            }.reversed()
-
-        val tracker = try {
-            APIHolder.getTracker(
-                listOf(title),
-                TrackerType.getTypes(type),
-                year,
-                true
-            )
-        } catch (_: Exception) {
-            null
+            newEpisode(link) {
+                this.name = name.takeIf { it.isNotBlank() }
+                this.episode = episode
+            }
+        }.reversed().ifEmpty {
+            if (type == TvType.AnimeMovie) {
+                listOf(newEpisode(url) { this.name = title })
+            } else {
+                emptyList()
+            }
         }
 
         val rawTags = table?.select("span:contains(Genre:) a")
-            ?.map { it.text().trim() } ?: emptyList()
+            ?.map { it.text().trim() }
+            ?: emptyList()
 
         return newAnimeLoadResponse(
             title,
             url,
             type
         ) {
-
-            posterUrl = tracker?.image ?: poster
-            backgroundPosterUrl = tracker?.cover
-
+            posterUrl = poster
             this.year = year
 
             addEpisodes(
@@ -248,22 +174,11 @@ class Animasu : MainAPI() {
             )
 
             showStatus = getStatus(status)
-
-            plot =
-                document.select("div.sinopsis p")
-                    .text()
-
+            plot = document.select("div.sinopsis p").text()
             this.tags = rawTags.map { tag ->
                 AnimasuTagCategory.getCategoryByTag(tag)
             }.distinct()
-
             addTrailer(trailer)
-
-            addMalId(tracker?.malId)
-
-            addAniListId(
-                tracker?.aniId?.toIntOrNull()
-            )
         }
     }
 
@@ -277,8 +192,9 @@ class Animasu : MainAPI() {
         val document = app.get(
             episodeUrl,
             referer = mainUrl,
-            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to mainUrl)
+            headers = animasuHeaders(mainUrl)
         ).document
+
         val candidates = linkedSetOf<Pair<String, String?>>()
         val visited = linkedSetOf<String>()
         val emitted = linkedSetOf<String>()
@@ -550,7 +466,7 @@ class Animasu : MainAPI() {
                         raw + "=".repeat(padding)
                     }
 
-                String(android.util.Base64.decode(fixed, android.util.Base64.DEFAULT))
+                String(Base64.decode(fixed, Base64.DEFAULT))
             }.getOrNull()
     }
 
@@ -729,29 +645,12 @@ class Animasu : MainAPI() {
         "apk.miuiku.com",
     )
 
-    private fun normalizeIframeUrl(url: String?): String? {
-        val raw = url
-            ?.replace("&amp;", "&")
-            ?.trim()
-            ?.trim('"', '\'', ' ')
-            ?: return null
-
-        if (raw.isBlank() || raw == "#" || raw.startsWith("javascript:", true)) return null
-
-        return when {
-            raw.startsWith("//") -> "https:$raw"
-            raw.startsWith("http://") || raw.startsWith("https://") -> raw
-            else -> fixUrl(raw)
-        }
-    }
-
     private suspend fun emitBloggerVideo(
         url: String,
         quality: String?,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         val videos = extractBloggerDirectVideos(url, referer)
         if (videos.isEmpty()) return false
 
@@ -884,7 +783,6 @@ class Animasu : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         var emitted = false
 
         loadExtractor(
@@ -892,43 +790,34 @@ class Animasu : MainAPI() {
             referer,
             subtitleCallback
         ) { link ->
-
             emitted = true
-
-            runBlocking {
-
-                callback.invoke(
-                    newExtractorLink(
-                        link.name,
-                        link.name,
-                        link.url,
-                        link.type
-                    ) {
-
-                        this.referer = link.referer
-
-                        this.quality =
-                            if (
-                                link.type == ExtractorLinkType.M3U8 ||
-                                link.name == "Uservideo"
-                            ) {
-                                link.quality
-                            } else {
-                                getIndexQuality(quality)
-                            }
-
-                        this.headers = link.headers
-                        this.extractorData = link.extractorData
-                    }
-                )
-            }
+            callback.invoke(
+                newExtractorLink(
+                    link.name,
+                    link.name,
+                    link.url,
+                    link.type
+                ) {
+                    this.referer = link.referer
+                    this.quality =
+                        if (
+                            link.type == ExtractorLinkType.M3U8 ||
+                            link.name == "Uservideo"
+                        ) {
+                            link.quality
+                        } else {
+                            getIndexQuality(quality)
+                        }
+                    this.headers = link.headers
+                    this.extractorData = link.extractorData
+                }
+            )
         }
 
         return emitted
     }
 
     private fun getIndexQuality(str: String?): Int {
-
         return Regex("(\\d{3,4})[pP]")
             .find(str ?: "")
             ?.groupValues
@@ -938,25 +827,48 @@ class Animasu : MainAPI() {
     }
 
     private fun Element.getImageAttr(): String? {
-
         return when {
+            this.hasAttr("data-src") -> this.attr("abs:data-src")
+            this.hasAttr("data-lazy-src") -> this.attr("abs:data-lazy-src")
+            this.hasAttr("srcset") -> this.attr("abs:srcset").substringBefore(" ")
+            else -> this.attr("abs:src")
+        }
+    }
 
-            this.hasAttr("data-src") -> {
-                this.attr("abs:data-src")
-            }
+    private fun Element.toSearchResultOrNull(): AnimeSearchResponse? {
+        val rawHref = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
+        val href = getProperAnimeLink(rawHref)
+        val title = this.select("div.tt").text().trim()
+            .ifBlank { this.selectFirst("a")?.attr("title")?.trim().orEmpty() }
+        if (title.isBlank()) return null
 
-            this.hasAttr("data-lazy-src") -> {
-                this.attr("abs:data-lazy-src")
-            }
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.getImageAttr())
+        val epNum = this.selectFirst("span.epx")
+            ?.text()
+            ?.filter { it.isDigit() }
+            ?.toIntOrNull()
 
-            this.hasAttr("srcset") -> {
-                this.attr("abs:srcset")
-                    .substringBefore(" ")
-            }
+        return newAnimeSearchResponse(
+            title,
+            href,
+            TvType.Anime
+        ) {
+            this.posterUrl = posterUrl
+            addSub(epNum)
+        }
+    }
 
-            else -> {
-                this.attr("abs:src")
+    private fun getProperAnimeLink(uri: String): String {
+        return if (uri.contains("/anime/")) {
+            uri
+        } else {
+            var title = uri.substringAfter("$mainUrl/")
+            title = when {
+                (title.contains("-episode")) && !(title.contains("-movie")) -> title.substringBefore("-episode")
+                (title.contains("-movie")) -> title.substringBefore("-movie")
+                else -> title
             }
+            "$mainUrl/anime/$title"
         }
     }
 }
@@ -972,7 +884,6 @@ enum class AnimasuTagCategory(val title: String, val tagsList: List<String>) {
     ARTS_CULTURE("Arts & Music", listOf("Music", "Idol", "Historical", "Performing Arts")),
     MATURE("Mature & Ecchi", listOf("Ecchi", "Harem", "Reverse Harem")),
     DEMOGRAPHICS("Demographics", listOf("Shounen", "Shoujo", "Seinen", "Josei")),
-    
     MC_PERSONALITY_GOOD("MC: Kepribadian Baik", listOf("Ambisi", "Berjuang", "Beruntung", "Blakblakan", "Ceria", "Jenius", "Optimis", "Pemimpin", "Polos", "Semangat", "Setia", "Sopan", "Totalitas")),
     MC_PERSONALITY_QUIRKY("MC: Sifat Negatif/Eksentrik", listOf("Anti-Sosial", "Berisik", "Cerewet", "Ceroboh", "Kejam", "Licik", "Mencolok", "Menyebalkan", "Mesum", "Narsis", "Pemalas", "Pemalu", "Penakut", "Pendiam", "Pesimis", "Slengekan", "Suram")),
     MC_IDENTITY("MC: Identitas & Profesi", listOf("Anak-Anak", "Berbisnis", "Bounty Hunter", "Cewek", "Cowok", "Dewa", "Iblis", "Loli", "Monster", "Vampir")),
