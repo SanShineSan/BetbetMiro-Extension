@@ -27,14 +27,16 @@ class AnimeChina : MainAPI() {
     override val mainPage = mainPageOf(
         "" to "Latest Update",
         "ongoing/" to "Ongoing",
+        "index-list/" to "Index List",
+        "genres/drama/" to "Drama",
+        "genres/action/" to "Action",
+        "genres/actions/" to "Actions",
         "genres/adventure/" to "Adventure",
         "genres/fantasy/" to "Fantasy",
-        "genres/action/" to "Action",
-        "genres/action-fantasy/" to "Action Fantasy",
         "genres/cultivation/" to "Cultivation",
         "genres/comedy/" to "Comedy",
         "genres/demons/" to "Demons",
-        "genres/drama/" to "Drama",
+        "genres/crossdressing/" to "Crossdressing",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
