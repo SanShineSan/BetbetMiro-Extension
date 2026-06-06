@@ -1,9 +1,9 @@
-version = 1
+version = 2
 
 cloudstream {
-    description = "Terbit21"
+    description = "Terbit21 - source movie dan tv series Indonesia berbasis evidence HAR"
     language = "id"
-    authors = listOf("sad25kag")
+    authors = listOf("BetbetMiro")
 
     /**
      * Status int as the following:
@@ -11,9 +11,8 @@ cloudstream {
      * 1: Ok
      * 2: Slow
      * 3: Beta only
-     */
-    status = 3
-
+     * */
+    status = 1
     tvTypes = listOf(
         "Movie",
         "TvSeries",
