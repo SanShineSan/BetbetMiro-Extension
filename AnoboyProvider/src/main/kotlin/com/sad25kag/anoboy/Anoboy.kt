@@ -250,7 +250,7 @@ class Anoboy : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         } else {
-            newMovieLoadResponse(pageTitle, fixedUrl, type, encodeEpisodeData(fixedUrl, fixedUrl)) {
+            newMovieLoadResponse(pageTitle, fixedUrl, type, fixedUrl) {
                 posterUrl = poster
                 plot = description
                 this.tags = tags
@@ -491,7 +491,7 @@ class Anoboy : MainAPI() {
                 val episode = parseEpisodeNumber(title) ?: parseEpisodeNumber(href)
                 if (episode == null && title.length < 2) return@mapNotNull null
 
-                newEpisode(encodeEpisodeData(referer, href)) {
+                newEpisode(href) {
                     name = title.ifBlank { "Episode ${episode ?: 1}" }
                     this.episode = episode
                 }
@@ -543,7 +543,6 @@ class Anoboy : MainAPI() {
         val page = runCatching {
             app.get(
                 url,
-                referer = bloggerReferer,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -987,13 +986,21 @@ class Anoboy : MainAPI() {
 
     private fun decodeEpisodeData(data: String): Pair<String?, String> {
         val prefix = "anoboyref::"
-        if (!data.startsWith(prefix)) return null to normalizeAnoboyUrl(data)
+        val trimmed = data.trim()
+        val fixed = normalizeAnoboyUrl(trimmed)
+        val legacyData = when {
+            trimmed.startsWith(prefix) -> trimmed
+            fixed.startsWith("$mainUrl/$prefix", ignoreCase = true) -> fixed.removePrefix("$mainUrl/")
+            else -> null
+        }
 
-        val parts = data.removePrefix(prefix).split(":::", limit = 2)
+        if (legacyData == null) return null to fixed
+
+        val parts = legacyData.removePrefix(prefix).split(":::", limit = 2)
         return if (parts.size == 2) {
-            normalizeAnoboyUrl(parts[0]) to parts[1]
+            normalizeAnoboyUrl(parts[0]) to normalizeAnoboyUrl(parts[1])
         } else {
-            null to data
+            null to fixed
         }
     }
 
