@@ -11,7 +11,6 @@ import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
@@ -49,54 +48,55 @@ class BioskopGo : MainAPI() {
 
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama)
 
+    private val browserUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
+
     private val headers = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent" to browserUserAgent,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
         "Cache-Control" to "no-cache",
+        "Pragma" to "no-cache",
+        "Upgrade-Insecure-Requests" to "1",
+        "Sec-Fetch-Dest" to "document",
+        "Sec-Fetch-Mode" to "navigate",
+        "Sec-Fetch-Site" to "none",
+        "Sec-Fetch-User" to "?1",
+        "sec-ch-ua" to "\"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\", \"Not-A.Brand\";v=\"99\"",
+        "sec-ch-ua-mobile" to "?1",
+        "sec-ch-ua-platform" to "\"Android\"",
         "Referer" to "$mainUrl/"
     )
 
+    private fun pageHeaders(referer: String = "$mainUrl/"): Map<String, String> = headers + mapOf("Referer" to referer)
+
     override val mainPage = mainPageOf(
-        "/" to "Film Terbaru",
-        "/best-rating/populer/" to "Film Populer",
-        "/best-rating/" to "Best Rating",
-        "/semi/" to "Semi 18++",
-        "/action/" to "Action",
-        "/drama/" to "Drama",
-        "/adventure/" to "Adventure",
-        "/science-fiction/" to "Science Fiction",
-        "/fantasy/" to "Fantasy",
-        "/thriller/" to "Thriller",
-        "/crime/" to "Crime",
-        "/comedy/" to "Comedy",
-        "/mystery/" to "Mystery",
-        "/war/" to "War",
-        "/anime/" to "Anime",
-        "/romance/" to "Romance",
-        "/history/" to "History",
-        "/horror/" to "Horror",
-        "/country/indonesia/" to "Indonesia",
-        "/country/japan/" to "Japan",
-        "/country/south-korea/" to "South Korea",
-        "/country/china/" to "China",
-        "/country/united-states/" to "United States",
-        "/year/2025/" to "Tahun 2025",
-        "/year/2024/" to "Tahun 2024",
-        "/year/2023/" to "Tahun 2023",
-        "/year/2022/" to "Tahun 2022",
-        "/year/2021/" to "Tahun 2021"
+        "$mainUrl/" to "Film Terbaru",
+        "$mainUrl/best-rating/populer/" to "Film Populer",
+        "$mainUrl/best-rating/" to "Best Rating",
+        "$mainUrl/semi/" to "Semi 18++",
+        "$mainUrl/action/" to "Action",
+        "$mainUrl/drama/" to "Drama",
+        "$mainUrl/science-fiction/" to "Science Fiction",
+        "$mainUrl/fantasy/" to "Fantasy",
+        "$mainUrl/thriller/" to "Thriller",
+        "$mainUrl/crime/" to "Crime",
+        "$mainUrl/comedy/" to "Comedy",
+        "$mainUrl/mystery/" to "Mystery",
+        "$mainUrl/romance/" to "Romance",
+        "$mainUrl/country/indonesia/" to "Indonesia"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val targetUrl = pageUrl(request.data, page)
-        val document = try {
-            app.get(targetUrl, headers = headers, referer = mainUrl).document
-        } catch (_: Throwable) {
-            null
+        var document = fetchDocument(targetUrl, "$mainUrl/")
+        var directItems = try { document?.let { parseListing(it) }.orEmpty() } catch (_: Throwable) { emptyList() }
+
+        if (directItems.isEmpty() && page == 1 && targetUrl.trimEnd('/') != mainUrl.trimEnd('/')) {
+            fetchDocument(mainUrl, "$mainUrl/")
+            document = fetchDocument(targetUrl, mainUrl)
+            directItems = try { document?.let { parseListing(it) }.orEmpty() } catch (_: Throwable) { emptyList() }
         }
 
-        val directItems = try { document?.let { parseListing(it) }.orEmpty() } catch (_: Throwable) { emptyList() }
         if (directItems.isNotEmpty() || page > 1) {
             return newHomePageResponse(request.name, directItems, hasNext = document?.let { hasNextPage(it, page) } == true)
         }
@@ -104,11 +104,19 @@ class BioskopGo : MainAPI() {
         val homeDocument = if (targetUrl.trimEnd('/') == mainUrl.trimEnd('/')) {
             document
         } else {
-            try { app.get(mainUrl, headers = headers, referer = mainUrl).document } catch (_: Throwable) { null }
+            fetchDocument(mainUrl, "$mainUrl/")
         }
 
         val sectionItems = try { homeDocument?.let { parseHomeSection(it, request.name) }.orEmpty() } catch (_: Throwable) { emptyList() }
         return newHomePageResponse(request.name, sectionItems, hasNext = false)
+    }
+
+    private suspend fun fetchDocument(url: String, referer: String): Document? {
+        return try {
+            app.get(url, headers = pageHeaders(referer), referer = referer).document
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
@@ -128,7 +136,7 @@ class BioskopGo : MainAPI() {
         )
         val results = linkedMapOf<String, SearchResponse>()
         urls.forEach { url ->
-            val document = try { app.get(url, headers = headers, referer = mainUrl).document } catch (_: Throwable) { return@forEach }
+            val document = try { app.get(url, headers = pageHeaders(mainUrl), referer = mainUrl).document } catch (_: Throwable) { return@forEach }
             parseListing(document)
                 .filter { it.name.contains(keyword, true) || it.url.contains(slug, true) || keyword.length <= 3 }
                 .forEach { results[contentKey(it.url)] = it }
@@ -139,7 +147,7 @@ class BioskopGo : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val page = fixUrl(url, mainUrl) ?: return null
-        val response = try { app.get(page, headers = headers, referer = mainUrl) } catch (_: Throwable) { return null }
+        val response = try { app.get(page, headers = pageHeaders(mainUrl), referer = mainUrl) } catch (_: Throwable) { return null }
         val document = response.document
         val html = normalize(response.text.ifBlank { document.html() })
         val rawTitle = document.selectFirst("h1.entry-title, h1, .entry-title, meta[property=og:title], title")
@@ -265,7 +273,7 @@ class BioskopGo : MainAPI() {
         suspend fun inspectPage(url: String, referer: String): List<String> {
             val fixed = fixUrl(url, referer) ?: return emptyList()
             if (!visitedPages.add(fixed)) return emptyList()
-            val response = try { app.get(fixed, headers = headers + mapOf("Referer" to referer), referer = referer) } catch (_: Throwable) { return emptyList() }
+            val response = try { app.get(fixed, headers = pageHeaders(referer), referer = referer) } catch (_: Throwable) { return emptyList() }
             val document = response.document
             val html = normalize(response.text.ifBlank { document.html() })
             collectSubtitles(document, fixed, subtitleCallback)
