@@ -11,6 +11,12 @@ Anime • Donghua • Drama • Movie • Multi-Source • NSFW
 <img src="https://img.shields.io/github/license/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=green" />
 <img src="https://img.shields.io/github/last-commit/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=red" />
 
+<p>
+  <strong>Language:</strong>
+  Bahasa Indonesia |
+  <a href="README_EN.md">English</a>
+</p>
+
 </div>
 
 ---
