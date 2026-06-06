@@ -3,6 +3,8 @@ package it.dogior.nsfw
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -24,28 +26,49 @@ class Archivebate : MainAPI() {
     override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
-        buildPostsApi() to "Latest Videos",
-        buildPostsApi(search = "chaturbate") to "Chaturbate",
-        buildPostsApi(search = "camsoda") to "Camsoda",
-        buildPostsApi(search = "stripchat") to "Stripchat",
-        buildPostsApi(search = "cam4") to "Cam4",
+        "$mainUrl/" to "Latest Videos",
+        platform("eW91dHViZQ==") to "YouTube",
+        platform("dHdpdGNo") to "Twitch",
+        platform("b25seWZhbnM=") to "OnlyFans",
+        platform("aW5zdGFncmFt") to "Instagram",
+        platform("dGlrdG9r") to "TikTok",
+        platform("Ym9uZ2FjYW1z") to "BongaCams",
+        platform("Y2FtNA==") to "Cam4",
+        platform("Y2Ftc29kYQ==") to "Camsoda",
+        platform("Y2hhdHVyYmF0ZQ==") to "Chaturbate",
+        platform("c3RyaXBjaGF0") to "Stripchat",
+        platform("ZmVtYWxl") to "Female",
+        platform("Y291cGxl") to "Couple",
+        platform("bWFsZQ==") to "Male",
+        platform("dHJhbnM=") to "Trans",
     )
 
     companion object {
         const val URL = "https://archivebate.com"
-        private const val POSTS_API = "$URL/wp-json/wp/v2/posts"
-        private const val POSTS_PER_PAGE = 30
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
+        private const val PAGE_SIZE_GUARD = 20
         private val durationMap = mutableMapOf<String, String>()
         private val infoMap = mutableMapOf<String, String>()
         private val profilePosterCache = mutableMapOf<String, String?>()
+
+        private fun platform(encoded: String): String = "$URL/platform/$encoded"
     }
 
     private fun requestHeaders(referer: String = mainUrl): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to referer,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    )
+
+    private fun livewireHeaders(referer: String, csrf: String): Map<String, String> = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to referer,
+        "Accept" to "application/json, text/plain, */*",
+        "Content-Type" to "application/json",
+        "X-CSRF-TOKEN" to csrf,
+        "X-Livewire" to "true",
+        "X-Requested-With" to "XMLHttpRequest",
     )
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
@@ -65,84 +88,59 @@ class Archivebate : MainAPI() {
         }
     }
 
-    private fun buildPostsApi(
-        page: Int = 1,
-        perPage: Int = POSTS_PER_PAGE,
-        search: String? = null,
-    ): String {
-        val query = mutableListOf(
-            "per_page=$perPage",
-            "page=$page",
-            "_embed=1",
-        )
-        if (!search.isNullOrBlank()) query += "search=${encode(search)}"
-        return "$POSTS_API?${query.joinToString("&")}"
-    }
-
-    private fun rewritePostsPage(url: String, page: Int): String {
-        val parts = url.split("?", limit = 2)
-        val base = parts.firstOrNull().orEmpty().ifBlank { POSTS_API }
-        val query = parts.getOrNull(1).orEmpty()
-        val params = linkedMapOf<String, String>()
-
-        query.split("&")
-            .filter { it.isNotBlank() }
-            .forEach { pair ->
-                val key = pair.substringBefore("=").trim()
-                val value = pair.substringAfter("=", "").trim()
-                if (key.isNotBlank()) params[key] = value
-            }
-
-        params["page"] = page.toString()
-
-        val newQuery = params.entries
-            .filter { it.key.isNotBlank() }
-            .joinToString("&") { "${it.key}=${it.value}" }
-
-        return if (newQuery.isNotBlank()) "$base?$newQuery" else base
-    }
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val apiUrl = rewritePostsPage(request.data, page)
-        val body = runCatching {
-            app.get(apiUrl, headers = requestHeaders()).text
-        }.getOrElse { error ->
-            Log.e("Archivebate", "Posts API failed for ${request.name}: ${error.message.orEmpty()}")
-            ""
-        }
-        val items = parsePostArray(body)
-
-        val responses = if (items.isNotEmpty()) {
-            items
-        } else {
-            runCatching {
-                parseHtmlListing(app.get(frontendPageUrl(page), headers = requestHeaders()).document)
-            }.getOrElse { error ->
-                Log.e("Archivebate", "HTML fallback failed for ${request.name}: ${error.message.orEmpty()}")
+        val pageUrl = rewriteArchivebatePage(request.data, page)
+        val items = runCatching { getLivewireCards(pageUrl) }
+            .getOrElse { error ->
+                Log.e("Archivebate", "Livewire homepage failed for ${request.name}: ${error.message.orEmpty()}")
                 emptyList()
             }
-        }
+            .ifEmpty {
+                runCatching {
+                    parseHtmlListing(app.get(pageUrl, headers = requestHeaders(pageUrl)).document)
+                }.getOrElse { error ->
+                    Log.e("Archivebate", "HTML homepage fallback failed for ${request.name}: ${error.message.orEmpty()}")
+                    emptyList()
+                }
+            }
+
+        if (items.isEmpty()) return null
 
         return newHomePageResponse(
-            HomePageList(request.name, responses, true),
-            responses.size >= POSTS_PER_PAGE,
+            HomePageList(request.name, items, true),
+            items.size >= PAGE_SIZE_GUARD,
         )
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val body = runCatching {
-            app.get(buildPostsApi(search = query), headers = requestHeaders()).text
-        }.getOrElse { "" }
-
-        val apiItems = parsePostArray(body)
+        val apiItems = runCatching { searchProfiles(query) }.getOrElse { error ->
+            Log.e("Archivebate", "Profile search failed: ${error.message.orEmpty()}")
+            emptyList()
+        }
         if (apiItems.isNotEmpty()) return apiItems
 
-        return runCatching {
-            val doc = app.get("$mainUrl/search/${encode(query)}/", headers = requestHeaders()).document
-            parseHtmlListing(doc)
-        }.getOrNull() ?: emptyList()
+        val searchUrls = listOf(
+            "$mainUrl/search/${encode(query)}/",
+            "$mainUrl/?search=${encode(query)}",
+            "$mainUrl/?q=${encode(query)}",
+        )
+
+        for (url in searchUrls) {
+            val items = runCatching { getLivewireCards(url) }.getOrDefault(emptyList())
+            val filtered = items.filter { response ->
+                response.name.contains(query, ignoreCase = true) || response.url.contains(query, ignoreCase = true)
+            }
+            if (filtered.isNotEmpty()) return filtered
+            if (items.isNotEmpty()) return items
+        }
+
+        val latest = runCatching { getLivewireCards("$mainUrl/") }.getOrDefault(emptyList())
+        val filteredLatest = latest.filter { response ->
+            response.name.contains(query, ignoreCase = true) || response.url.contains(query, ignoreCase = true)
+        }
+        return filteredLatest.ifEmpty { latest }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -195,60 +193,159 @@ class Archivebate : MainAPI() {
         return poster
     }
 
-    private fun parsePostArray(body: String): List<SearchResponse> {
-        val posts = runCatching { JSONArray(body) }.getOrNull() ?: return emptyList()
-        return (0 until posts.length()).mapNotNull { index ->
-            val post = posts.optJSONObject(index) ?: return@mapNotNull null
-            val link = post.optString("link").ifBlank { return@mapNotNull null }
-            val title = cleanHtml(post.optJSONObject("title")?.optString("rendered")).ifBlank { "Unknown" }
-            val poster = selectPoster(post)
-            val info = cleanHtml(post.optJSONObject("excerpt")?.optString("rendered"))
-                .ifBlank { cleanHtml(post.optJSONObject("content")?.optString("rendered")) }
-            val duration = extractDuration(post)
-            if (duration.isNotBlank()) durationMap[link] = duration
-            if (info.isNotBlank()) infoMap[link] = info
-            newMovieSearchResponse(title, link, TvType.NSFW) {
+    private suspend fun searchProfiles(query: String): List<SearchResponse> {
+        val boot = app.get(mainUrl, headers = requestHeaders())
+        val body = app.get(
+            "$mainUrl/api/v1/search?query=${encode(query)}",
+            cookies = boot.cookies,
+            headers = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to "$mainUrl/",
+                "Accept" to "application/json, text/plain, */*",
+                "X-Requested-With" to "XMLHttpRequest",
+            ),
+        ).text
+
+        val data = runCatching { JSONObject(body).optJSONArray("data") }
+            .getOrNull()
+            ?: runCatching { JSONArray(body) }.getOrNull()
+            ?: return emptyList()
+
+        return (0 until data.length()).mapNotNull { index ->
+            val raw = data.opt(index) ?: return@mapNotNull null
+            val item = when (raw) {
+                is JSONObject -> raw
+                is String -> JSONObject().put("username", raw)
+                else -> return@mapNotNull null
+            }
+            val username = item.optString("username").ifBlank {
+                item.optString("name").ifBlank { item.optString("title") }
+            }.ifBlank { return@mapNotNull null }
+            val profileUrl = item.optString("url")
+                .ifBlank { item.optString("link") }
+                .ifBlank { "$mainUrl/profile/$username" }
+            val poster = item.optString("avatar")
+                .ifBlank { item.optString("image") }
+                .ifBlank { item.optString("poster") }
+                .ifBlank { null }
+            newMovieSearchResponse(username, normalizeUrl(profileUrl), TvType.NSFW) {
                 this.posterUrl = poster
             }
         }
     }
 
-    private fun selectPoster(post: JSONObject): String? {
-        post.optString("jetpack_featured_media_url").takeIf { it.isNotBlank() }?.let { return it }
-        post.optJSONObject("better_featured_image")?.optString("source_url")?.takeIf { it.isNotBlank() }?.let { return it }
-        val media = post.optJSONObject("_embedded")?.optJSONArray("wp:featuredmedia")?.optJSONObject(0)
-        media?.optString("source_url")?.takeIf { it.isNotBlank() }?.let { return it }
-        val html = post.optJSONObject("content")?.optString("rendered") ?: ""
-        return Jsoup.parse(html).selectFirst("img[src], img[data-src]")?.let { image ->
-            image.attr("data-src").ifBlank { image.attr("src") }
-        }?.ifBlank { null }
+    private suspend fun getLivewireCards(url: String): List<SearchResponse> {
+        val fragment = fetchLivewireFragment(url) ?: return emptyList()
+        return parseHtmlListing(Jsoup.parse(fragment, mainUrl))
     }
 
-    private fun extractDuration(post: JSONObject): String {
-        post.optJSONObject("acf")?.optString("duration")?.takeIf { it.isNotBlank() }?.let { return it }
-        val rendered = listOfNotNull(
-            post.optJSONObject("content")?.optString("rendered"),
-            post.optJSONObject("excerpt")?.optString("rendered"),
-        ).joinToString("\n")
-        return Regex("\\b(\\d{1,2}:\\d{2}(?::\\d{2})?)\\b").find(rendered)?.groupValues?.getOrNull(1) ?: ""
+    private suspend fun fetchLivewireFragment(url: String): String? {
+        val page = app.get(url, headers = requestHeaders(url))
+        val finalUrl = url
+        val baseUrl = mainUrl
+        val doc = page.document
+        val csrf = doc.selectFirst("meta[name='csrf-token']")?.attr("content")?.ifBlank { null } ?: return null
+
+        val wire = doc.getAllElements().firstOrNull { it.hasAttr("wire:initial-data") } ?: return null
+
+        val initialData = decodeWireData(wire.attr("wire:initial-data")).ifBlank { return null }
+        val method = wire.attr("wire:init").ifBlank { defaultLivewireMethod(url) }
+        val state = JSONObject(initialData)
+        val fingerprint = state.getJSONObject("fingerprint")
+        val serverMemo = state.getJSONObject("serverMemo")
+        val component = fingerprint.getString("name")
+
+        val payload = JSONObject()
+            .put("fingerprint", fingerprint)
+            .put("serverMemo", serverMemo)
+            .put(
+                "updates",
+                JSONArray().put(
+                    JSONObject()
+                        .put("type", "callMethod")
+                        .put(
+                            "payload",
+                            JSONObject()
+                                .put("id", "lw1")
+                                .put("method", method)
+                                .put("params", JSONArray()),
+                        ),
+                ),
+            )
+
+        val livewireUrl = "$baseUrl/livewire/message/$component"
+        val response = app.post(
+            livewireUrl,
+            cookies = page.cookies,
+            headers = livewireHeaders(finalUrl, csrf),
+            requestBody = payload.toString().toRequestBody("application/json".toMediaType()),
+        ).text
+
+        return JSONObject(response).optJSONObject("effects")?.optString("html")?.takeIf { it.isNotBlank() }
     }
 
-    private fun frontendPageUrl(page: Int): String = if (page > 1) "$mainUrl/page/$page/" else "$mainUrl/"
+    private fun decodeWireData(value: String): String {
+        return value
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#039;", "'")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&")
+    }
+
+    private fun defaultLivewireMethod(url: String): String {
+        return if (url.contains("/platform/")) "load_platform_videos" else "loadVideos"
+    }
+
+    private fun rewriteArchivebatePage(url: String, page: Int): String {
+        val cleanUrl = url.ifBlank { "$mainUrl/" }
+        if (page <= 1) return cleanUrl
+
+        val parts = cleanUrl.split("?", limit = 2)
+        val base = parts.firstOrNull().orEmpty().trimEnd('/')
+        val query = parts.getOrNull(1).orEmpty()
+        val params = linkedMapOf<String, String>()
+
+        query.split("&")
+            .filter { it.isNotBlank() }
+            .forEach { pair ->
+                val key = pair.substringBefore("=").trim()
+                val value = pair.substringAfter("=", "").trim()
+                if (key.isNotBlank() && key != "page") params[key] = value
+            }
+
+        params["page"] = page.toString()
+        val newQuery = params.entries.joinToString("&") { "${it.key}=${it.value}" }
+        return if (newQuery.isNotBlank()) "$base?$newQuery" else "$base?page=$page"
+    }
 
     private fun parseHtmlListing(doc: Document): List<SearchResponse> {
-        val candidates = doc.select("article, section.video_item, .post, .video_item")
-        return candidates.mapNotNull { item -> parseHtmlCard(item) }
+        val candidates = doc.select("section.video_item, article, .video_item, .post")
+        return candidates.mapNotNull { item -> parseHtmlCard(item) }.distinctBy { it.url }
     }
 
     private fun parseHtmlCard(item: Element): SearchResponse? {
-        val linkElement = item.selectFirst("h2.entry-title a, h3.entry-title a, a[rel=bookmark], a[href]") ?: return null
-        val link = linkElement.absUrl("href").ifBlank { linkElement.attr("href") }
-        if (link.isBlank() || link == mainUrl) return null
-        val title = linkElement.text().ifBlank {
-            item.selectFirst(".title, .entry-title, div.info.d-flex > div")?.text()
-        }?.ifBlank { "Unknown" } ?: "Unknown"
-        val poster = item.selectFirst("img[src], img[data-src], video[poster]")?.let { media ->
-            media.absUrl("data-src").ifBlank { media.absUrl("src") }.ifBlank { media.attr("poster") }
+        val linkElement = item.selectFirst("a[href*='/watch/'], h2.entry-title a, h3.entry-title a, a[rel=bookmark]") ?: return null
+        val link = linkElement.absUrl("href").ifBlank { normalizeUrl(linkElement.attr("href")) }
+        if (link.isBlank() || !link.startsWith("http")) return null
+
+        val profile = item.selectFirst("a[href*='/profile/']")
+        val rawTitle = listOfNotNull(
+            profile?.text(),
+            item.selectFirst(".title, .entry-title")?.text(),
+            item.select("div.info.d-flex > div").lastOrNull()?.text(),
+            linkElement.text(),
+        ).firstOrNull { it.isNotBlank() }
+        val title = rawTitle?.trim()?.ifBlank { null } ?: link.substringAfterLast("/").replace("-", " ").ifBlank { "Archivebate Video" }
+
+        val poster = item.selectFirst("video.video-splash-mov[poster], video[poster], img[data-src], img[src]")?.let { media ->
+            media.absUrl("poster")
+                .ifBlank { media.absUrl("data-src") }
+                .ifBlank { media.absUrl("src") }
+                .ifBlank { media.attr("poster") }
+                .ifBlank { media.attr("data-src") }
+                .ifBlank { media.attr("src") }
+                .ifBlank { null }
         }
         val duration = item.selectFirst(".duration, .video-duration, div.duration.text-white > span")?.text().orEmpty()
         if (duration.isNotBlank()) durationMap[link] = duration
@@ -258,16 +355,16 @@ class Archivebate : MainAPI() {
     }
 
     private suspend fun getVideoData(url: String): VideoInfo {
-        val doc = app.get(url, headers = requestHeaders()).document
-        val title = doc.selectFirst("meta[property=og:title], meta[name=twitter:title]")?.attr("content")
+        val doc = app.get(url, headers = requestHeaders(url)).document
+        val title = doc.selectFirst("meta[property='og:title'], meta[name='twitter:title']")?.attr("content")
             ?.substringBefore(" - ")
             ?.ifBlank { null }
             ?: doc.selectFirst("h1, .entry-title, title")?.text()?.substringBefore(" - ")?.ifBlank { null }
             ?: "Archivebate Video"
-        val info = doc.selectFirst("meta[name=description], meta[property=og:description]")?.attr("content")
+        val info = doc.selectFirst("meta[name='description'], meta[property='og:description']")?.attr("content")
             ?.ifBlank { null }
             ?: doc.selectFirst(".entry-content, .entry-summary, .info")?.text().orEmpty()
-        val poster = doc.selectFirst("meta[property=og:image], meta[name=twitter:image]")?.attr("content")
+        val poster = doc.selectFirst("meta[property='og:image'], meta[name='twitter:image']")?.attr("content")
             ?.ifBlank { null }
             ?: doc.selectFirst("div.player")?.attr("style")?.substringAfter("url(")?.substringBefore(")")?.trim('"', '\'', ' ')
             ?: doc.selectFirst("video[poster], img[src]")?.let { media -> media.absUrl("poster").ifBlank { media.absUrl("src") } }
@@ -336,9 +433,9 @@ class Archivebate : MainAPI() {
         candidates += extractScriptMedia(doc)
 
         if (candidates.isEmpty()) {
-            doc.selectFirst("iframe[src]")
+            doc.selectFirst("iframe.video-frame[src], iframe[src]")
                 ?.absUrl("src")
-                ?.ifBlank { doc.selectFirst("iframe[src]")?.attr("src").orEmpty() }
+                ?.ifBlank { doc.selectFirst("iframe.video-frame[src], iframe[src]")?.attr("src").orEmpty() }
                 ?.let { normalizeUrl(it) }
                 ?.takeIf { it.isNotBlank() }
                 ?.let { candidates += it }
@@ -359,7 +456,7 @@ class Archivebate : MainAPI() {
     }
 
     private fun extractPlayerIframes(doc: Document): List<String> {
-        return doc.select("iframe[src]").mapNotNull { iframe ->
+        return doc.select("iframe.video-frame[src], iframe[src]").mapNotNull { iframe ->
             val src = iframe.absUrl("src").ifBlank { iframe.attr("src") }
             normalizeUrl(src).takeIf { isPlayableIframe(it) }
         }
@@ -376,7 +473,7 @@ class Archivebate : MainAPI() {
                 .map { normalizeUrl(it.value) }
                 .toList()
 
-            candidates += Regex("""(?:file|src|url)\s*[:=]\s*["']([^"']+?\.(?:m3u8|mp4)[^"']*)["']""")
+            candidates += Regex("""(?:file|src|url)\s*[:=]\s*[\"']([^\"']+?\.(?:m3u8|mp4)[^\"']*)[\"']""")
                 .findAll(html)
                 .map { match -> normalizeUrl(match.groupValues.getOrNull(1).orEmpty()) }
                 .filter { isDirectMediaUrl(it) }
