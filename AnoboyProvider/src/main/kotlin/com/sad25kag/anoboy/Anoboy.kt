@@ -531,16 +531,19 @@ class Anoboy : MainAPI() {
     }
 
     private suspend fun extractBloggerDirectVideos(url: String, referer: String): List<String> {
-        val token = Regex("""[?&]token=([^&]+)""")
+        val token = Regex("""[?&]token=([^&#]+)""")
             .find(url)
             ?.groupValues
             ?.getOrNull(1)
             ?: return emptyList()
 
+        val bloggerOrigin = "https://www.blogger.com"
+        val bloggerReferer = "$bloggerOrigin/"
+
         val page = runCatching {
             app.get(
                 url,
-                referer = referer,
+                referer = bloggerReferer,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -577,10 +580,11 @@ class Anoboy : MainAPI() {
             app.post(
                 apiUrl,
                 data = mapOf("f.req" to payload),
-                referer = url,
+                referer = bloggerReferer,
                 cookies = cookies,
                 headers = mapOf(
-                    "Origin" to "https://www.blogger.com",
+                    "User-Agent" to USER_AGENT,
+                    "Origin" to bloggerOrigin,
                     "Accept" to "*/*",
                     "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
                     "X-Same-Domain" to "1"
@@ -589,6 +593,7 @@ class Anoboy : MainAPI() {
         }.getOrNull() ?: return emptyList()
 
         return extractGoogleVideoUrls(response)
+            .ifEmpty { extractGoogleVideoUrls(html) }
     }
 
     private fun extractGoogleVideoUrls(raw: String): List<String> {
