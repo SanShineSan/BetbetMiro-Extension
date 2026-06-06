@@ -89,12 +89,26 @@ class BioskopGo : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val targetUrl = pageUrl(request.data, page)
         val document = try {
-            app.get(pageUrl(request.data, page), headers = headers, referer = mainUrl).document
+            app.get(targetUrl, headers = headers, referer = mainUrl).document
         } catch (_: Throwable) {
-            return newHomePageResponse(request.name, emptyList(), hasNext = false)
+            null
         }
-        return newHomePageResponse(request.name, parseListing(document), hasNext = hasNextPage(document, page))
+
+        val directItems = try { document?.let { parseListing(it) }.orEmpty() } catch (_: Throwable) { emptyList() }
+        if (directItems.isNotEmpty() || page > 1) {
+            return newHomePageResponse(request.name, directItems, hasNext = document?.let { hasNextPage(it, page) } == true)
+        }
+
+        val homeDocument = if (targetUrl.trimEnd('/') == mainUrl.trimEnd('/')) {
+            document
+        } else {
+            try { app.get(mainUrl, headers = headers, referer = mainUrl).document } catch (_: Throwable) { null }
+        }
+
+        val sectionItems = try { homeDocument?.let { parseHomeSection(it, request.name) }.orEmpty() } catch (_: Throwable) { emptyList() }
+        return newHomePageResponse(request.name, sectionItems, hasNext = false)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
@@ -297,10 +311,38 @@ class BioskopGo : MainAPI() {
             element.toSearchResult()?.let { results[contentKey(it.url)] = it }
         }
         if (results.size < 6) {
-            document.select("article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], .result-item a[href], a[href]")
+            document.select("article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], .result-item a[href], .video-block a[href], .poster a[href], .thumbnail a[href]")
+                .forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
+        }
+        if (results.size < 6) {
+            document.select("a[href]")
                 .forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
         }
         return results.values.take(80)
+    }
+
+    private fun parseHomeSection(document: Document, sectionName: String): List<SearchResponse> {
+        val normalizedName = cleanText(sectionName)
+        val heading = document.select("h1, h2, h3, h4, h5, .section-title, .title-section, .widget-title, .heading, .module-title")
+            .firstOrNull { cleanText(it.text()).equals(normalizedName, true) }
+            ?: return emptyList()
+        val results = linkedMapOf<String, SearchResponse>()
+
+        fun collectFrom(element: Element?) {
+            element?.select("a[href]")
+                ?.forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
+        }
+
+        collectFrom(heading.parent())
+        var next = heading.parent()?.nextElementSibling() ?: heading.nextElementSibling()
+        var guard = 0
+        while (next != null && guard < 24 && results.size < 30) {
+            guard++
+            if (next.selectFirst("h1, h2, h3, h4, h5, .section-title, .title-section, .widget-title, .heading, .module-title") != null && results.isNotEmpty()) break
+            collectFrom(next)
+            next = next.nextElementSibling()
+        }
+        return results.values.take(30)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
@@ -311,7 +353,8 @@ class BioskopGo : MainAPI() {
         val image = container.selectFirst("img[data-src], img[data-original], img[data-lazy-src], img[data-lazy], img[data-wpfc-original-src], img[src], img[srcset]")
             ?: anchor.selectFirst("img")
         val title = listOf(
-            container.selectFirst("h1, h2, h3, .entry-title, .title, .name")?.text(),
+            container.selectFirst("h1, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
+            anchor.selectFirst("h1, h2, h3, h4, .entry-title, .title, .name, .judul, .mli-title, .post-title, .movie-title")?.text(),
             anchor.attr("aria-label"),
             anchor.attr("title"),
             image?.attr("alt"),
@@ -342,7 +385,7 @@ class BioskopGo : MainAPI() {
         if (`is`("a[href]")) {
             return takeIf { fixUrl(attr("href"), mainUrl)?.let { href -> isContentUrl(href) } == true }
         }
-        return select("h1 a[href], h2 a[href], h3 a[href], .entry-title a[href], .title a[href], .name a[href], a[href][title], a[href]")
+        return select("h1 a[href], h2 a[href], h3 a[href], h4 a[href], .entry-title a[href], .title a[href], .name a[href], .judul a[href], .mli-title a[href], .post-title a[href], .movie-title a[href], a[href][title], a[href]")
             .firstOrNull { anchor ->
                 val href = fixUrl(anchor.attr("href"), mainUrl) ?: return@firstOrNull false
                 isContentUrl(href)
@@ -635,7 +678,7 @@ class BioskopGo : MainAPI() {
             if ((hasImage || links > 0) && links in 1..5) return node
             current = node.parent()
         }
-        return closest("article, .post, .item, .movie, .film, .card, .ml-item, .result-item, .owl-item, .swiper-slide, li, .col, .box") ?: this
+        return closest("article, .post, .item, .movie, .film, .card, .ml-item, .result-item, .video-block, .poster, .thumbnail, .owl-item, .swiper-slide, li, .col, .box") ?: this
     }
 
     private fun Element.imageUrl(baseUrl: String): String? {
@@ -744,6 +787,6 @@ class BioskopGo : MainAPI() {
     private val sf21Iv = "1234567890oiuytr".toByteArray()
 
     private val cardSelector = listOf(
-        "article", ".post", ".item", ".movie", ".film", ".ml-item", ".result-item", ".owl-item", ".swiper-slide", ".poster", ".thumbnail", ".box", ".col"
+        "article", ".post", ".item", ".movie", ".film", ".ml-item", ".result-item", ".video-block", ".poster", ".thumbnail", ".owl-item", ".swiper-slide", ".box", ".col"
     ).joinToString(",")
 }
