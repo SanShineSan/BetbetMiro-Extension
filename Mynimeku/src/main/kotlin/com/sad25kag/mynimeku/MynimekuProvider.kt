@@ -381,7 +381,7 @@ class MynimekuProvider : MainAPI() {
             lower.contains("alt=media")
     }
 
-    private fun emitGoogleDrive(
+    private suspend fun emitGoogleDrive(
         link: String,
         qualityHint: String,
         callback: (ExtractorLink) -> Unit
