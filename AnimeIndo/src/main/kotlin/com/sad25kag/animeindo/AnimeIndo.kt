@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -18,6 +19,8 @@ class AnimeIndo : MainAPI() {
     override var lang = "id"
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA, TvType.Movie)
+
+    private val movieMarker = "animeindo-movie"
 
     private data class AnimeIndoItem(
         val title: String,
@@ -36,7 +39,6 @@ class AnimeIndo : MainAPI() {
         "$mainUrl/genres/comedy/" to "Comedy",
         "$mainUrl/genres/demons/" to "Demons",
         "$mainUrl/genres/donghua/" to "Donghua",
-        "$mainUrl/genres/echhi/" to "Echhi",
         "$mainUrl/genres/drama/" to "Drama",
         "$mainUrl/genres/fantasy/" to "Fantasy",
         "$mainUrl/genres/game/" to "Game",
@@ -54,9 +56,7 @@ class AnimeIndo : MainAPI() {
         "$mainUrl/genres/sci-fi/" to "Sci-Fi",
         "$mainUrl/genres/seinen/" to "Seinen",
         "$mainUrl/genres/slice-of-life/" to "Slice of Life",
-        "$mainUrl/genres/sports/" to "Sports",
         "$mainUrl/genres/super-power/" to "Super Power",
-        "$mainUrl/genres/supernatural/" to "Supernatural",
         "$mainUrl/genres/thriller/" to "Thriller",
         "$mainUrl/genres/vampire/" to "Vampire"
     )
@@ -129,6 +129,18 @@ class AnimeIndo : MainAPI() {
         return value.contains("movie") || value.contains("film")
     }
 
+    private fun isMovieDetail(document: Document, title: String, url: String): Boolean {
+        if (isMoviePost(title, url)) return true
+
+        val text = document.select("div.detail, .spe, .info, .entry-content, main, article")
+            .text()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return Regex("(?i)\\b(type|tipe|jenis)\\s*:?\\s*movie\\b").containsMatchIn(text) ||
+            Regex("(?i)\\bmovie\\b\\s*(?:\\d+\\s*(?:hr|min)|\\d{4})").containsMatchIn(text) ||
+            Regex("(?i)\\b(duration|durasi)\\s*:?\\s*\\d+\\s*(?:hr|min|jam|menit)").containsMatchIn(text)
+    }
 
     private fun isBlockedTitle(title: String): Boolean {
         val normalized = title.trim().lowercase()
@@ -173,7 +185,7 @@ class AnimeIndo : MainAPI() {
         if (href.isBlank()) return null
         if (requireContentUrl && !isValidContentUrl(href)) return null
 
-        val fixedHref = fixUrl(href)
+        val fixedHref = fixUrl(href).substringBefore("#")
         val rawTitle = link.attr("title").ifBlank {
             card.selectFirst("td.videsc > a[href], .list-anime p, p, h2, h3, .title, .entry-title")?.text()?.trim().orEmpty()
         }.ifBlank {
@@ -189,10 +201,15 @@ class AnimeIndo : MainAPI() {
 
         val episodeNumber = parseEpisodeNumber(title).takeIf { isEpisodeUrl(fixedHref) }
         val isMoviePost = isMoviePost(title, fixedHref)
-        val resultUrl = if (isEpisodeUrl(fixedHref) && !preferMovie && !isMoviePost) episodeToAnimeUrl(fixedHref) else fixedHref
+        val isMovieItem = preferMovie || fixedHref.contains("/movie/", true) || isMoviePost
+        val resultUrl = when {
+            isMovieItem -> "$fixedHref#$movieMarker"
+            isEpisodeUrl(fixedHref) -> episodeToAnimeUrl(fixedHref)
+            else -> fixedHref
+        }
         val poster = (card.imageAttr() ?: link.imageAttr())?.let { fixUrlNull(it) }
         val tvType = when {
-            preferMovie || fixedHref.contains("/movie/", true) || isMoviePost -> TvType.AnimeMovie
+            isMovieItem -> TvType.AnimeMovie
             title.contains("ova", true) || title.contains("special", true) -> TvType.OVA
             else -> TvType.Anime
         }
@@ -217,7 +234,7 @@ class AnimeIndo : MainAPI() {
     private suspend fun resolveMissingPoster(item: AnimeIndoItem): AnimeIndoItem {
         if (!item.poster.isNullOrBlank()) return item
 
-        val candidates = listOf(item.sourceUrl, item.url).distinct()
+        val candidates = listOf(item.sourceUrl, item.url.substringBefore("#")).distinct()
         candidates.forEach { pageUrl ->
             try {
                 val page = app.get(pageUrl).document
@@ -243,7 +260,7 @@ class AnimeIndo : MainAPI() {
     }
 
     private fun isEpisodeUrl(url: String): Boolean {
-        val slug = url.trimEnd('/').substringAfterLast('/')
+        val slug = url.substringBefore("#").trimEnd('/').substringAfterLast('/')
         return slug.contains(Regex("-episode-\\d+", RegexOption.IGNORE_CASE))
     }
 
@@ -257,7 +274,7 @@ class AnimeIndo : MainAPI() {
     }
 
     private fun episodeToAnimeUrl(url: String): String {
-        val slug = url.trimEnd('/').substringAfterLast("/")
+        val slug = url.substringBefore("#").trimEnd('/').substringAfterLast("/")
         val animeSlug = Regex("-episode-\\d+(?:\\.\\d+)?.*$", RegexOption.IGNORE_CASE).replace(slug, "")
         return "$mainUrl/anime/$animeSlug/"
     }
@@ -272,7 +289,7 @@ class AnimeIndo : MainAPI() {
                 ".latest a[href], table.otable tr, .item, .ml-item, main a[href]"
         ).forEach { element ->
             val item = element.toAnimeIndoItem(requireContentUrl = true) ?: return@forEach
-            if (item.url.trimEnd('/') != mainUrl && results.none { it.url == item.url }) {
+            if (item.url.substringBefore("#").trimEnd('/') != mainUrl && results.none { it.url == item.url }) {
                 results.add(item)
             }
         }
@@ -281,22 +298,24 @@ class AnimeIndo : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val initialDocument = app.get(url).document
-        val episodePage = isEpisodeUrl(url)
+        val cleanUrl = url.substringBefore("#")
+        val forcedMovie = url.substringAfter("#", "").equals(movieMarker, ignoreCase = true)
+        val initialDocument = app.get(cleanUrl).document
+        val episodePage = isEpisodeUrl(cleanUrl)
         val initialTitle = normalizeTitle(initialDocument.selectFirst("h1.title, h1.entry-title, h1, h2")?.text().orEmpty())
-        val moviePost = episodePage && isMoviePost(initialTitle, url)
-        val animeUrl = if (url.contains("/anime/", true) || moviePost) {
-            url
+        val moviePost = forcedMovie || (episodePage && isMoviePost(initialTitle, cleanUrl))
+        val animeUrl = if (cleanUrl.contains("/anime/", true) || moviePost) {
+            cleanUrl
         } else if (episodePage) {
             initialDocument.selectFirst("div.navi a[href*=/anime/], a[href*=/anime/]")
                 ?.attr("href")
                 ?.let { fixUrl(it) }
-                ?: episodeToAnimeUrl(url)
+                ?: episodeToAnimeUrl(cleanUrl)
         } else {
-            url
+            cleanUrl
         }
 
-        val document = if (animeUrl == url) initialDocument else app.get(animeUrl).document
+        val document = if (animeUrl == cleanUrl) initialDocument else app.get(animeUrl).document
 
         val fallbackTitle = if (episodePage) {
             initialTitle
@@ -343,8 +362,9 @@ class AnimeIndo : MainAPI() {
             .distinctBy { it.data }
             .sortedBy { it.episode ?: Int.MAX_VALUE }
 
-        if (moviePost || (episodes.isEmpty() && !url.contains("/anime/", true) && !episodePage)) {
-            return newMovieLoadResponse(title, url, TvType.AnimeMovie, url) {
+        val movieDetail = forcedMovie || moviePost || isMovieDetail(document, title, animeUrl)
+        if (movieDetail || (episodes.isEmpty() && !cleanUrl.contains("/anime/", true) && !episodePage)) {
+            return newMovieLoadResponse(title, cleanUrl, TvType.AnimeMovie, cleanUrl) {
                 posterUrl = poster
                 plot = description
                 this.tags = mappedGenres
@@ -465,7 +485,8 @@ class AnimeIndo : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        val cleanData = data.substringBefore("#")
+        val document = app.get(cleanData).document
         val serverUrls = mutableListOf<String>()
 
         document.select("#tontonin[src], iframe[src], iframe[data-src], source[src], video[src]").forEach { element ->
@@ -518,7 +539,7 @@ class AnimeIndo : MainAPI() {
         distinctServers.forEach { fullUrl ->
             if (fullUrl.contains("yup.php", true)) {
                 try {
-                    val playerDoc = app.get(fullUrl, referer = data).document
+                    val playerDoc = app.get(fullUrl, referer = cleanData).document
                     val iframe = playerDoc.selectFirst("#mediaplayer[src], iframe[src]")?.attr("src")
                     val iframeUrl = cleanPlayerUrl(iframe)
                     if (!iframeUrl.isNullOrBlank()) {
@@ -531,7 +552,7 @@ class AnimeIndo : MainAPI() {
                 }
             } else if (fullUrl.contains("btube3.php", true) || fullUrl.contains("b-tube", true)) {
                 try {
-                    val playerDoc = app.get(fullUrl, referer = data).document
+                    val playerDoc = app.get(fullUrl, referer = cleanData).document
                     val videoSrc = playerDoc.selectFirst("source[src], video[src]")?.attr("src")
                     if (!videoSrc.isNullOrBlank()) {
                         callback(newExtractorLink("AnimeIndo", "B-TUBE", videoSrc) {
@@ -544,7 +565,7 @@ class AnimeIndo : MainAPI() {
                 }
             } else if (fullUrl.contains("xtwap.top", true)) {
                 try {
-                    val playerHtml = app.get(fullUrl, referer = data).text
+                    val playerHtml = app.get(fullUrl, referer = cleanData).text
                     val filePath = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.getOrNull(1)
                     if (!filePath.isNullOrBlank()) {
                         val videoUrl = if (filePath.startsWith("/")) "https://xtwap.top$filePath" else filePath
@@ -559,12 +580,12 @@ class AnimeIndo : MainAPI() {
             } else if (fullUrl.endsWith(".mp4", true)) {
                 callback(newExtractorLink("AnimeIndo", "MP4", fullUrl) {
                     this.quality = Qualities.Unknown.value
-                    this.referer = data
+                    this.referer = cleanData
                 })
                 found = true
             } else {
                 try {
-                    loadExtractor(fullUrl, data, subtitleCallback) {
+                    loadExtractor(fullUrl, cleanData, subtitleCallback) {
                         found = true
                         callback(it)
                     }
