@@ -30,13 +30,28 @@ class DonghuaFilm : MainAPI() {
         "anime/?order=update&status=&type=" to "New Donghua",
         "anime/?order=update&status=ongoing&type=" to "Donghua Ongoing",
         "anime/?order=update&status=completed&type=" to "Completed",
+        "anime/?order=popular&status=&type=" to "Popular",
         "anime/?order=update&status=&type=movie" to "Movie",
         "genres/action/" to "Action",
         "genres/adventure/" to "Adventure",
+        "genres/comedian/" to "Comedian",
+        "genres/comedy/" to "Comedy",
+        "genres/demon/" to "Demon",
+        "genres/donghua/" to "Donghua",
+        "genres/drama/" to "Drama",
+        "genres/fanstasy/" to "Fanstasy",
         "genres/fantasy/" to "Fantasy",
+        "genres/historical/" to "Historical",
+        "genres/isekai/" to "Isekai",
         "genres/martial-arts/" to "Martial Arts",
+        "genres/movie/" to "Movie Genre",
+        "genres/mystery/" to "Mystery",
+        "genres/reincarnation/" to "Reincarnation",
         "genres/romance/" to "Romance",
+        "genres/school/" to "School",
         "genres/sci-fi/" to "Sci-Fi",
+        "genres/super-power/" to "Super Power",
+        "genres/supranatural/" to "Supranatural",
         "genres/xuanhuan/" to "Xuanhuan",
         "az-list/" to "AZ List",
     )
@@ -87,26 +102,26 @@ class DonghuaFilm : MainAPI() {
             ?.takeIf { it.length > 20 }
             ?: document.selectFirst("meta[name=description]")?.attr("content")?.cleanText()
 
-        val tags = document.select("a[href*='/genres/'], a[rel=tag]")
+        val detailRoot = document.detailRoot()
+        val tags = detailRoot.select("a[href*='/genres/'], a[rel=tag]")
             .map { it.text().cleanText() }
             .filter { it.isNotBlank() }
             .distinct()
 
-        val infoText = document.select(".spe, .info-content, .infotable, .bigcontent").text().cleanText()
+        val infoText = listOf(
+            detailRoot.text().cleanText(),
+            document.selectFirst(".spe, .info-content, .infotable, .bigcontent")?.text()?.cleanText().orEmpty(),
+        ).joinToString(" ").cleanText()
+        val episodes = parseEpisodes(document, url).distinctBy { it.data.normalizedKey() }
         val year = Regex("""(?i)(?:Released|Rilis|Aired)\s*:?\s*([12][0-9]{3})""").find(infoText)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val status = detectStatus(infoText)
-        val type = when {
-            infoText.contains("Movie", true) || tags.any { it.equals("Movie", true) } -> TvType.AnimeMovie
-            infoText.contains("OVA", true) || tags.any { it.equals("OVA", true) } -> TvType.OVA
-            else -> TvType.Anime
-        }
+        val type = detectDetailType(title, infoText, tags, episodes)
 
-        val episodes = parseEpisodes(document).distinctBy { it.data.normalizedKey() }
         val recommendations = parseCards(document)
             .filterNot { it.url.normalizedKey() == url.normalizedKey() }
             .take(16)
 
-        return if (type == TvType.Anime && episodes.size > 1) {
+        return if (type == TvType.Anime && episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes.reversed()) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -235,10 +250,16 @@ class DonghuaFilm : MainAPI() {
         }
     }
 
-    private fun parseEpisodes(document: Document): List<Episode> {
-        val anchors = document.select(
-            ".eplister li a[href], .episodelist li a[href], .bixbox.bxcl li a[href], .episodelist a[href*='episode'], a[href*='episode']"
+    private fun parseEpisodes(document: Document, detailUrl: String): List<Episode> {
+        val scopedAnchors = document.select(
+            ".eplister li a[href], .episodelist li a[href], .bixbox.bxcl li a[href], .epcheck li a[href], .episode-list li a[href], .les-content li a[href]"
         )
+        val anchors = scopedAnchors.takeIf { it.isNotEmpty() }
+            ?: document.select("a[href*='episode']").filter { anchor ->
+                val href = anchor.attr("href").toAbsoluteUrl(mainUrl).orEmpty()
+                href.belongsToDetailSlug(detailUrl)
+            }
+
         return anchors.mapNotNull { anchor ->
             val href = anchor.attr("href").toAbsoluteUrl(mainUrl) ?: return@mapNotNull null
             if (!href.contains("episode", true)) return@mapNotNull null
@@ -349,6 +370,40 @@ class DonghuaFilm : MainAPI() {
             ?: attr("src").takeIf { it.isNotBlank() }
             ?: attr("poster").takeIf { it.isNotBlank() }
         return raw?.toAbsoluteUrl(base)
+    }
+
+    private fun Document.detailRoot(): Element {
+        return selectFirst(".bigcontent, .infox, .info-content, .infotable, .spe, article") ?: body()
+    }
+
+    private fun detectDetailType(title: String, infoText: String, tags: List<String>, episodes: List<Episode>): TvType {
+        if (episodes.size > 1) return TvType.Anime
+        val isOva = Regex("""(?i)\b(Type|Tipe|Jenis)\s*:?\s*OVA\b""").containsMatchIn(infoText) || tags.any { it.equals("OVA", true) }
+        if (isOva) return TvType.OVA
+        val explicitMovie = Regex("""(?i)\b(Type|Tipe|Jenis)\s*:?\s*Movie\b""").containsMatchIn(infoText)
+            || title.contains("Movie", true)
+            || (episodes.isEmpty() && tags.any { it.equals("Movie", true) })
+        return if (explicitMovie) TvType.AnimeMovie else TvType.Anime
+    }
+
+    private fun String.belongsToDetailSlug(detailUrl: String): Boolean {
+        val hrefSlug = seriesSlugFromUrl(this)
+        val detailSlug = seriesSlugFromUrl(detailUrl)
+        if (hrefSlug.isBlank() || detailSlug.isBlank()) return true
+        return hrefSlug.contains(detailSlug) || detailSlug.contains(hrefSlug.substringBeforeLast("-episode"))
+    }
+
+    private fun seriesSlugFromUrl(url: String): String {
+        val path = runCatching { URI(url).path }.getOrDefault(url)
+            .trim('/')
+            .lowercase(Locale.ROOT)
+        val slug = path
+            .substringAfter("anime/", path)
+            .substringBefore("/")
+        return slug
+            .substringBeforeLast("-episode", slug)
+            .replace(Regex("[^a-z0-9]+"), "-")
+            .trim('-')
     }
 
     private fun cleanTitle(raw: String?): String? {
