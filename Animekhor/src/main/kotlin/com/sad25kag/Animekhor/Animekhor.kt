@@ -15,28 +15,40 @@ open class Animekhor : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.Anime)
 
     override val mainPage = mainPageOf(
-        "anime/?status=ongoing&type=&order=update" to "Recently Updated",
-        "anime/?type=comic&order=update" to "Comic Recently Updated",
-        "anime/?type=comic" to "Comic Series",
+        "" to "Latest Release",
+        "donghua-series/" to "Donghua Series",
+        "comic-series/" to "Comic Series",
+        "anime/?order=&status=&type=" to "Anime List",
+        "anime/?status=completed&type=&order=update" to "Completed",
         "anime/?status=&type=ona&sub=&order=update" to "Donghua Recently Updated",
-        "anime/?status=&type=ona" to "Donghua Series",
-        "anime/?status=&sub=&order=latest" to "Latest Added",
-        "anime/?status=&type=&order=popular" to "Popular",
-        "anime/?status=completed&order=update" to "Completed"
+        "anime/?type=comic&order=update" to "Comic Recently Updated"
     )
 
     private fun buildPageUrl(data: String, page: Int): String {
-        val separator = if (data.contains("?")) "&" else "?"
-        return "$mainUrl/$data${separator}page=$page"
+        val clean = data.trim()
+        if (clean.isBlank()) {
+            return if (page <= 1) mainUrl else "$mainUrl/page/$page/"
+        }
+
+        val normalized = clean.trimStart('/')
+        return when {
+            normalized.contains("?") -> {
+                val separator = if (normalized.contains("?") && !normalized.endsWith("?") && !normalized.endsWith("&")) "&" else ""
+                "$mainUrl/$normalized${separator}page=$page"
+            }
+            page <= 1 -> "$mainUrl/${normalized.trimEnd('/')}/"
+            else -> "$mainUrl/${normalized.trimEnd('/')}/page/$page/"
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(buildPageUrl(request.data, page)).document
-        val home = document.select("div.listupd > article, article.bs, div.bs")
+        val home = document.select(CARD_SELECTOR)
             .mapNotNull { it.toSearchResult() }
             .distinctBy { it.url }
 
-        val hasNext = document.select("li.next a, a.next, a[rel=next]").isNotEmpty()
+        val hasNext = document.select("li.next a, a.next, a[rel=next], .pagination a.next, .hpage a.r")
+            .isNotEmpty()
 
         return newHomePageResponse(
             list = HomePageList(request.name, home, isHorizontalImages = false),
@@ -45,20 +57,28 @@ open class Animekhor : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val link = selectFirst("div.bsx > a[href], a[href]") ?: return null
+        val link = selectFirst("div.bsx > a[href], .bsx > a[href], a[href*='/anime/'], a[href*='episode'], a[href*='subtitles-english'], a[href*='subtitles-indonesian'], a[href]")
+            ?: return null
         val href = fixUrl(link.attr("href").takeIf { it.isNotBlank() } ?: return null)
         if (!isContentUrl(href)) return null
 
         val title = link.attr("title").ifBlank {
-            selectFirst("h2, h3, .tt, .entry-title")?.text()?.trim().orEmpty()
+            selectFirst("h2, h3, .tt, .entry-title, .post-title, .title, .ep-title, .series-title")?.text()?.trim().orEmpty()
         }.ifBlank {
             selectFirst("img")?.attr("alt")?.trim().orEmpty()
-        }.ifBlank { text().trim() }.replace(Regex("\\s+"), " ").trim()
+        }.ifBlank {
+            link.text().trim()
+        }.ifBlank {
+            text().trim()
+        }.replace(Regex("\\s+"), " ").trim()
 
         if (title.length < 2) return null
 
-        val posterUrl = selectFirst("div.bsx > a img, img")?.getsrcAttribute()?.let { fixUrlNull(it) }
-        val tvType = if (href.contains("/anime/", true)) TvType.Anime else TvType.Movie
+        val posterUrl = selectFirst("div.bsx > a img, .bsx img, .thumb img, .poster img, img")
+            ?.getsrcAttribute()
+            ?.let { fixUrlNull(it) }
+
+        val tvType = if (isSeriesUrl(href)) TvType.Anime else TvType.Movie
 
         return if (tvType == TvType.Anime) {
             newAnimeSearchResponse(title, href, TvType.Anime) { this.posterUrl = posterUrl }
@@ -74,12 +94,21 @@ open class Animekhor : MainAPI() {
             lower.contains("/genre/") || lower.contains("/genres/") ||
             lower.contains("/tag/") || lower.contains("/schedule") ||
             lower.contains("/bookmarks") || lower.contains("/history") ||
-            lower.contains("/page/") || lower.contains("filter-search") ||
-            lower.endsWith("/anime/") || lower.endsWith(mainUrl)
+            lower.contains("filter-search") || lower.endsWith("/anime/") ||
+            lower.endsWith("/donghua-series/") || lower.endsWith("/comic-series/") ||
+            lower.endsWith(mainUrl) || lower == "$mainUrl/"
         ) return false
 
-        return lower.contains("/anime/") ||
-            lower.contains("episode") ||
+        return isSeriesUrl(lower) || isEpisodeUrl(lower)
+    }
+
+    private fun isSeriesUrl(url: String): Boolean {
+        return url.lowercase().contains("/anime/")
+    }
+
+    private fun isEpisodeUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("episode") ||
             lower.contains("movie-subtitles") ||
             lower.contains("subtitles-english") ||
             lower.contains("subtitles-indonesian")
@@ -96,11 +125,12 @@ open class Animekhor : MainAPI() {
 
         val searchResponse = mutableListOf<SearchResponse>()
 
-        suspend fun collectSearchPage(url: String): Boolean {
+        suspend fun collectSearchPage(url: String, strictTitleFilter: Boolean = true): Boolean {
             val document = runCatching { app.get(url).document }.getOrNull() ?: return false
-            val results = document.select("div.listupd > article, article.bs, div.bs")
+            val results = document.select(CARD_SELECTOR)
                 .mapNotNull { it.toSearchResult() }
                 .filter { result ->
+                    if (!strictTitleFilter) return@filter true
                     val name = result.name.lowercase()
                     queryParts.all { name.contains(it) }
                 }
@@ -112,21 +142,17 @@ open class Animekhor : MainAPI() {
             return results.isNotEmpty()
         }
 
-        // Evidence-based source search path: AnimeKhor's Filter Search / Anime Lists page.
-        // The page exposes content cards and pagination, so it is safer than relying only on
-        // WordPress ?s= when that endpoint is intermittently unavailable.
-        for (page in 1..3) {
-            val hasResults = collectSearchPage("$mainUrl/anime/?order=&status=&type=&page=$page")
-            if (!hasResults && page > 1) break
+        collectSearchPage("$mainUrl/?s=$encodedQuery", strictTitleFilter = false)
+        for (page in 2..3) {
+            val hasResults = collectSearchPage("$mainUrl/page/$page/?s=$encodedQuery", strictTitleFilter = false)
+            if (!hasResults) break
         }
 
         if (searchResponse.isNotEmpty()) return searchResponse.distinctBy { it.url }
 
-        // Last-resort WordPress search fallback. It is kept guarded and query-filtered.
-        collectSearchPage("$mainUrl/?s=$encodedQuery")
-        for (page in 2..3) {
-            val hasResults = collectSearchPage("$mainUrl/page/$page/?s=$encodedQuery")
-            if (!hasResults) break
+        for (page in 1..5) {
+            val hasResults = collectSearchPage("$mainUrl/anime/?order=&status=&type=&page=$page")
+            if (!hasResults && page > 1) break
         }
 
         return searchResponse.distinctBy { it.url }
@@ -139,25 +165,25 @@ open class Animekhor : MainAPI() {
             ?: throw ErrorLoadingException("Judul tidak ditemukan")
 
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }
-            ?: document.selectFirst(".thumb img, .poster img, .entry-content img")?.getsrcAttribute()
+            ?: document.selectFirst(".thumb img, .poster img, .entry-content img, .postbody img")?.getsrcAttribute()
 
-        val description = document.selectFirst("div.entry-content, .entry-content, .contentdeks")?.text()?.trim()
-        val type = document.selectFirst(".spe, .info-content")?.text().orEmpty()
+        val description = document.selectFirst("div.entry-content, .entry-content, .contentdeks, .entry-content-single")?.text()?.trim()
+        val type = document.selectFirst(".spe, .info-content, .infox, .mindesc")?.text().orEmpty()
 
         val episodes = document.select(
-            "div.eplister ul li a[href], div.episodelist ul li a[href], div.bixbox.bxcl ul li a[href], ul li a[href*=episode]"
+            "div.eplister ul li a[href], div.episodelist ul li a[href], div.bixbox.bxcl ul li a[href], .eplister a[href], .episodelist a[href], .episode-list a[href], .episodelist a[href*='episode'], ul li a[href*='episode'], a[href*='subtitles-english'], a[href*='subtitles-indonesian']"
         ).mapNotNull { anchor ->
             val href = fixUrl(anchor.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null)
-            if (!isContentUrl(href)) return@mapNotNull null
+            if (!isEpisodeUrl(href) || !isContentUrl(href)) return@mapNotNull null
             val raw = anchor.text().trim().ifBlank { href.substringAfterLast("/").replace("-", " ") }
             newEpisode(href) {
                 this.name = raw
                 this.episode = parseEpisodeNumber(raw, href)
-                this.posterUrl = poster
+                this.posterUrl = fixUrlNull(poster.orEmpty())
             }
         }.distinctBy { it.data }.reversed()
 
-        return if (episodes.isNotEmpty() && !type.contains("Movie", true)) {
+        return if (episodes.isNotEmpty() && !type.contains("Movie", true) && isSeriesUrl(url)) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = fixUrlNull(poster.orEmpty())
                 this.plot = description
@@ -199,14 +225,35 @@ open class Animekhor : MainAPI() {
             decodedDocument.select("iframe[src]").forEach { iframe ->
                 addCandidate(iframe.attr("src"))
             }
+
+            Regex("""src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .findAll(decoded)
+                .mapNotNull { it.groupValues.getOrNull(1) }
+                .forEach(::addCandidate)
         }
 
-        document.select("#pembed iframe[src], .player-embed iframe[src], .video-content iframe[src]").forEach { iframe ->
+        document.select("#pembed iframe[src], .player-embed iframe[src], .video-content iframe[src], .player-area iframe[src], .embed-responsive iframe[src], iframe[src]").forEach { iframe ->
             addCandidate(iframe.attr("src"))
         }
 
-        document.select(".mobius select.mirror option[value], select.mirror option[value]").forEach { option ->
+        document.select(".mobius select.mirror option[value], select.mirror option[value], option[value]").forEach { option ->
             addDecodedMirror(option.attr("value"))
+        }
+
+        document.select("div.server-item a[data-hash], .server-item a[data-hash], a[data-hash]").forEach { server ->
+            addDecodedMirror(server.attr("data-hash"))
+        }
+
+        document.select("script").forEach { script ->
+            val dataScript = script.data().ifBlank { script.html() }
+            Regex("""(?i)<iframe[^>]+src=["']([^"']+)["']""")
+                .findAll(dataScript)
+                .mapNotNull { it.groupValues.getOrNull(1) }
+                .forEach(::addCandidate)
+            Regex("""(?i)(?:file|src)\s*[:=]\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']""")
+                .findAll(dataScript)
+                .mapNotNull { it.groupValues.getOrNull(1) }
+                .forEach(::addCandidate)
         }
 
         var found = false
@@ -268,8 +315,15 @@ open class Animekhor : MainAPI() {
     private fun Element.getsrcAttribute(): String {
         val src = attr("src")
         val dataSrc = attr("data-src")
+        val dataLazySrc = attr("data-lazy-src")
         return src.takeIf { it.startsWith("http") }
             ?: dataSrc.takeIf { it.startsWith("http") }
+            ?: dataLazySrc.takeIf { it.startsWith("http") }
             ?: ""
+    }
+
+    companion object {
+        private const val CARD_SELECTOR =
+            "div.listupd > article, article.bs, div.bs, div.bsx, .listupd .bsx, .listupd article, .postbody article, .post, .hentry"
     }
 }

@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 16
+version = 17
 
 cloudstream {
     description = "Anime and Movies includes (Donghuaword)"
