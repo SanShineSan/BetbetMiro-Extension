@@ -44,15 +44,6 @@ class VidHidePro5: VidHidePro() {
     override val requiresReferer = true
 }
 
-class PlayerDonghuaworld: Rumble() {
-    override var mainUrl = "https://player.donghuaworld.in"
-    override val requiresReferer = true
-}
-
-class Donghuaplanet: Rumble() {
-    override var mainUrl = "https://player.donghuaplanet.com"
-    override val requiresReferer = true
-}
 
 open class Rumble : ExtractorApi() {
     override var name = "Rumble"

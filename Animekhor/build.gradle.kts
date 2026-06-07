@@ -1,8 +1,8 @@
 // use an integer for version numbers
-version = 18
+version = 19
 
 cloudstream {
-    description = "Anime and Movies includes (Donghuaword)"
+    description = "Anime and Movies"
     language    = "id"
     authors = listOf("BetbetMiro")
     status = 1

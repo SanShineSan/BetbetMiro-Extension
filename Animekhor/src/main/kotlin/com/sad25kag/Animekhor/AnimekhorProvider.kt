@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.extractors.Mp4Upload
 class AnimenosubProvider: BasePlugin() {
     override fun load() {
         registerMainAPI(Animekhor())
-        registerMainAPI(Donghuaword())
         registerExtractorAPI(embedwish())
         registerExtractorAPI(Filelions())
         registerExtractorAPI(VidHidePro5())
@@ -19,9 +18,7 @@ class AnimenosubProvider: BasePlugin() {
         registerExtractorAPI(Dailymotion())
         registerExtractorAPI(Rumble())
         registerExtractorAPI(Mp4Upload())
-        registerExtractorAPI(PlayerDonghuaworld())
         registerExtractorAPI(P2pstream())
         registerExtractorAPI(AnimekhorUpns())
-        registerExtractorAPI(Donghuaplanet())
     }
 }
