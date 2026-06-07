@@ -8,6 +8,7 @@ import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Base64
 import java.util.Locale
 
 class DonghuaID : MainAPI() {
@@ -28,28 +29,28 @@ class DonghuaID : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Latest Release",
-        "$mainUrl/anime/?status=&type=&order=update&page={page}" to "Donghua Terbaru",
-        "$mainUrl/anime/?status=ongoing&type=&order=update&page={page}" to "On-Going Donghua",
-        "$mainUrl/anime/?status=completed&type=&order=update&page={page}" to "Completed",
-        "$mainUrl/anime/?status=&type=movie&order=update&page={page}" to "Movie",
-        "$mainUrl/anime/?status=&type=ona&order=update&page={page}" to "ONA",
-        "$mainUrl/genres/action/page/{page}/" to "Action",
-        "$mainUrl/genres/adventure/page/{page}/" to "Adventure",
-        "$mainUrl/genres/fantasy/page/{page}/" to "Fantasy",
-        "$mainUrl/genres/historical/page/{page}/" to "Historical",
-        "$mainUrl/genres/martial-arts/page/{page}/" to "Martial Arts",
-        "$mainUrl/genres/romance/page/{page}/" to "Romance",
-        "$mainUrl/genres/sci-fi/page/{page}/" to "Sci-Fi",
-        "$mainUrl/genres/wuxia/page/{page}/" to "Wuxia",
+        "$mainUrl/anime/?status=&type=&sub=&order=&page={page}" to "Donghua Terbaru",
+        "$mainUrl/anime/?status=ongoing&type=&sub=&order=&page={page}" to "On-Going Donghua",
+        "$mainUrl/anime/?status=completed&type=&sub=&order=&page={page}" to "Completed",
+        "$mainUrl/anime/?status=&type=movie&sub=&order=&page={page}" to "Movie",
+        "$mainUrl/anime/?status=&type=ona&sub=&order=&page={page}" to "ONA",
+        "$mainUrl/anime/?genre%5B%5D=action&status=&type=&sub=&order=&page={page}" to "Action",
+        "$mainUrl/anime/?genre%5B%5D=adventure&status=&type=&sub=&order=&page={page}" to "Adventure",
+        "$mainUrl/anime/?genre%5B%5D=fantasy&status=&type=&sub=&order=&page={page}" to "Fantasy",
+        "$mainUrl/anime/?genre%5B%5D=historical&status=&type=&sub=&order=&page={page}" to "Historical",
+        "$mainUrl/anime/?genre%5B%5D=martial-arts&status=&type=&sub=&order=&page={page}" to "Martial Arts",
+        "$mainUrl/anime/?genre%5B%5D=romance&status=&type=&sub=&order=&page={page}" to "Romance",
+        "$mainUrl/anime/?genre%5B%5D=sci-fi&status=&type=&sub=&order=&page={page}" to "Sci-Fi",
+        "$mainUrl/anime/?genre%5B%5D=wuxia&status=&type=&sub=&order=&page={page}" to "Wuxia",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = buildPagedUrl(request.data, page)
         val document = app.get(url, headers = siteHeaders, referer = "$mainUrl/").document
-        val results = parseDonghuaCards(document)
+        val results = parseDonghuaCards(document, includeSidebar = request.data == "$mainUrl/")
             .distinctBy { it.url.normalizedKey() }
         val hasNext = document.selectFirst(
-            "a.next[href], a.next.page-numbers[href], link[rel=next], .pagination a[href*='page=${page + 1}'], a[href*='/page/${page + 1}/']"
+            "a.next[href], a.next.page-numbers[href], link[rel=next], .hpage a[href*='page=${page + 1}'], a[href*='/page/${page + 1}/'], a[href*='page=${page + 1}']"
         ) != null
 
         return newHomePageResponse(request.name, results, hasNext)
@@ -63,13 +64,13 @@ class DonghuaID : MainAPI() {
         val routes = listOf(
             "$mainUrl/?s=$encoded",
             "$mainUrl/page/1/?s=$encoded",
-            "$mainUrl/anime/?status=&type=&order=update&keyword=$encoded",
+            "$mainUrl/anime/?status=&type=&sub=&order=&keyword=$encoded",
             "$mainUrl/anime/?s=$encoded",
         )
 
         return routes.flatMap { route ->
             runCatching {
-                parseDonghuaCards(app.get(route, headers = siteHeaders, referer = "$mainUrl/").document)
+                parseDonghuaCards(app.get(route, headers = siteHeaders, referer = "$mainUrl/").document, includeSidebar = false)
             }.getOrDefault(emptyList())
         }
             .filter { result -> result.name.contains(query, true) || result.url.contains(query.slugHint(), true) }
@@ -93,7 +94,7 @@ class DonghuaID : MainAPI() {
             ?.takeIf { it.length > 20 }
             ?: document.selectFirst("meta[name=description]")?.attr("content")?.cleanText()
 
-        val tags = document.select("a[href*='/genres/'], a[rel=tag]")
+        val tags = document.select(".info-content a[href*='genre'], .spe a[href*='genre'], a[rel=tag]")
             .map { it.text().cleanText() }
             .filter { it.isNotBlank() && !it.equals("Genres", true) }
             .distinct()
@@ -101,14 +102,15 @@ class DonghuaID : MainAPI() {
         val infoText = document.select(".spe, .info-content, .infotable, .bigcontent, .tsinfo, .postbody").joinToString(" ") { it.text() }.cleanText()
         val year = Regex("""(?i)(?:Released|Rilis|Aired|Year)\s*:?\s*([12][0-9]{3})""").find(infoText)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val status = detectStatus(infoText)
+        val episodes = parseEpisodes(document, url).distinctBy { it.data.normalizedKey() }
         val type = when {
+            episodes.size > 1 -> TvType.Anime
             infoText.contains("Movie", true) || tags.any { it.equals("Movie", true) } || url.contains("movie", true) -> TvType.AnimeMovie
             infoText.contains("OVA", true) || tags.any { it.equals("OVA", true) } -> TvType.OVA
             else -> TvType.Anime
         }
 
-        val episodes = parseEpisodes(document, url).distinctBy { it.data.normalizedKey() }
-        val recommendations = parseDonghuaCards(document)
+        val recommendations = parseDonghuaCards(document, includeSidebar = false)
             .filterNot { it.url.normalizedKey() == url.normalizedKey() }
             .take(16)
 
@@ -168,7 +170,7 @@ class DonghuaID : MainAPI() {
         }
 
         val candidates = collectPlayerCandidates(document, response.text, data)
-        for (candidate in candidates.take(60)) {
+        for (candidate in candidates.take(80)) {
             val playerUrl = candidate.decodeEmbedText().absoluteUrl(data) ?: continue
             if (emitDirect(playerUrl, hostLabel(playerUrl), data)) continue
 
@@ -180,14 +182,19 @@ class DonghuaID : MainAPI() {
             runCatching { loadExtractor(playerUrl, data, subtitleCallback, countedCallback) }
             if (emitted.size > before) continue
 
+            val playerReferer = if (playerUrl.contains("dailymotion", true)) "https://geo.dailymotion.com/" else data
             val playerHtml = runCatching {
-                app.get(playerUrl, headers = siteHeaders + mapOf("Referer" to data), referer = data).text
+                app.get(
+                    playerUrl,
+                    headers = siteHeaders + mapOf("Referer" to playerReferer, "Origin" to originOf(playerReferer)),
+                    referer = playerReferer,
+                ).text
             }.getOrNull().orEmpty()
             if (playerHtml.isBlank()) continue
 
             val unpacked = runCatching { getAndUnpack(playerHtml) }.getOrNull().orEmpty()
             val nested = collectUrlsFromText(playerHtml + "\n" + unpacked, playerUrl)
-            for (nestedUrl in nested.take(30)) {
+            for (nestedUrl in nested.take(40)) {
                 if (emitDirect(nestedUrl, hostLabel(playerUrl), playerUrl)) continue
                 val fixedNested = nestedUrl.absoluteUrl(playerUrl) ?: continue
                 runCatching { loadExtractor(fixedNested, playerUrl, subtitleCallback, countedCallback) }
@@ -197,15 +204,25 @@ class DonghuaID : MainAPI() {
         return emitted.isNotEmpty()
     }
 
-    private fun parseDonghuaCards(document: Document): List<SearchResponse> {
-        val selectors = listOf(
-            ".listupd article, .listupd .bsx, .listupd .bs, article.bs",
-            ".bsx, .bs, .result .bsx, .search-page article",
-            ".serieslist.pop ul li, .ongoingseries ul li, .bixbox ul li",
+    private fun parseDonghuaCards(document: Document, includeSidebar: Boolean = false): List<SearchResponse> {
+        val primarySelectors = listOf(
+            ".listupd article.bs, .listupd article, .listupd .bs",
+            ".result .bsx, .search-page article",
             ".items .item, .post-show li, .latest li",
         )
+        val sidebarSelectors = listOf(
+            ".serieslist.pop ul li, .ongoingseries ul li, .bixbox ul li",
+        )
 
-        return selectors.asSequence()
+        val primary = primarySelectors.asSequence()
+            .flatMap { selector -> document.select(selector).asSequence() }
+            .mapNotNull { it.toDonghuaCard() }
+            .distinctBy { it.url.normalizedKey() }
+            .toList()
+
+        if (primary.isNotEmpty() || !includeSidebar) return primary
+
+        return sidebarSelectors.asSequence()
             .flatMap { selector -> document.select(selector).asSequence() }
             .mapNotNull { it.toDonghuaCard() }
             .distinctBy { it.url.normalizedKey() }
@@ -214,21 +231,32 @@ class DonghuaID : MainAPI() {
 
     private fun Element.toDonghuaCard(): SearchResponse? {
         val anchor = selectFirst(
-            ".bsx a[href], a.series[href], h2 a[href], h3 a[href], h4 a[href], a[href*='/anime/'], a[href*='episode'], a[href]"
+            ".bsx a[href], a.series[href], .tt a[href], h2 a[href], h3 a[href], h4 a[href], a[href*='/anime/'], a[href*='episode'], a[href]"
         ) ?: return null
         val href = anchor.attr("href").absoluteUrl(mainUrl) ?: return null
         if (!href.startsWith(mainUrl, true)) return null
         if (!href.contains("/anime/", true) && !href.contains("episode", true)) return null
 
         val rawTitle = anchor.attr("title").cleanText().takeIf { it.length > 2 }
-            ?: selectFirst(".tt, .eggtitle, .limit, .epl-title, h2, h3, h4")?.text()?.cleanText()?.takeIf { it.length > 2 }
+            ?: selectFirst(".tt h2, .tt, .eggtitle, .epl-title, h2, h3, h4")?.text()?.cleanText()?.takeIf { it.length > 2 }
+            ?: selectFirst("img")?.attr("title")?.cleanText()?.takeIf { it.length > 2 }
             ?: selectFirst("img")?.attr("alt")?.cleanText()?.takeIf { it.length > 2 }
             ?: anchor.text().cleanText().takeIf { it.length > 2 }
             ?: return null
 
         val title = cleanCardTitle(rawTitle).takeIf { it.length > 2 } ?: return null
         val poster = selectFirst("img")?.imageUrl(href) ?: anchor.selectFirst("img")?.imageUrl(href)
-        val tvType = if (title.contains("movie", true) || href.contains("movie", true)) TvType.AnimeMovie else TvType.Anime
+        val typeText = listOf(
+            selectFirst(".typez")?.text(),
+            selectFirst(".epx")?.text(),
+            text(),
+            href,
+        ).joinToString(" ") { it.orEmpty() }
+        val tvType = when {
+            typeText.contains("Movie", true) -> TvType.AnimeMovie
+            typeText.contains("OVA", true) -> TvType.OVA
+            else -> TvType.Anime
+        }
 
         return newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = poster
@@ -237,14 +265,21 @@ class DonghuaID : MainAPI() {
     }
 
     private fun parseEpisodes(document: Document, pageUrl: String): List<Episode> {
-        val anchors = document.select(
-            ".eplister li a[href], .episodelist li a[href], .bixbox.bxcl li a[href], .episodelist a[href*='episode'], a[href*='episode']"
+        val scopedAnchors = document.select(
+            ".episodelist li a[href], .eplister li a[href], .bixbox.bxcl li a[href], .episodelist a[href*='episode']"
         )
+        val anchors = if (scopedAnchors.isNotEmpty()) scopedAnchors else {
+            val currentSlug = pageUrl.slugSeriesKey()
+            document.select("article.post a[href*='episode'], .postbody a[href*='episode'], .entry-content a[href*='episode']")
+                .filter { anchor -> anchor.attr("href").absoluteUrl(pageUrl)?.slugSeriesKey() == currentSlug }
+        }
+
         return anchors.mapNotNull { anchor ->
             val href = anchor.attr("href").absoluteUrl(pageUrl) ?: return@mapNotNull null
             if (!href.startsWith(mainUrl, true) || !href.contains("episode", true)) return@mapNotNull null
-            val rawTitle = anchor.selectFirst(".epl-title, .playinfo h3, h3, .title, span")?.text()?.cleanText()
-                ?: anchor.text().cleanText().takeIf { it.isNotBlank() }
+            val rawTitle = anchor.selectFirst(".epl-title, .playinfo h3, h3, .title")?.text()?.cleanText()
+                ?: anchor.ownText().cleanText().takeIf { it.length > 2 }
+                ?: anchor.text().cleanText().takeIf { it.length > 2 && !it.equals("Prev", true) && !it.equals("Next", true) }
                 ?: href.substringAfter(mainUrl).trim('/').replace('-', ' ')
             val episodeNumber = anchor.selectFirst(".epl-num, .epx, .num")?.text()?.episodeNumber()
                 ?: rawTitle.episodeNumber()
@@ -254,24 +289,34 @@ class DonghuaID : MainAPI() {
                 this.episode = episodeNumber
                 this.posterUrl = anchor.selectFirst("img")?.imageUrl(href)
             }
-        }.distinctBy { it.data.normalizedKey() }
+        }
+            .distinctBy { it.data.normalizedKey() }
+            .sortedByDescending { it.episode ?: -1 }
     }
 
     private suspend fun collectPlayerCandidates(document: Document, html: String, referer: String): LinkedHashSet<String> {
         val candidates = linkedSetOf<String>()
 
         document.select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-            node.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+            node.attr("src").takeIf { it.isNotBlank() }?.let { addCandidateValue(it, referer, candidates) }
         }
 
-        document.select("select option[value], .mirror option[value], .mobius option[value], option[data-index][value]").forEach { option ->
+        document.select("select.mirror option[value], .mirror option[value], .mobius option[value], option[data-index][value]").forEach { option ->
             val value = option.attr("value").trim()
             if (value.isBlank()) return@forEach
+            val label = option.text().cleanText()
             addCandidateValue(value, referer, candidates)
+            decodeBase64(value)?.let { decoded ->
+                collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
+                Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
+                    node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
+                }
+                if (label.isNotBlank()) candidates.add("#label:$label")
+            }
         }
 
         val dataAttrs = listOf(
-            "data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream", "data-content", "data-hash"
+            "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream", "data-content", "data-hash"
         )
         dataAttrs.forEach { attr ->
             document.select("[$attr]").forEach { node ->
@@ -287,7 +332,7 @@ class DonghuaID : MainAPI() {
             val unpacked = runCatching { getAndUnpack(scriptText) }.getOrNull().orEmpty()
             collectUrlsFromText(scriptText + "\n" + unpacked, referer).forEach { candidates.add(it) }
         }
-        return candidates
+        return candidates.filterNot { it.startsWith("#label:") }.toCollection(LinkedHashSet())
     }
 
     private fun addCandidateValue(value: String, referer: String, candidates: LinkedHashSet<String>) {
@@ -296,14 +341,14 @@ class DonghuaID : MainAPI() {
             candidates.add(decoded)
             collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
             Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-                node.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+                node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
             }
         }
-        runCatching { base64Decode(value) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { decoded ->
+        decodeBase64(value)?.takeIf { it.isNotBlank() }?.let { decoded ->
             candidates.add(decoded)
             collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
             Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-                node.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+                node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
             }
         }
     }
@@ -403,6 +448,7 @@ class DonghuaID : MainAPI() {
 
     private fun cleanCardTitle(raw: String): String = raw.cleanText()
         .replace(Regex("""(?i)^\s*(?:ONA|TV|Movie|OVA|Special)\s+"""), "")
+        .replace(Regex("""(?i)^\s*(?:Ongoing|Completed|Upcoming|Hiatus)\s+"""), "")
         .replace(Regex("""(?i)^\s*(?:Ep|Episode|Eps?)\s*\d+\s*"""), "")
         .replace(Regex("""(?i)\s+Episode\s+\d+.*$"""), "")
         .replace(Regex("""(?i)\s+Sub(?:title)?\s*(?:Indo|Indonesia)?.*$"""), "")
@@ -438,9 +484,17 @@ class DonghuaID : MainAPI() {
         return value.trim()
     }
 
+    private fun decodeBase64(value: String): String? {
+        val clean = value.trim().replace("\n", "").replace("\r", "")
+        if (clean.length < 12 || clean.any { it !in 'A'..'Z' && it !in 'a'..'z' && it !in '0'..'9' && it != '+' && it != '/' && it != '=' }) return null
+        return runCatching { String(Base64.getDecoder().decode(clean), Charsets.UTF_8) }
+            .getOrNull()
+            ?.takeIf { it.contains("<iframe", true) || it.contains("http", true) }
+    }
+
     private fun String.absoluteUrl(baseUrl: String = mainUrl): String? {
         val value = trim().trim('"', '\'').replace("\\/", "/")
-        if (value.isBlank() || value.startsWith("javascript:", true) || value == "#") return null
+        if (value.isBlank() || value.startsWith("javascript:", true) || value == "#" || value.startsWith("data:", true)) return null
         if (value.startsWith("//")) return "https:$value"
         if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
         return runCatching { URI(baseUrl).resolve(value).toString() }.getOrNull()
@@ -453,9 +507,17 @@ class DonghuaID : MainAPI() {
 
     private fun String.slugHint(): String = lowercase(Locale.ROOT).replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
 
+    private fun String.slugSeriesKey(): String {
+        val slug = substringBefore("?").trimEnd('/').substringAfterLast('/')
+        return slug
+            .replace(Regex("""(?i)-episode-?\d+.*$"""), "")
+            .replace(Regex("""(?i)-eps?-?\d+.*$"""), "")
+            .trim('-')
+    }
+
     private fun String.isDirectMediaLike(): Boolean {
         val value = lowercase(Locale.ROOT).substringBefore("#")
-        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback") || value.contains("/stream/")
+        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".m4s") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback") || value.contains("/stream/")
     }
 
     private fun String.isPlayableCandidate(): Boolean {
@@ -463,7 +525,7 @@ class DonghuaID : MainAPI() {
         if (isDirectMediaLike()) return true
         if (!value.startsWith("http")) return false
         return listOf(
-            "iframe", "embed", "player", "stream", "desustream", "ondesuhd", "maodrive", "vidhide", "filedon", "filemoon", "streamtape", "streamsb", "sbembed", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "ok.ru", "rumble", "dailymotion", "youtube"
+            "iframe", "embed", "player", "stream", "desustream", "ondesuhd", "maodrive", "vidhide", "filedon", "filemoon", "streamtape", "streamsb", "sbembed", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "ok.ru", "rumble", "dailymotion", "youtube", "abyssplayer", "hydrax", "turbovid", "cdn", "manifest"
         ).any { value.contains(it) }
     }
 
