@@ -100,7 +100,8 @@ class AnixCafeProvider : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         } else {
-            newMovieLoadResponse(title, fixedUrl, type, fixedUrl) {
+            val movieData = episodes.firstOrNull()?.data ?: fixedUrl
+            newMovieLoadResponse(title, fixedUrl, type, movieData) {
                 posterUrl = poster
                 this.year = year
                 plot?.let { this.plot = it }
