@@ -479,16 +479,24 @@ class AnimeIndo : MainAPI() {
             .forEach { addServerUrl(serverUrls, it.groupValues[1]) }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val cleanData = data.substringBefore("#")
-        val document = app.get(cleanData).document
-        val serverUrls = mutableListOf<String>()
+    private fun movieEpisodeCandidateUrls(detailUrl: String): List<String> {
+        val clean = detailUrl.substringBefore("#").trimEnd('/')
+        val slug = clean.substringAfter(mainUrl, "")
+            .trim('/')
+            .removePrefix("anime/")
+            .removePrefix("movie/")
+            .trim('/')
 
+        if (slug.isBlank() || slug.contains("/")) return emptyList()
+
+        return listOf(
+            "$mainUrl/$slug-episode-1/",
+            "$mainUrl/$slug-episode-01/",
+            "$mainUrl/$slug-movie/"
+        )
+    }
+
+    private fun collectServerUrls(document: Document, serverUrls: MutableList<String>) {
         document.select("#tontonin[src], iframe[src], iframe[data-src], source[src], video[src]").forEach { element ->
             addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
         }
@@ -508,6 +516,8 @@ class AnimeIndo : MainAPI() {
             val label = element.text()
             if (
                 label.contains("download", true) ||
+                label.contains("unduh", true) ||
+                label.contains("mirror", true) ||
                 label.contains("gdrive", true) ||
                 label.contains("google", true) ||
                 label.contains("drive", true) ||
@@ -522,6 +532,13 @@ class AnimeIndo : MainAPI() {
             }
         }
 
+        document.select("div.navi a[href], .navi a[href], .download a[href], .downloads a[href], a[href*='drive.google'], a[href*='gdrive'], a[href*='gdplayer']").forEach { a ->
+            val href = a.attr("href")
+            if (href.isNotBlank() && !href.contains(mainUrl, true)) {
+                addServerUrl(serverUrls, href)
+            }
+        }
+
         val html = document.html()
         addServerUrlsFromText(serverUrls, html)
         Regex("""(?i)(?:src|file|url|href)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"']*)["']""")
@@ -531,6 +548,29 @@ class AnimeIndo : MainAPI() {
         Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"'<>\s]*""")
             .findAll(html)
             .forEach { addServerUrl(serverUrls, it.value) }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val cleanData = data.substringBefore("#")
+        val document = app.get(cleanData).document
+        val serverUrls = mutableListOf<String>()
+
+        collectServerUrls(document, serverUrls)
+
+        if (serverUrls.isEmpty() && cleanData.contains("/anime/", true)) {
+            movieEpisodeCandidateUrls(cleanData).forEach { candidate ->
+                try {
+                    val candidateDocument = app.get(candidate, referer = cleanData).document
+                    collectServerUrls(candidateDocument, serverUrls)
+                } catch (_: Exception) {
+                }
+            }
+        }
 
         val distinctServers = serverUrls.distinct()
 
