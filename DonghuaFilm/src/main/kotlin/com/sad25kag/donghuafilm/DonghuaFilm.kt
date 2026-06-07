@@ -25,6 +25,8 @@ class DonghuaFilm : MainAPI() {
         "Referer" to "$mainUrl/",
     )
 
+    private val minimumHomePageCards = 5
+
     override val mainPage = mainPageOf(
         "" to "Latest Release",
         "anime/?order=update&status=&type=" to "New Donghua",
@@ -62,12 +64,17 @@ class DonghuaFilm : MainAPI() {
         val parsed = parseCards(document, request.data)
             .distinctBy { it.url.normalizedKey() }
             .filter { !it.posterUrl.isNullOrBlank() }
-        val results = if (request.name.equals("Movie", true) || request.name.equals("Movie Genre", true)) {
+        val filteredResults = if (request.name.equals("Movie", true) || request.name.equals("Movie Genre", true)) {
             filterMovieCards(parsed)
         } else {
             parsed
         }
-        val hasNext = document.selectFirst("a.next, .pagination a.next, a.next.page-numbers, link[rel=next], a[href*='/page/${page + 1}/'], a[href*='page=${page + 1}']") != null
+        val results = if (page <= 1 && filteredResults.size < minimumHomePageCards) {
+            emptyList()
+        } else {
+            filteredResults
+        }
+        val hasNext = results.isNotEmpty() && document.selectFirst("a.next, .pagination a.next, a.next.page-numbers, link[rel=next], a[href*='/page/${page + 1}/'], a[href*='page=${page + 1}']") != null
         return newHomePageResponse(HomePageList(request.name, results, isHorizontalImages = false), hasNext = hasNext)
     }
 
