@@ -193,6 +193,11 @@ class Anoboy : MainAPI() {
             .map { it.toSearchResponse() }
 
         val type = detectType(fixedUrl, rawPageTitle, pageTitle)
+        val moviePlaybackData = if (episodes.isEmpty()) {
+            findMoviePlaybackData(document, fixedUrl)
+        } else {
+            null
+        }
 
         return if (episodes.isNotEmpty()) {
             newAnimeLoadResponse(pageTitle, fixedUrl, type) {
@@ -203,7 +208,7 @@ class Anoboy : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         } else {
-            newMovieLoadResponse(pageTitle, fixedUrl, type, fixedUrl) {
+            newMovieLoadResponse(pageTitle, fixedUrl, type, moviePlaybackData ?: fixedUrl) {
                 posterUrl = poster
                 plot = description
                 this.tags = tags
@@ -451,6 +456,51 @@ class Anoboy : MainAPI() {
             }
             .distinctBy { it.data }
             .sortedBy { it.episode ?: Int.MAX_VALUE }
+    }
+
+    private fun findMoviePlaybackData(document: Document, referer: String): String? {
+        val candidates = linkedSetOf<String>()
+
+        fun addCandidate(raw: String?) {
+            if (!raw.isNullOrBlank()) candidates.add(raw)
+        }
+
+        document.select(
+            "a[href*='episode'], a[href*='subtitle-indonesia'], " +
+                ".bixbox.bxcl a[href], .episodelist a[href], .episode-list a[href], " +
+                ".eplister a[href], .singlelink a[href], .listing a[href]"
+        ).forEach { anchor ->
+            addCandidate(anchor.attr("href"))
+            addCandidate(anchor.attr("abs:href"))
+        }
+
+        val html = document.html()
+
+        Regex(
+            """href\s*=\s*["']([^"']*(?:episode|subtitle-indonesia)[^"']*)["']""",
+            RegexOption.IGNORE_CASE
+        ).findAll(html).forEach { match ->
+            addCandidate(match.groupValues.getOrNull(1))
+        }
+
+        Regex(
+            """https?://[^"'<>\s]+(?:episode|subtitle-indonesia)[^"'<>\s]*""",
+            RegexOption.IGNORE_CASE
+        ).findAll(html).forEach { match ->
+            addCandidate(match.value)
+        }
+
+        return candidates.asSequence()
+            .map { cleanCandidate(it).substringBefore("#") }
+            .map { normalizeAnoboyUrl(it) }
+            .filter { it.isNotBlank() && !it.equals(referer, true) }
+            .filter { isContentUrl(it) }
+            .filter {
+                val lower = it.lowercase()
+                lower.contains("episode") || lower.contains("subtitle-indonesia")
+            }
+            .distinct()
+            .firstOrNull()
     }
 
     private suspend fun emitBloggerVideo(

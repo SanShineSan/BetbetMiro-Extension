@@ -1,4 +1,4 @@
-version = 25
+version = 26
 
 cloudstream {
     description = "AnoBoy — Streaming Anime Subtitle Indonesia"
