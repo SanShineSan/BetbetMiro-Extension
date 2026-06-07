@@ -48,9 +48,6 @@ class AnizoneProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "sort:release-desc" to "Rilis Terbaru",
-        "sort:title-asc" to "A-Z",
-        "sort:title-desc" to "Z-A",
-        "sort:release-asc" to "Rilis Terlama",
         "sort:added-asc" to "Pertama Ditambahkan",
         "sort:added-desc" to "Terakhir Ditambahkan",
         "type:TV Series" to "TV Series",
@@ -59,7 +56,6 @@ class AnizoneProvider : MainAPI() {
         "type:Web" to "Web",
         "type:TV Special" to "TV Special",
         "type:Music Video" to "Music Video",
-        "type:Other" to "Other",
         "tag-name:Action" to "Aksi",
         "tag-name:Adventure" to "Petualangan",
         "tag-name:Comedy" to "Komedi"
@@ -530,7 +526,7 @@ class AnizoneProvider : MainAPI() {
             .replace("\\u0022", "\"")
             .replace("\\/", "/")
             .trim()
-            .trim('\"')
+            .trim('"')
             .replace(Regex("\\s+"), " ")
             .trim()
     }
