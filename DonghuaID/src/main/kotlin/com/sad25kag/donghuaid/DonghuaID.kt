@@ -29,18 +29,82 @@ class DonghuaID : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Latest Release",
-        "$mainUrl/anime/?status=&type=&sub=&order=&page={page}" to "Donghua Terbaru",
-        "$mainUrl/anime/?status=ongoing&type=&sub=&order=&page={page}" to "On-Going Donghua",
+        "$mainUrl/anime/?status=&type=&sub=&order=&page={page}" to "All Series",
+        "$mainUrl/anime/?status=ongoing&type=&sub=&order=&page={page}" to "Ongoing",
         "$mainUrl/anime/?status=completed&type=&sub=&order=&page={page}" to "Completed",
+        "$mainUrl/anime/?status=upcoming&type=&sub=&order=&page={page}" to "Upcoming",
+        "$mainUrl/anime/?status=hiatus&type=&sub=&order=&page={page}" to "Hiatus",
+        "$mainUrl/anime/?status=&type=tv&sub=&order=&page={page}" to "TV Series",
+        "$mainUrl/anime/?status=&type=ova&sub=&order=&page={page}" to "OVA",
         "$mainUrl/anime/?status=&type=movie&sub=&order=&page={page}" to "Movie",
+        "$mainUrl/anime/?status=&type=live%20action&sub=&order=&page={page}" to "Live Action",
+        "$mainUrl/anime/?status=&type=special&sub=&order=&page={page}" to "Special",
+        "$mainUrl/anime/?status=&type=bd&sub=&order=&page={page}" to "BD",
         "$mainUrl/anime/?status=&type=ona&sub=&order=&page={page}" to "ONA",
+        "$mainUrl/anime/?status=&type=music&sub=&order=&page={page}" to "Music",
+        "$mainUrl/anime/?status=&type=&sub=sub&order=&page={page}" to "Sub",
+        "$mainUrl/anime/?status=&type=&sub=dub&order=&page={page}" to "Dub",
+        "$mainUrl/anime/?status=&type=&sub=raw&order=&page={page}" to "RAW",
+        "$mainUrl/anime/?status=&type=&sub=&order=title&page={page}" to "A-Z",
+        "$mainUrl/anime/?status=&type=&sub=&order=titlereverse&page={page}" to "Z-A",
+        "$mainUrl/anime/?status=&type=&sub=&order=update&page={page}" to "Latest Update",
+        "$mainUrl/anime/?status=&type=&sub=&order=latest&page={page}" to "Latest Added",
+        "$mainUrl/anime/?status=&type=&sub=&order=popular&page={page}" to "Popular",
+        "$mainUrl/anime/?status=&type=&sub=&order=rating&page={page}" to "Rating",
         "$mainUrl/anime/?genre%5B%5D=action&status=&type=&sub=&order=&page={page}" to "Action",
+        "$mainUrl/anime/?genre%5B%5D=action-fantasy&status=&type=&sub=&order=&page={page}" to "Action.Fantasy",
+        "$mainUrl/anime/?genre%5B%5D=adult-cast&status=&type=&sub=&order=&page={page}" to "Adult Cast",
         "$mainUrl/anime/?genre%5B%5D=adventure&status=&type=&sub=&order=&page={page}" to "Adventure",
+        "$mainUrl/anime/?genre%5B%5D=animation&status=&type=&sub=&order=&page={page}" to "Animation",
+        "$mainUrl/anime/?genre%5B%5D=childcare&status=&type=&sub=&order=&page={page}" to "Childcare",
+        "$mainUrl/anime/?genre%5B%5D=comedy&status=&type=&sub=&order=&page={page}" to "Comedy",
+        "$mainUrl/anime/?genre%5B%5D=delinquents&status=&type=&sub=&order=&page={page}" to "Delinquents",
+        "$mainUrl/anime/?genre%5B%5D=demon&status=&type=&sub=&order=&page={page}" to "Demon",
+        "$mainUrl/anime/?genre%5B%5D=demons&status=&type=&sub=&order=&page={page}" to "Demons",
+        "$mainUrl/anime/?genre%5B%5D=domestic&status=&type=&sub=&order=&page={page}" to "Domestic",
+        "$mainUrl/anime/?genre%5B%5D=drama&status=&type=&sub=&order=&page={page}" to "Drama",
+        "$mainUrl/anime/?genre%5B%5D=ecchi&status=&type=&sub=&order=&page={page}" to "Ecchi",
+        "$mainUrl/anime/?genre%5B%5D=exciting&status=&type=&sub=&order=&page={page}" to "exciting",
+        "$mainUrl/anime/?genre%5B%5D=fantaasy&status=&type=&sub=&order=&page={page}" to "Fantaasy",
         "$mainUrl/anime/?genre%5B%5D=fantasy&status=&type=&sub=&order=&page={page}" to "Fantasy",
+        "$mainUrl/anime/?genre%5B%5D=fighting&status=&type=&sub=&order=&page={page}" to "fighting",
+        "$mainUrl/anime/?genre%5B%5D=girls-love&status=&type=&sub=&order=&page={page}" to "Girls Love",
+        "$mainUrl/anime/?genre%5B%5D=gourmet&status=&type=&sub=&order=&page={page}" to "Gourmet",
+        "$mainUrl/anime/?genre%5B%5D=harem&status=&type=&sub=&order=&page={page}" to "Harem",
         "$mainUrl/anime/?genre%5B%5D=historical&status=&type=&sub=&order=&page={page}" to "Historical",
+        "$mainUrl/anime/?genre%5B%5D=historical-martial-arts&status=&type=&sub=&order=&page={page}" to "Historical Martial Arts",
+        "$mainUrl/anime/?genre%5B%5D=horror&status=&type=&sub=&order=&page={page}" to "Horror",
+        "$mainUrl/anime/?genre%5B%5D=isekai&status=&type=&sub=&order=&page={page}" to "Isekai",
+        "$mainUrl/anime/?genre%5B%5D=kids&status=&type=&sub=&order=&page={page}" to "Kids",
+        "$mainUrl/anime/?genre%5B%5D=martial&status=&type=&sub=&order=&page={page}" to "Martial",
+        "$mainUrl/anime/?genre%5B%5D=martial-art&status=&type=&sub=&order=&page={page}" to "Martial Art",
         "$mainUrl/anime/?genre%5B%5D=martial-arts&status=&type=&sub=&order=&page={page}" to "Martial Arts",
+        "$mainUrl/anime/?genre%5B%5D=mecha&status=&type=&sub=&order=&page={page}" to "Mecha",
+        "$mainUrl/anime/?genre%5B%5D=medical&status=&type=&sub=&order=&page={page}" to "Medical",
+        "$mainUrl/anime/?genre%5B%5D=military&status=&type=&sub=&order=&page={page}" to "Military",
+        "$mainUrl/anime/?genre%5B%5D=monsters&status=&type=&sub=&order=&page={page}" to "Monsters",
+        "$mainUrl/anime/?genre%5B%5D=mystery&status=&type=&sub=&order=&page={page}" to "Mystery",
+        "$mainUrl/anime/?genre%5B%5D=mythology&status=&type=&sub=&order=&page={page}" to "Mythology",
+        "$mainUrl/anime/?genre%5B%5D=organized-crime&status=&type=&sub=&order=&page={page}" to "Organized Crime",
+        "$mainUrl/anime/?genre%5B%5D=parody&status=&type=&sub=&order=&page={page}" to "Parody",
+        "$mainUrl/anime/?genre%5B%5D=popular&status=&type=&sub=&order=&page={page}" to "Popular Genre",
+        "$mainUrl/anime/?genre%5B%5D=psychological&status=&type=&sub=&order=&page={page}" to "Psychological",
+        "$mainUrl/anime/?genre%5B%5D=reincarnation&status=&type=&sub=&order=&page={page}" to "Reincarnation",
         "$mainUrl/anime/?genre%5B%5D=romance&status=&type=&sub=&order=&page={page}" to "Romance",
+        "$mainUrl/anime/?genre%5B%5D=school&status=&type=&sub=&order=&page={page}" to "School",
         "$mainUrl/anime/?genre%5B%5D=sci-fi&status=&type=&sub=&order=&page={page}" to "Sci-Fi",
+        "$mainUrl/anime/?genre%5B%5D=shounen&status=&type=&sub=&order=&page={page}" to "Shounen",
+        "$mainUrl/anime/?genre%5B%5D=showbiz&status=&type=&sub=&order=&page={page}" to "Showbiz",
+        "$mainUrl/anime/?genre%5B%5D=sports&status=&type=&sub=&order=&page={page}" to "Sports",
+        "$mainUrl/anime/?genre%5B%5D=super-power&status=&type=&sub=&order=&page={page}" to "Super Power",
+        "$mainUrl/anime/?genre%5B%5D=supernatural&status=&type=&sub=&order=&page={page}" to "Supernatural",
+        "$mainUrl/anime/?genre%5B%5D=suspense&status=&type=&sub=&order=&page={page}" to "Suspense",
+        "$mainUrl/anime/?genre%5B%5D=sword-fight&status=&type=&sub=&order=&page={page}" to "Sword fight",
+        "$mainUrl/anime/?genre%5B%5D=team-sports&status=&type=&sub=&order=&page={page}" to "Team Sports",
+        "$mainUrl/anime/?genre%5B%5D=time-travel&status=&type=&sub=&order=&page={page}" to "Time Travel",
+        "$mainUrl/anime/?genre%5B%5D=urban-fantasy&status=&type=&sub=&order=&page={page}" to "Urban Fantasy",
+        "$mainUrl/anime/?genre%5B%5D=vengeance&status=&type=&sub=&order=&page={page}" to "Vengeance",
+        "$mainUrl/anime/?genre%5B%5D=video-game&status=&type=&sub=&order=&page={page}" to "Video Game",
         "$mainUrl/anime/?genre%5B%5D=wuxia&status=&type=&sub=&order=&page={page}" to "Wuxia",
     )
 
@@ -235,7 +299,7 @@ class DonghuaID : MainAPI() {
         ) ?: return null
         val href = anchor.attr("href").absoluteUrl(mainUrl) ?: return null
         if (!href.startsWith(mainUrl, true)) return null
-        if (!href.contains("/anime/", true) && !href.contains("episode", true)) return null
+        if (!href.isDonghuaContentUrl()) return null
 
         val rawTitle = anchor.attr("title").cleanText().takeIf { it.length > 2 }
             ?: selectFirst(".tt h2, .tt, .eggtitle, .epl-title, h2, h3, h4")?.text()?.cleanText()?.takeIf { it.length > 2 }
@@ -525,8 +589,21 @@ class DonghuaID : MainAPI() {
         if (isDirectMediaLike()) return true
         if (!value.startsWith("http")) return false
         return listOf(
-            "iframe", "embed", "player", "stream", "desustream", "ondesuhd", "maodrive", "vidhide", "filedon", "filemoon", "streamtape", "streamsb", "sbembed", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "ok.ru", "rumble", "dailymotion", "youtube", "abyssplayer", "hydrax", "turbovid", "cdn", "manifest"
+            "iframe", "embed", "player", "stream", "desustream", "ondesuhd", "maodrive", "vidhide", "filedon", "filemoon", "streamtape", "streamsb", "sbembed", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "ok.ru", "rumble", "dailymotion", "youtube", "short.icu", "abyssplayer", "hydrax", "turbovid", "turbosplayer", "cdndirector", "dmcdn", "ms.ok.ru", "cdn", "manifest"
         ).any { value.contains(it) }
+    }
+
+
+    private fun String.isDonghuaContentUrl(): Boolean {
+        val value = substringBefore("#").substringBefore("?").trimEnd('/').lowercase(Locale.ROOT)
+        val root = mainUrl.trimEnd('/').lowercase(Locale.ROOT)
+        if (value == root || !value.startsWith(root)) return false
+        val path = value.removePrefix(root).trim('/')
+        if (path.isBlank()) return false
+        if (path.startsWith("wp-") || path.startsWith("tag/") || path.startsWith("category/") || path.startsWith("genres/")) return false
+        if (path.startsWith("anime/list-mode") || path.startsWith("anime/page") || path == "anime") return false
+        if (path.contains("/page/")) return false
+        return true
     }
 
     private fun String.isImageCandidate(): Boolean {
