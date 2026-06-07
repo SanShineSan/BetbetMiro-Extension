@@ -59,7 +59,14 @@ class DonghuaFilm : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = buildPageUrl(request.data, page)
         val document = app.get(url, headers = browserHeaders, referer = "$mainUrl/").document
-        val results = parseCards(document).distinctBy { it.url.normalizedKey() }
+        val parsed = parseCards(document, request.data)
+            .distinctBy { it.url.normalizedKey() }
+            .filter { !it.posterUrl.isNullOrBlank() }
+        val results = if (request.name.equals("Movie", true) || request.name.equals("Movie Genre", true)) {
+            filterMovieCards(parsed)
+        } else {
+            parsed
+        }
         val hasNext = document.selectFirst("a.next, .pagination a.next, a.next.page-numbers, link[rel=next], a[href*='/page/${page + 1}/'], a[href*='page=${page + 1}']") != null
         return newHomePageResponse(HomePageList(request.name, results, isHorizontalImages = false), hasNext = hasNext)
     }
@@ -215,18 +222,58 @@ class DonghuaFilm : MainAPI() {
         }
     }
 
-    private fun parseCards(document: Document): List<SearchResponse> {
+    private fun parseCards(document: Document, pagePath: String = ""): List<SearchResponse> {
+        val working = document.clone()
+        if (pagePath.isNotBlank()) {
+            working.select("aside, #sidebar, .sidebar, .side, .widget, .wpop, .serieslist.pop, .ongoingseries, .history, .comment, .comments").remove()
+        }
         val selectors = listOf(
-            ".listupd article, .listupd .bsx, .listupd .bs",
-            "article.bs, .bs .bsx, .bsx",
-            ".serieslist.pop ul li, .ongoingseries ul li, .bixbox ul li",
+            ".listupd article, .listupd .bsx, .listupd .bs, .listupd .utao",
+            "article.bs, .bs .bsx, .bsx, .utao",
             ".result .bsx, .search-page article",
         )
         return selectors.asSequence()
-            .flatMap { selector -> document.select(selector).asSequence() }
+            .flatMap { selector -> working.select(selector).asSequence() }
+            .filterNot { it.isSidebarOrWidgetCard() }
             .mapNotNull { it.toDonghuaFilmCard() }
             .distinctBy { it.url.normalizedKey() }
             .toList()
+    }
+
+    private suspend fun filterMovieCards(cards: List<SearchResponse>): List<SearchResponse> {
+        val movies = mutableListOf<SearchResponse>()
+        for (card in cards.take(32)) {
+            val isMovie = runCatching {
+                val document = app.get(card.url, headers = browserHeaders, referer = "$mainUrl/").document
+                val title = cleanTitle(
+                    document.selectFirst("h1.entry-title, h1[itemprop=name], .infox h1, .entry-title")?.text()
+                        ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+                        ?: document.title()
+                ) ?: card.name
+                val detailRoot = document.detailRoot()
+                val tags = detailRoot.select("a[href*='/genres/'], a[rel=tag]")
+                    .map { it.text().cleanText() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                val infoText = listOf(
+                    detailRoot.text().cleanText(),
+                    document.selectFirst(".spe, .info-content, .infotable, .bigcontent")?.text()?.cleanText().orEmpty(),
+                ).joinToString(" ").cleanText()
+                val episodes = parseEpisodes(document, card.url).distinctBy { it.data.normalizedKey() }
+                detectDetailType(title, infoText, tags, episodes) == TvType.AnimeMovie
+            }.getOrDefault(false)
+            if (isMovie) movies.add(card)
+        }
+        return movies
+    }
+
+    private fun Element.isSidebarOrWidgetCard(): Boolean {
+        return parents().any { parent ->
+            val id = parent.id().lowercase(Locale.ROOT)
+            val classes = parent.classNames().joinToString(" ").lowercase(Locale.ROOT)
+            id.contains("sidebar") || id == "comments" || classes.contains("sidebar") || classes.contains("widget") ||
+                classes.contains("serieslist") || classes.contains("ongoingseries") || classes.contains("wpop") || classes.contains("comment")
+        }
     }
 
     private fun Element.toDonghuaFilmCard(): SearchResponse? {
@@ -242,11 +289,17 @@ class DonghuaFilm : MainAPI() {
             ?: return null
 
         val title = cleanTitle(rawTitle) ?: rawTitle
-        val poster = selectFirst("img")?.imageUrl(href) ?: anchor.selectFirst("img")?.imageUrl(href)
-        val tvType = if (title.contains("movie", true) || href.contains("movie", true)) TvType.AnimeMovie else TvType.Anime
+        val poster = selectFirst("img, source[srcset], noscript")?.imageUrl(href)
+            ?: anchor.selectFirst("img, source[srcset], noscript")?.imageUrl(href)
+            ?: backgroundImageUrl(href)
+        val tvType = when {
+            href.contains("episode", true) -> TvType.Anime
+            title.contains("movie", true) || href.contains("movie", true) -> TvType.AnimeMovie
+            else -> TvType.Anime
+        }
         return newAnimeSearchResponse(title, href, tvType) {
             this.posterUrl = poster
-            this.posterHeaders = mapOf("Referer" to "$mainUrl/")
+            this.posterHeaders = browserHeaders + mapOf("Referer" to "$mainUrl/")
         }
     }
 
@@ -362,13 +415,44 @@ class DonghuaFilm : MainAPI() {
         return runCatching { base64Decode(clean) }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
+    private fun Element.backgroundImageUrl(base: String = mainUrl): String? {
+        val ownStyle = attr("style").extractCssImageUrl()
+        if (!ownStyle.isNullOrBlank()) return ownStyle.toAbsoluteUrl(base)
+        return select("[style*='url']").asSequence()
+            .mapNotNull { it.attr("style").extractCssImageUrl() }
+            .firstOrNull()
+            ?.toAbsoluteUrl(base)
+    }
+
+    private fun String.takeValidImageValue(): String? {
+        val value = trim().trim('"', '\'')
+        if (value.isBlank()) return null
+        if (value.startsWith("data:", true) || value.startsWith("#") || value.startsWith("javascript", true)) return null
+        return value
+    }
+
+    private fun String.bestSrcFromSet(): String? {
+        return split(',')
+            .map { it.trim().substringBefore(" ").takeValidImageValue() }
+            .lastOrNull { !it.isNullOrBlank() }
+    }
+
+    private fun String.extractCssImageUrl(): String? {
+        return Regex("""url\((['"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
+            .find(this)
+            ?.groupValues
+            ?.getOrNull(2)
+            ?.takeValidImageValue()
+    }
+
     private fun Element.imageUrl(base: String = mainUrl): String? {
-        val raw = attr("data-src").takeIf { it.isNotBlank() }
-            ?: attr("data-lazy-src").takeIf { it.isNotBlank() }
-            ?: attr("data-original").takeIf { it.isNotBlank() }
-            ?: attr("data-image").takeIf { it.isNotBlank() }
-            ?: attr("src").takeIf { it.isNotBlank() }
-            ?: attr("poster").takeIf { it.isNotBlank() }
+        val raw = listOf("data-src", "data-lazy-src", "data-original", "data-image", "data-thumb", "data-poster", "src", "poster")
+            .firstNotNullOfOrNull { attr -> attr(attr).takeValidImageValue() }
+            ?: listOf("data-srcset", "data-lazy-srcset", "srcset")
+                .firstNotNullOfOrNull { attr -> attr(attr).bestSrcFromSet() }
+            ?: selectFirst("source[srcset]")?.attr("srcset")?.bestSrcFromSet()
+            ?: selectFirst("noscript")?.let { node -> Jsoup.parse(node.html()).selectFirst("img")?.imageUrl(base) }
+            ?: backgroundImageUrl(base)
         return raw?.toAbsoluteUrl(base)
     }
 
