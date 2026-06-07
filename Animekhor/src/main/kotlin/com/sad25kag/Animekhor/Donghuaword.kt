@@ -21,7 +21,7 @@ class Donghuaword  : Animekhor() {
         val document = app.get(data).document
         var found = false
 
-        fun resolveDecodedMirror(raw: String) {
+        suspend fun resolveDecodedMirror(raw: String) {
             val decodedUrl = runCatching { base64Decode(raw) }.getOrNull() ?: return
             val decodedDocument = Jsoup.parse(decodedUrl)
 
