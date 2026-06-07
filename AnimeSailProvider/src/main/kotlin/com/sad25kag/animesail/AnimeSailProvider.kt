@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.NiceResponse
+import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -186,7 +187,7 @@ class AnimeSailProvider : MainAPI() {
         val type = if (typeText.contains("Movie", ignoreCase = true)) TvType.AnimeMovie else TvType.Anime
 
         return newAnimeSearchResponse(title, href, type) {
-            posterUrl = posterUrl
+            this.posterUrl = posterUrl
             addSub(epNum)
         }
     }
@@ -520,19 +521,21 @@ class AnimeSailProvider : MainAPI() {
 
         loadExtractor(normalizedUrl, referer, subtitleCallback) { link ->
             val finalName = if (serverName.equals(link.name, ignoreCase = true)) link.name else "$serverName - ${link.name}"
-            callback.invoke(
-                newExtractorLink(
-                    source = link.name,
-                    name = finalName,
-                    url = link.url,
-                    type = link.type
-                ) {
-                    this.referer = link.referer.takeIf { it.isNotBlank() } ?: referer ?: mainUrl
-                    this.quality = if (link.type == ExtractorLinkType.M3U8) link.quality else quality ?: Qualities.Unknown.value
-                    this.headers = link.headers
-                    this.extractorData = link.extractorData
-                }
-            )
+            runBlocking {
+                callback.invoke(
+                    newExtractorLink(
+                        source = link.name,
+                        name = finalName,
+                        url = link.url,
+                        type = link.type
+                    ) {
+                        this.referer = link.referer.takeIf { it.isNotBlank() } ?: referer ?: mainUrl
+                        this.quality = if (link.type == ExtractorLinkType.M3U8) link.quality else quality ?: Qualities.Unknown.value
+                        this.headers = link.headers
+                        this.extractorData = link.extractorData
+                    }
+                )
+            }
         }
     }
 
