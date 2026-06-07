@@ -193,13 +193,13 @@ class Anoboy : MainAPI() {
             .map { it.toSearchResponse() }
 
         val type = detectType(fixedUrl, rawPageTitle, pageTitle)
-        val moviePlaybackData = if (episodes.isEmpty()) {
-            findMoviePlaybackData(document, fixedUrl)
-        } else {
-            null
+        val moviePlaybackData = when {
+            type == TvType.AnimeMovie -> episodes.firstOrNull()?.data ?: findMoviePlaybackData(document, fixedUrl)
+            episodes.isEmpty() -> findMoviePlaybackData(document, fixedUrl)
+            else -> null
         }
 
-        return if (episodes.isNotEmpty()) {
+        return if (episodes.isNotEmpty() && type != TvType.AnimeMovie) {
             newAnimeLoadResponse(pageTitle, fixedUrl, type) {
                 posterUrl = poster
                 plot = description
@@ -433,20 +433,21 @@ class Anoboy : MainAPI() {
     private fun parseEpisodeList(document: Document, referer: String): List<Episode> {
         val anchors = document.select(
             "div.singlelink ul.lcp_catlist li a, div.eplister ul li a, " +
-                "div.bixbox.bxcl ul li a, .episodelist ul li a, " +
+                "div.bixbox.bxcl ul li a, .episodelist ul li a, .episode-list a[href], " +
                 "ul li a[href*='episode'], a[href*='episode-'], a[href*='subtitle-indonesia']"
         ).filter {
             val href = normalizeAnoboyUrl(it.attr("href"))
-            isContentUrl(href) && !href.equals(referer, true)
+            isEpisodeLikeUrl(href, it.text()) && !href.equals(referer, true)
         }
 
         return anchors
             .mapNotNull { anchor ->
                 val href = normalizeAnoboyUrl(anchor.attr("href"))
-                val title = cleanTitle(anchor.text().trim().ifBlank {
+                val rawTitle = anchor.text().trim().ifBlank {
                     href.trimEnd('/').substringAfterLast('/').replace("-", " ")
-                })
-                val episode = parseEpisodeNumber(title) ?: parseEpisodeNumber(href)
+                }
+                val title = cleanTitle(rawTitle)
+                val episode = parseEpisodeNumber(rawTitle) ?: parseEpisodeNumber(title) ?: parseEpisodeNumber(href)
                 if (episode == null && title.length < 2) return@mapNotNull null
 
                 newEpisode(href) {
@@ -465,11 +466,7 @@ class Anoboy : MainAPI() {
             if (!raw.isNullOrBlank()) candidates.add(raw)
         }
 
-        document.select(
-            "a[href*='episode'], a[href*='subtitle-indonesia'], " +
-                ".bixbox.bxcl a[href], .episodelist a[href], .episode-list a[href], " +
-                ".eplister a[href], .singlelink a[href], .listing a[href]"
-        ).forEach { anchor ->
+        document.select("a[href]").forEach { anchor ->
             addCandidate(anchor.attr("href"))
             addCandidate(anchor.attr("abs:href"))
         }
@@ -494,11 +491,7 @@ class Anoboy : MainAPI() {
             .map { cleanCandidate(it).substringBefore("#") }
             .map { normalizeAnoboyUrl(it) }
             .filter { it.isNotBlank() && !it.equals(referer, true) }
-            .filter { isContentUrl(it) }
-            .filter {
-                val lower = it.lowercase()
-                lower.contains("episode") || lower.contains("subtitle-indonesia")
-            }
+            .filter { isEpisodeLikeUrl(it) }
             .distinct()
             .firstOrNull()
     }
@@ -744,7 +737,8 @@ class Anoboy : MainAPI() {
     private fun isContentUrl(url: String): Boolean {
         val lower = normalizeAnoboyUrl(url).lowercase()
         val path = runCatching { URI(lower).path.orEmpty() }.getOrDefault(lower)
-        val slug = path.trimEnd('/').substringAfterLast('/')
+        val cleanPath = path.trimEnd('/')
+        val slug = cleanPath.substringAfterLast('/')
 
         if (!lower.startsWith(mainUrl.lowercase())) return false
         if (
@@ -763,10 +757,24 @@ class Anoboy : MainAPI() {
             lower.contains("?type=")
         ) return false
 
-        return path.startsWith("/anime/") ||
+        val isAnimeDetail = Regex("""^/anime/[a-z0-9][a-z0-9-]+/?$""").matches(path)
+        return isAnimeDetail ||
             slug.contains("episode-") ||
             slug.contains("-subtitle-indonesia") ||
             Regex("/20\\d{2}/\\d{2}/[a-z0-9-]+/?$").containsMatchIn(path)
+    }
+
+    private fun isEpisodeLikeUrl(url: String, title: String? = null): Boolean {
+        if (!isContentUrl(url)) return false
+        val lower = normalizeAnoboyUrl(url).lowercase()
+        val path = runCatching { URI(lower).path.orEmpty() }.getOrDefault(lower)
+        val slug = path.trimEnd('/').substringAfterLast('/')
+        val lowerTitle = title.orEmpty().lowercase()
+
+        return slug.contains("episode-") ||
+            slug.contains("-subtitle-indonesia") ||
+            lowerTitle.contains("episode") ||
+            Regex("""\beps?\s*\d+\b""").containsMatchIn(lowerTitle)
     }
 
     private fun isPlayerCandidate(url: String): Boolean {
@@ -799,6 +807,7 @@ class Anoboy : MainAPI() {
             lower.contains("/season/") ||
             lower.contains("/studio/") ||
             lower.contains("/anime/?") ||
+            lower.endsWith("/anime/") ||
             lower.contains("?order=") ||
             lower.contains("?status=") ||
             lower.contains("?type=") ||
@@ -966,6 +975,8 @@ class Anoboy : MainAPI() {
             "home",
             "az list",
             "anime list",
+            "text mode",
+            "switch mode",
             "genre all",
             "season all",
             "studio all",
