@@ -1,7 +1,7 @@
-version = 9
+version = 10
 
 cloudstream {
-    description = "Dailymotion public video catalog with fixed populated category rows for anime, drama, movie, country, WWE, RAW, and SmackDown."
+    description = "Dailymotion public video catalog with source-backed homepage, search, detail, and internal HLS playback resolver."
     authors = listOf("BetbetMiro")
 
     /**

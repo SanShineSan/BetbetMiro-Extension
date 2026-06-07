@@ -1,12 +1,33 @@
 package com.sad25kag.dailymotion
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.*
 import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newAnimeSearchResponse
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newSubtitleFile
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.loadExtractor
+import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -28,6 +49,7 @@ class DailymotionProvider : MainAPI() {
     )
 
     private val apiBase = "https://api.dailymotion.com"
+    private val geoPlayerBase = "https://geo.dailymotion.com/player"
     private val videoFields = listOf(
         "id",
         "title",
@@ -50,13 +72,11 @@ class DailymotionProvider : MainAPI() {
         row("sort=recent", "Upload Terbaru", TvType.Others),
         row("sort=visited-week", "Populer Minggu Ini", TvType.Others),
         row("channel=tv&sort=recent", "TV Publik Terbaru", TvType.Others),
-
         row(searchQuery("anime sub indo", "relevance", longerThan = 8), "Anime Sub Indo", TvType.Anime),
         row(searchQuery("anime episode subtitle indonesia", "relevance", longerThan = 8), "Anime Episode Indonesia", TvType.Anime),
         row(searchQuery("anime movie full movie", "relevance", longerThan = 20), "Anime Movie", TvType.AnimeMovie),
         row(searchQuery("donghua sub indo", "relevance", longerThan = 8), "Donghua Sub Indo", TvType.Anime),
         row(searchQuery("cartoon full episode", "relevance", longerThan = 8), "Cartoon Full Episode", TvType.Cartoon),
-
         row(searchQuery("drama korea sub indo", "relevance", longerThan = 20), "Drama Korea", TvType.AsianDrama),
         row(searchQuery("drama china sub indo", "relevance", longerThan = 20), "Drama China", TvType.AsianDrama),
         row(searchQuery("drama thailand sub indo", "relevance", longerThan = 20), "Drama Thailand", TvType.AsianDrama),
@@ -64,7 +84,6 @@ class DailymotionProvider : MainAPI() {
         row(searchQuery("drama filipina full episode", "relevance", longerThan = 20), "Drama Filipina", TvType.AsianDrama),
         row(searchQuery("drama malaysia full episode", "relevance", longerThan = 20), "Drama Malaysia", TvType.AsianDrama),
         row(searchQuery("sinetron indonesia full episode", "relevance", longerThan = 20), "Drama Indonesia", TvType.TvSeries),
-
         row(searchQuery("full movie indonesia", "relevance", longerThan = 45), "Movie Indonesia", TvType.Movie),
         row(searchQuery("full movie korea", "relevance", longerThan = 45), "Movie Korea", TvType.Movie),
         row(searchQuery("full movie china", "relevance", longerThan = 45), "Movie China", TvType.Movie),
@@ -74,7 +93,6 @@ class DailymotionProvider : MainAPI() {
         row(searchQuery("full movie philippines", "relevance", longerThan = 45), "Movie Filipina", TvType.Movie),
         row(searchQuery("full movie malaysia", "relevance", longerThan = 45), "Movie Malaysia", TvType.Movie),
         row(searchQuery("full movie english", "relevance", longerThan = 45), "Movie Barat", TvType.Movie),
-
         row(searchQuery("WWE full show", "relevance", longerThan = 20), "WWE Full Show", TvType.Others),
         row(searchQuery("WWE Raw full show", "relevance", longerThan = 20), "WWE RAW", TvType.Others),
         row(searchQuery("WWE SmackDown full show", "relevance", longerThan = 20), "WWE SmackDown", TvType.Others),
@@ -82,7 +100,6 @@ class DailymotionProvider : MainAPI() {
         row(searchQuery("WWE highlights", "relevance", longerThan = 3), "WWE Highlights", TvType.Others),
         row(searchQuery("AEW Dynamite full show", "relevance", longerThan = 20), "AEW Dynamite", TvType.Others),
         row(searchQuery("UFC full fight", "relevance", longerThan = 5), "UFC Full Fight", TvType.Others),
-
         row(searchQuery("documentary indonesia", "relevance", longerThan = 15), "Dokumenter Indonesia", TvType.Others),
         row(searchQuery("komedi indonesia", "relevance", longerThan = 8), "Komedi Indonesia", TvType.Others),
         row(searchQuery("travel indonesia", "relevance", longerThan = 5), "Travel Indonesia", TvType.Others),
@@ -153,14 +170,18 @@ class DailymotionProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (data.isBlank()) return false
+        val videoId = data.extractDailymotionId()
+        var found = false
+
+        if (!videoId.isNullOrBlank()) {
+            found = resolveDailymotionVideo(videoId, subtitleCallback, callback) || found
+        }
 
         val urls = data.split(LINK_SEPARATOR)
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
 
-        var found = false
         for (url in urls) {
             found = runCatching {
                 loadExtractor(url, "$mainUrl/", subtitleCallback, callback)
@@ -168,6 +189,140 @@ class DailymotionProvider : MainAPI() {
         }
 
         return found
+    }
+
+    private suspend fun resolveDailymotionVideo(
+        videoId: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val embedUrl = "$geoPlayerBase/$DEFAULT_PLAYER_ID.html?video=$videoId"
+        val metadataUrl = "$mainUrl/player/metadata/video/$videoId"
+        val response = runCatching {
+            app.get(
+                metadataUrl,
+                headers = apiHeaders + mapOf(
+                    "Accept" to "application/json,text/plain,*/*",
+                    "Origin" to mainUrl,
+                    "Referer" to embedUrl
+                ),
+                referer = embedUrl
+            ).text
+        }.getOrNull() ?: return false
+
+        val json = runCatching { dailymotionJsonMapper.readTree(response) }.getOrNull() ?: return false
+        emitSubtitles(json, subtitleCallback)
+
+        val streams = collectStreamUrls(json)
+        var emitted = false
+        streams.forEach { streamUrl ->
+            val fixedUrl = fixUrl(streamUrl)
+            when {
+                fixedUrl.contains(".m3u8", ignoreCase = true) -> {
+                    M3u8Helper.generateM3u8(
+                        name,
+                        fixedUrl,
+                        referer = embedUrl,
+                        headers = mapOf(
+                            "Origin" to mainUrl,
+                            "Referer" to embedUrl,
+                            "User-Agent" to USER_AGENT
+                        )
+                    ).forEach { link ->
+                        emitted = true
+                        callback.invoke(link)
+                    }
+                }
+                else -> {
+                    val loaded = runCatching {
+                        loadExtractor(fixedUrl, embedUrl, subtitleCallback, callback)
+                    }.getOrDefault(false)
+                    emitted = emitted || loaded
+                }
+            }
+        }
+
+        return emitted
+    }
+
+    private fun collectStreamUrls(json: JsonNode): List<String> {
+        val urls = mutableListOf<String>()
+
+        fun scan(node: JsonNode?) {
+            if (node == null || node.isNull) return
+            when {
+                node.isTextual -> {
+                    val value = node.asText().trim()
+                    if (value.contains(".m3u8", ignoreCase = true) || value.contains(".mp4", ignoreCase = true)) {
+                        urls += value.replace("\\/", "/")
+                    }
+                }
+                node.isArray -> node.forEach { scan(it) }
+                node.isObject -> node.fields().forEachRemaining { entry -> scan(entry.value) }
+            }
+        }
+
+        scan(json["qualities"])
+        scan(json["stream_chromecast_url"])
+        scan(json["stream_h264_url"])
+        scan(json["stream_hls_url"])
+        scan(json["stream_live_hls_url"])
+        scan(json)
+
+        return urls
+            .map { it.trim() }
+            .filter { it.startsWith("http", ignoreCase = true) }
+            .distinct()
+    }
+
+    private fun emitSubtitles(json: JsonNode, subtitleCallback: (SubtitleFile) -> Unit) {
+        val subtitles = json["subtitles"]?.get("data") ?: json["subtitles"]
+        if (subtitles == null || subtitles.isNull) return
+
+        val seen = mutableSetOf<String>()
+        fun emit(label: String?, url: String?) {
+            val cleanUrl = url?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: return
+            if (!seen.add(cleanUrl)) return
+            subtitleCallback.invoke(newSubtitleFile(label?.takeIf { it.isNotBlank() } ?: "Subtitle", cleanUrl))
+        }
+
+        when {
+            subtitles.isArray -> subtitles.forEach { item ->
+                val label = item["label"]?.asText()
+                    ?: item["language"]?.asText()
+                    ?: item["lang"]?.asText()
+                val urls = item["urls"]
+                if (urls?.isArray == true) {
+                    urls.forEach { emit(label, it.asText()) }
+                } else {
+                    emit(label, item["url"]?.asText())
+                }
+            }
+            subtitles.isObject -> subtitles.fields().forEachRemaining { langEntry ->
+                val lang = langEntry.key
+                val value = langEntry.value
+                when {
+                    value.isArray -> value.forEach { item ->
+                        val label = item["label"]?.asText() ?: lang
+                        val urls = item["urls"]
+                        if (urls?.isArray == true) {
+                            urls.forEach { emit(label, it.asText()) }
+                        } else {
+                            emit(label, item["url"]?.asText())
+                        }
+                    }
+                    value.isObject -> {
+                        val label = value["label"]?.asText() ?: lang
+                        val urls = value["urls"]
+                        if (urls?.isArray == true) {
+                            urls.forEach { emit(label, it.asText()) }
+                        } else {
+                            emit(label, value["url"]?.asText())
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun row(query: String, title: String, type: TvType): Pair<String, String> {
@@ -205,9 +360,6 @@ class DailymotionProvider : MainAPI() {
             "sort=$sort"
         )
 
-        // Jangan pakai filter availability/no_live di main row.
-        // Di beberapa query Dailymotion, filter itu membuat respons kosong sehingga Cloudstream
-        // cuma menampilkan judul kategori sebagai tulisan tanpa kartu video.
         if (longerThan != null && longerThan > 0) {
             parts += "longer_than=$longerThan"
         }
@@ -255,7 +407,7 @@ class DailymotionProvider : MainAPI() {
 
         val search = params["search"]?.takeIf { it.isNotBlank() } ?: return emptyList()
         val decoded = runCatching {
-            java.net.URLDecoder.decode(search, "UTF-8")
+            URLDecoder.decode(search, "UTF-8")
         }.getOrDefault(search.replace("+", " "))
             .replace("+", " ")
             .trim()
@@ -277,7 +429,6 @@ class DailymotionProvider : MainAPI() {
             "search=${words.urlEncoded()}&sort=recent"
         ).distinct()
     }
-
 
     private fun VideoItem.toSearchResponse(type: TvType): SearchResponse? {
         val videoId = id?.takeIf { it.isNotBlank() } ?: return null
@@ -314,7 +465,8 @@ class DailymotionProvider : MainAPI() {
         val resolvedType = forcedType ?: inferTypeFromTitle(cleanTitle)
         val watchUrl = url?.takeIf { it.isNotBlank() } ?: "$mainUrl/video/$videoId"
         val embedUrl = embedUrl?.takeIf { it.isNotBlank() }
-        val data = listOfNotNull(watchUrl, embedUrl).distinct().joinToString(LINK_SEPARATOR)
+        val geoEmbedUrl = "$geoPlayerBase/$DEFAULT_PLAYER_ID.html?video=$videoId"
+        val data = listOfNotNull(videoId, watchUrl, embedUrl, geoEmbedUrl).distinct().joinToString(LINK_SEPARATOR)
         val tagList = listOfNotNull(
             channel?.trim()?.takeIf { it.isNotBlank() },
             country?.trim()?.takeIf { it.isNotBlank() },
@@ -375,10 +527,20 @@ class DailymotionProvider : MainAPI() {
 
     private fun String.extractDailymotionId(): String? {
         val clean = substringBefore("?").trim()
-        return Regex("""(?:dailymotion\.com/(?:embed/)?video/|dai\.ly/)([A-Za-z0-9]+)""")
-            .find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
+        val uriId = runCatching {
+            val uri = URI(this)
+            uri.query
+                ?.split("&")
+                ?.firstOrNull { it.startsWith("video=", ignoreCase = true) }
+                ?.substringAfter("=", "")
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+
+        return uriId
+            ?: Regex("""(?:dailymotion\.com/(?:embed/)?video/|geo\.dailymotion\.com/player/[^?]+\?video=|dai\.ly/)([A-Za-z0-9]+)""")
+                .find(this)
+                ?.groupValues
+                ?.getOrNull(1)
             ?: clean.substringAfter("/video/", "")
                 .substringBefore("?")
                 .substringBefore("_")
@@ -397,7 +559,6 @@ class DailymotionProvider : MainAPI() {
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/"
     )
-
 
     private inline fun <reified T> parseDailymotionJson(text: String): T? {
         return runCatching { dailymotionJsonMapper.readValue<T>(text) }.getOrNull()
@@ -452,6 +613,7 @@ class DailymotionProvider : MainAPI() {
 
     companion object {
         private const val LINK_SEPARATOR = "|||DM|||"
+        private const val DEFAULT_PLAYER_ID = "x95ee"
         private val dailymotionJsonMapper = jacksonObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
