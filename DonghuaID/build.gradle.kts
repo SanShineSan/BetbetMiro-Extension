@@ -1,4 +1,4 @@
-version = 3
+version = 5
 
 cloudstream {
     description = "DonghuaID - Download dan streaming donghua subtitle Indonesia"
