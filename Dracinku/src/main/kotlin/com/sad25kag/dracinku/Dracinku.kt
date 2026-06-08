@@ -17,17 +17,20 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLEncoder
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class Dracinku : MainAPI() {
     override var mainUrl = "https://dracinku.com"
@@ -74,6 +77,13 @@ class Dracinku : MainAPI() {
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer" to "$mainUrl/"
+    )
+
+    private val wigitaUrl = "https://wigita.upn.one"
+    private val wigitaHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "*/*",
+        "Referer" to "$wigitaUrl/"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -173,13 +183,42 @@ class Dracinku : MainAPI() {
         val emitted = linkedSetOf<String>()
         var found = false
 
-        suspend fun emitDirect(url: String, referer: String, label: String = name): Boolean {
+        fun emitHls(url: String, referer: String, label: String = name): Boolean {
             val clean = url.cleanEscaped().trimEnd(',', ';')
             val key = clean.substringBefore("?token=").substringBefore("&token=").substringBefore("#")
             if (!emitted.add(key)) return false
 
-            return if (clean.contains(".m3u8", true)) {
-                generateM3u8(label, clean, referer).forEach(callback)
+            callback(
+                newExtractorLink(label, label, clean, ExtractorLinkType.M3U8) {
+                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Accept" to "application/vnd.apple.mpegurl,application/x-mpegURL,*/*",
+                        "Referer" to referer,
+                        "Origin" to referer.trimEnd('/')
+                    )
+                }
+            )
+            return true
+        }
+
+        fun emitDirect(url: String, referer: String, label: String = name): Boolean {
+            val clean = url.cleanEscaped().trimEnd(',', ';')
+            val key = clean.substringBefore("?token=").substringBefore("&token=").substringBefore("#")
+            if (!emitted.add(key)) return false
+
+            return if (clean.isHlsPlaylist()) {
+                callback(
+                    newExtractorLink(label, label, clean, ExtractorLinkType.M3U8) {
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Accept" to "application/vnd.apple.mpegurl,application/x-mpegURL,*/*",
+                            "Referer" to referer,
+                            "Origin" to referer.trimEnd('/')
+                        )
+                    }
+                )
                 true
             } else {
                 callback(
@@ -190,12 +229,31 @@ class Dracinku : MainAPI() {
                         this.headers = mapOf(
                             "User-Agent" to USER_AGENT,
                             "Accept" to "*/*",
-                            "Range" to "bytes=0-"
+                            "Range" to "bytes=0-",
+                            "Referer" to referer
                         )
                     }
                 )
                 true
             }
+        }
+
+        suspend fun emitWigita(playerUrl: String): Boolean {
+            var wigitaFound = false
+            extractWigitaIds(playerUrl).forEach { videoId ->
+                val resolved = resolveWigita(videoId) ?: return@forEach
+                listOfNotNull(
+                    resolved.cf?.let { it to "Wigita CF" },
+                    resolved.source?.let { it to "Wigita Source" }
+                ).forEach { (url, label) ->
+                    if (url.isHlsPlaylist()) {
+                        if (emitHls(url, "$wigitaUrl/", label)) wigitaFound = true
+                    } else if (url.isDirectMedia()) {
+                        if (emitDirect(url, "$wigitaUrl/", label)) wigitaFound = true
+                    }
+                }
+            }
+            return wigitaFound
         }
 
         suspend fun handleCandidate(raw: String?, base: String, depth: Int = 0) {
@@ -205,6 +263,7 @@ class Dracinku : MainAPI() {
             if (!emitted.add("candidate:$key:$depth")) return
 
             when {
+                fixed.isWigitaPlayerUrl() -> if (emitWigita(fixed)) found = true
                 fixed.isDirectMedia() -> if (emitDirect(fixed, base)) found = true
                 fixed.startsWith(mainUrl, true) && depth < 1 -> inspectPage(fixed, base, depth + 1, ::handleCandidate)
                 fixed.startsWith("http", true) -> {
@@ -232,7 +291,7 @@ class Dracinku : MainAPI() {
         document?.select(
             "iframe[src], embed[src], video[src], video source[src], source[src], " +
                 "a[href*='embed'], a[href*='player'], a[href*='.mp4'], a[href*='.m3u8'], " +
-                "a[href*='video'], [data-src], [data-url], [data-link], [data-href], " +
+                "a[href*='video'], a[href*='wigita.upn.one'], [data-src], [data-url], [data-link], [data-href], " +
                 "[data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream]"
         )?.forEach { element ->
             listOf(
@@ -333,12 +392,65 @@ class Dracinku : MainAPI() {
             .forEach { decoded ->
                 results.add(decoded)
                 Regex("""https?://[^"'\s<>)\\\]}]+""", RegexOption.IGNORE_CASE)
-                    .findAll(decoded)
+                    .findAll(decoded.cleanEscaped())
                     .map { it.value.cleanEscaped() }
                     .forEach { results.add(it) }
             }
 
         return results.toList()
+    }
+
+    private suspend fun resolveWigita(videoId: String): WigitaSource? {
+        val safeId = videoId.trim().takeIf { it.matches(Regex("""[A-Za-z0-9_-]{3,}""")) } ?: return null
+        val apiUrl = "$wigitaUrl/api/v1/video?id=$safeId&w=421&h=935&r=${mainUrl.removePrefix("https://").removePrefix("http://")}"
+        val encrypted = runCatching { app.get(apiUrl, headers = wigitaHeaders, referer = "$wigitaUrl/").text.trim() }.getOrNull()
+            ?: return null
+        val plain = if (encrypted.startsWith("{")) encrypted else decryptWigita(encrypted) ?: return null
+        val json = runCatching { JSONObject(plain.cleanEscaped()) }.getOrNull() ?: return null
+        val source = json.optString("source").cleanEscaped().takeIf { it.startsWith("http", true) }
+        val cf = json.optString("cf").cleanEscaped().takeIf { it.startsWith("http", true) }
+        return WigitaSource(source = source, cf = cf).takeIf { it.source != null || it.cf != null }
+    }
+
+    private fun decryptWigita(hex: String): String? {
+        return runCatching {
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            val key = "kiemtienmua911ca".toByteArray(Charsets.UTF_8)
+            val iv = "1234567890oiuytr".toByteArray(Charsets.UTF_8)
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+            String(cipher.doFinal(hex.trim().hexToBytes()), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    private fun extractWigitaIds(playerUrl: String): List<String> {
+        val clean = playerUrl.cleanEscaped()
+        val ids = linkedSetOf<String>()
+        runCatching { URI(clean).fragment }
+            .getOrNull()
+            ?.substringBefore("&")
+            ?.trim()
+            ?.takeIf { it.matches(Regex("""[A-Za-z0-9_-]{3,}""")) }
+            ?.let { ids.add(it) }
+
+        Regex("""[?&]id=([A-Za-z0-9_-]{3,})""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.groupValues[1] }
+            .forEach { ids.add(it) }
+
+        Regex("""wigita\.upn\.one/(?:embed/)?#?([A-Za-z0-9_-]{3,})""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.groupValues[1] }
+            .filterNot { it.equals("api", true) || it.equals("assets", true) }
+            .forEach { ids.add(it) }
+
+        return ids.toList()
+    }
+
+    private fun String.hexToBytes(): ByteArray {
+        val clean = trim().filter { it.lowercaseChar() in '0'..'9' || it.lowercaseChar() in 'a'..'f' }
+        return ByteArray(clean.length / 2) { index ->
+            clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
     }
 
     private fun String.decodeCandidate(): String {
@@ -368,9 +480,23 @@ class Dracinku : MainAPI() {
         return fixed.startsWith(mainUrl, true) && Regex("""/20\d{2}/\d{2}/\d{2}/[^/?#]+""").containsMatchIn(fixed)
     }
 
+    private fun String.isWigitaPlayerUrl(): Boolean {
+        val lower = cleanEscaped().lowercase()
+        return lower.contains("wigita.upn.one") && (
+            lower.contains("#") || lower.contains("/api/v1/video?id=") || lower.contains("/api/v1/info?id=") ||
+                Regex("""wigita\.upn\.one/(?:embed/)?[A-Za-z0-9_-]{3,}""").containsMatchIn(lower)
+            )
+    }
+
+    private fun String.isHlsPlaylist(): Boolean {
+        val lower = lowercase()
+        return lower.contains(".m3u8") || lower.contains("cf-master") ||
+            (lower.contains("index-") && lower.endsWith(".txt"))
+    }
+
     private fun String.isDirectMedia(): Boolean {
         val lower = lowercase()
-        return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") ||
+        return isHlsPlaylist() || lower.contains(".mp4") || lower.contains(".webm") ||
             lower.contains(".mkv") || lower.contains("videoplayback") || lower.contains("mime_type=video")
     }
 
@@ -424,4 +550,9 @@ class Dracinku : MainAPI() {
             .replace(Regex("""^Nonton\s+""", RegexOption.IGNORE_CASE), "")
             .trim()
     }
+
+    private data class WigitaSource(
+        val source: String?,
+        val cf: String?
+    )
 }
