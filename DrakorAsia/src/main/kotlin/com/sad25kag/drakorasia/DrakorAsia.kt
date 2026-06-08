@@ -27,6 +27,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -618,48 +620,120 @@ class DrakorAsia : MainAPI() {
     private suspend fun resolveAbyssPlayer(abyssUrl: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
         val pageUrl = abyssUrl.replace("abyss.to/", "abyssplayer.com/")
         val html = runCatching {
-            app.get(pageUrl, headers = headers, referer = referer.ifBlank { mainUrl }).text
+            app.get(pageUrl, headers = abyssHeaders(), referer = ABYSS_SERVICE_REFERER).text
         }.getOrNull().orEmpty()
         if (html.isBlank()) return false
 
-        val payload = parseAbyssPayload(html) ?: return false
-        val mediaJson = decryptAbyssMedia(payload) ?: return false
-        val root = runCatching { JsonParser().parse(mediaJson).asJsonObject }.getOrNull() ?: return false
-        val mp4 = root.obj("mp4") ?: return false
+        val encoded = extractAbyssDatas(html)
+        if (!encoded.isNullOrBlank() && resolveAbyssWithDecoder(encoded, callback)) return true
+
+        // Local fallback intentionally avoids fristDatas/firstDatas because HAR shows those
+        // are Abyss internal octet-stream chunks and ExoPlayer reports container unsupported.
+        return resolveAbyssLocalSources(pageUrl, html, callback)
+    }
+
+    private suspend fun resolveAbyssWithDecoder(encoded: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val body = """{"text":"${encoded.escapeJson()}"}"""
+        val response = runCatching {
+            app.post(
+                url = ABYSS_DECODER_API,
+                headers = abyssHeaders(),
+                requestBody = body.toRequestBody("application/json".toMediaType())
+            ).text
+        }.getOrNull().orEmpty()
+        if (response.isBlank()) return false
+
+        val root = runCatching { JsonParser().parse(response).asJsonObject }.getOrNull() ?: return false
+        val result = root.obj("result") ?: root
+        val sources = result.array("sources") ?: result.obj("mp4")?.array("sources") ?: return false
         var emitted = false
 
-        val sourcesByRes = mp4.array("sources")
-            ?.mapNotNull { it.asObjectOrNull() }
-            ?.filter { it.bool("status", true) }
-            ?.associateBy { it.int("res_id") ?: -1 }
-            .orEmpty()
-
-        val firstData = mp4.array("fristDatas") ?: mp4.array("firstDatas")
-        firstData?.mapNotNull { it.asObjectOrNull() }?.forEach { item ->
-            val videoUrl = item.string("url")?.takeIf { it.startsWith("http", true) } ?: return@forEach
-            val source = sourcesByRes[item.int("res_id") ?: -1]
-            val label = source?.string("label") ?: item.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
+        sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
+            if (!source.bool("status", true)) return@forEach
+            val videoUrl = listOf(
+                source.string("url"),
+                source.string("file"),
+                source.string("src"),
+                source.string("link")
+            ).firstOrNull { !it.isNullOrBlank() }?.replace("\\/", "/") ?: return@forEach
+            if (!videoUrl.startsWith("http", true) && !videoUrl.startsWith("//")) return@forEach
+            val label = source.string("label") ?: source.string("quality") ?: source.string("name") ?: "Auto"
             runCatching {
-                emitDirect(videoUrl, ABYSS_REFERER, callback, "AbyssPlayer $label")
+                emitAbyssLink(videoUrl, label, callback)
                 emitted = true
             }
         }
 
-        if (!emitted) {
-            mp4.array("sources")?.mapNotNull { it.asObjectOrNull() }?.forEach { source ->
-                if (!source.bool("status", true)) return@forEach
-                val host = source.string("url")?.trimEnd('/').orEmpty()
-                val path = source.string("path")?.trimStart('/').orEmpty()
-                if (host.isBlank() || path.isBlank()) return@forEach
-                val label = source.string("label") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
-                runCatching {
-                    emitDirect("$host/$path", ABYSS_REFERER, callback, "AbyssPlayer $label")
-                    emitted = true
-                }
+        return emitted
+    }
+
+    private suspend fun resolveAbyssLocalSources(pageUrl: String, html: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val payload = parseAbyssPayload(html) ?: return false
+        val mediaJson = decryptAbyssMedia(payload) ?: return false
+        val root = runCatching { JsonParser().parse(mediaJson).asJsonObject }.getOrNull() ?: return false
+        val sources = root.obj("mp4")?.array("sources") ?: return false
+        var emitted = false
+
+        sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
+            if (!source.bool("status", true)) return@forEach
+            val host = source.string("url")?.trimEnd('/').orEmpty()
+            val path = source.string("path")?.trimStart('/').orEmpty()
+            if (host.isBlank() || path.isBlank()) return@forEach
+            val videoUrl = "$host/$path"
+            val label = source.string("label") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
+            // Avoid known Abyss firstData/chunk objects; emit only candidates that look like
+            // normal video containers or manifests from local fallback.
+            if (!videoUrl.isSupportedContainerCandidate()) return@forEach
+            runCatching {
+                emitAbyssLink(videoUrl, label, callback)
+                emitted = true
             }
         }
 
         return emitted
+    }
+
+    private suspend fun emitAbyssLink(videoUrl: String, label: String, callback: (ExtractorLink) -> Unit) {
+        val fixed = videoUrl.replace("\\/", "/").let { if (it.startsWith("//")) "https:$it" else it }
+        val type = when {
+            fixed.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+            fixed.contains(".mpd", true) -> ExtractorLinkType.DASH
+            else -> ExtractorLinkType.VIDEO
+        }
+        val quality = getQualityFromName(label).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
+        callback.invoke(
+            newExtractorLink(
+                source = "AbyssPlayer",
+                name = "AbyssPlayer ${label.cleanTitle().ifBlank { "Auto" }}",
+                url = fixed,
+                type = type
+            ) {
+                this.quality = quality
+                this.referer = ABYSS_SERVICE_REFERER
+                this.headers = mapOf(
+                    "Referer" to ABYSS_SERVICE_REFERER,
+                    "Origin" to ABYSS_SERVICE_ORIGIN,
+                    "User-Agent" to USER_AGENT
+                )
+            }
+        )
+    }
+
+    private fun extractAbyssDatas(html: String): String? {
+        return Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([^"']+)["']""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun abyssHeaders(): Map<String, String> {
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Origin" to ABYSS_SERVICE_ORIGIN,
+            "Referer" to ABYSS_SERVICE_REFERER,
+            "Accept" to "application/json,text/plain,*/*"
+        )
     }
 
     private fun parseAbyssPayload(html: String): DrakorAsiaAbyssPayload? {
@@ -736,6 +810,15 @@ class DrakorAsia : MainAPI() {
     private fun String.isDownloadCandidate(): Boolean {
         val value = lowercase().htmlUnescape()
         return value.contains("/video/down.php") || value.contains("katong.usbx.me/video/down")
+    }
+
+    private fun String.isSupportedContainerCandidate(): Boolean {
+        val value = lowercase().substringBefore("#").substringBefore("?")
+        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains(".mpd") || value.contains("videoplayback")
+    }
+
+    private fun String.escapeJson(): String {
+        return replace("\\", "\\\\").replace("\"", "\\\"")
     }
 
     private fun String.isDirectMedia(): Boolean {
@@ -913,5 +996,8 @@ class DrakorAsia : MainAPI() {
         private const val SEARCH_SERIES_LIMIT = 150
         private const val EPISODE_LIMIT = 150
         private const val ABYSS_REFERER = "https://abyssplayer.com/"
+        private const val ABYSS_SERVICE_ORIGIN = "https://playhydrax.com"
+        private const val ABYSS_SERVICE_REFERER = "https://playhydrax.com/"
+        private const val ABYSS_DECODER_API = "https://enc-dec.app/api/dec-abyss"
     }
 }
