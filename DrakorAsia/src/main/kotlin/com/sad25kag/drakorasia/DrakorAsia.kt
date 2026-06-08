@@ -32,8 +32,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -138,7 +140,7 @@ class DrakorAsia : MainAPI() {
             .filter { it.matchesKeyword(keyword) }
             .forEach { post -> post.toSearchResult()?.let { results[it.url] = it } }
 
-        val encoded = URLEncoder.encode(keyword, "UTF-8")
+        val encoded = URLEncoder.encode(keyword, StandardCharsets.UTF_8.toString())
         val documentResults = runCatching {
             parseCards(app.get("$mainUrl/search?q=$encoded", headers = headers, referer = mainUrl).document)
         }.getOrDefault(emptyList())
@@ -353,7 +355,7 @@ class DrakorAsia : MainAPI() {
     }
 
     private suspend fun fetchSearchFeed(query: String): List<BloggerPost> {
-        val encoded = URLEncoder.encode(query, "UTF-8")
+        val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.toString())
         return fetchFeedUrl("$mainUrl/feeds/posts/default?alt=json&q=$encoded&max-results=$SEARCH_LIMIT")
     }
 
@@ -581,7 +583,7 @@ class DrakorAsia : MainAPI() {
 
     private fun decodePayload(raw: String): String {
         val unescaped = raw.htmlUnescape().replace("\\/", "/")
-        val urlDecoded = runCatching { URLDecoder.decode(unescaped, "UTF-8") }.getOrDefault(unescaped)
+        val urlDecoded = runCatching { URLDecoder.decode(unescaped, StandardCharsets.UTF_8.toString()) }.getOrDefault(unescaped)
         val base64Candidate = urlDecoded.substringAfter("base64,", urlDecoded).trim().trim('"', '\'', ')', ';')
         if (base64Candidate.length >= 8 && base64Candidate.matches(Regex("^[A-Za-z0-9+/=_-]+$"))) {
             listOf(Base64.DEFAULT, Base64.URL_SAFE or Base64.NO_WRAP).forEach { flag ->
@@ -884,18 +886,35 @@ class DrakorAsia : MainAPI() {
     }
 
     private fun String.urlDecodeSafe(): String {
-        return runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
+        return runCatching { URLDecoder.decode(this, StandardCharsets.UTF_8.toString()) }.getOrDefault(this)
     }
 
     private fun normalizeUrl(url: String, referer: String = mainUrl): String {
-        val clean = url.trim().replace("&amp;", "&")
-        return when {
-            clean.startsWith("//") -> "https:$clean"
-            clean.startsWith("http://", true) || clean.startsWith("https://", true) -> clean
-            clean.startsWith("/") -> mainUrl.trimEnd('/') + clean
-            clean.isBlank() -> clean
-            else -> referer.substringBeforeLast('/').trimEnd('/') + "/" + clean
+        val clean = url.trim().htmlUnescape()
+        if (clean.isBlank()) return clean
+        if (clean.startsWith("//")) return "https:$clean"
+        if (clean.startsWith("http://", true) || clean.startsWith("https://", true)) return clean
+
+        return runCatching {
+            val base = URI(normalizeBaseUrl(referer))
+            base.resolve(clean).toString()
+        }.getOrElse {
+            when {
+                clean.startsWith("/") -> mainUrl.trimEnd('/') + clean
+                else -> referer.substringBefore('?').substringBefore('#').substringBeforeLast('/').trimEnd('/') + "/" + clean
+            }
         }
+    }
+
+    private fun normalizeBaseUrl(url: String): String {
+        val clean = url.trim().htmlUnescape()
+        if (clean.isBlank()) return mainUrl.trimEnd('/') + "/"
+        if (clean.startsWith("//")) return "https:$clean"
+        if (clean.startsWith("http://", true) || clean.startsWith("https://", true)) {
+            val noFragment = clean.substringBefore('#')
+            return if (noFragment.substringAfter("//", "").contains('/')) noFragment else noFragment.trimEnd('/') + "/"
+        }
+        return mainUrl.trimEnd('/') + "/"
     }
 
     private fun withMobileParam(url: String): String {
@@ -903,7 +922,7 @@ class DrakorAsia : MainAPI() {
     }
 
     private fun encodeLabelPath(label: String): String {
-        return URLEncoder.encode(label.trim(), "UTF-8").replace("+", "%20")
+        return URLEncoder.encode(label.trim(), StandardCharsets.UTF_8.toString()).replace("+", "%20")
     }
 
     private fun Element.imageAttr(): String {
