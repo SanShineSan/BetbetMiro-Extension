@@ -1,9 +1,9 @@
-version = 1
+version = 2
 
 cloudstream {
     authors = listOf("BetbetMiro")
     language = "id"
-    description = "Film21 provider untuk streaming film subtitle Indonesia dari palacepalace.com dengan parser listing, detail movie/series, dan resolver playback Dooplay/dynamic embed."
+    description = "Film21 provider untuk streaming film subtitle Indonesia dari palacepalace.com dengan parser listing, detail movie/series, dan resolver playback P2PPlay/PlayerP2P berbasis evidence source aktif."
     status = 1
 
     tvTypes = listOf(

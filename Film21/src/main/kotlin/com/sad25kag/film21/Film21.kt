@@ -68,6 +68,7 @@ class Film21 : MainAPI() {
         "/crime/" to "Crime",
         "/drama/" to "Drama",
         "/fantasy/" to "Fantasy",
+        "/horror/" to "Horror",
         "/mystery/" to "Mystery",
         "/romance/" to "Romance",
         "/science-fiction/" to "Science Fiction",
@@ -75,6 +76,7 @@ class Film21 : MainAPI() {
         "/semi/" to "Film Semi",
         "/semi-jepang/" to "Semi Jepang",
         "/semi-korea/" to "Semi Korea",
+        "/country/indonesia/" to "Indonesia",
         "/country/australia/" to "Australia",
         "/country/canada/" to "Canada",
         "/country/china/" to "China",
@@ -137,20 +139,20 @@ class Film21 : MainAPI() {
 
         val poster = findPoster(document, page)
         val text = cleanText(document.text())
-        val tags = document.select("a[href*='/genre/']")
+        val tags = document.select(".gmr-movie-on a, a[href*='/genre/'], a[href*='/category/']")
             .map { cleanText(it.text()).substringBefore("(").trim() }
             .filter { it.length in 2..40 && !it.equals("Trailer", true) && !it.equals("Watch", true) && !it.contains("film21", true) }
             .distinct()
             .take(20)
-        val actors = document.select("a[href*='/cast/'], a[href*='/actor/'], a[href*='/director/']")
+        val actors = document.select("a[href*='/cast/'], a[href*='/actor/'], a[href*='/director/'], [itemprop=director] a")
             .map { cleanText(it.text()) }
             .filter { it.length in 2..60 }
             .distinct()
             .take(24)
-        val year = document.selectFirst("a[href*='/year/']")?.text()?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
+        val year = document.selectFirst("a[href*='/year/'], time[datetime]")?.text()?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
             ?: Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull()
             ?: Regex("""\b(19|20)\d{2}\b""").find(text)?.value?.toIntOrNull()
-        val rating = document.selectFirst("[itemprop=ratingValue], .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")
+        val rating = document.selectFirst("[itemprop=ratingValue], .gmr-rating-item, .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")
             ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
         val duration = Regex("""(?i)(\d{1,3})\s*(?:min|menit|m)\b""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val description = cleanDescription(
@@ -207,7 +209,9 @@ class Film21 : MainAPI() {
             val key = fixed.substringBefore("#")
             if (!emitted.add(key)) return false
             if (fixed.isM3u8Like()) {
-                val links = try { generateM3u8(source, fixed, referer, headers = headers + mapOf("Referer" to referer, "Accept" to "*/*")) } catch (_: Throwable) { emptyList() }
+                val links = try {
+                    generateM3u8(source, fixed, referer, headers = headers + mapOf("Referer" to referer, "Accept" to "*/*"))
+                } catch (_: Throwable) { emptyList() }
                 links.forEach { link ->
                     val linkKey = link.url.substringBefore("#")
                     if (emitted.add(linkKey)) callback(link)
@@ -297,7 +301,7 @@ class Film21 : MainAPI() {
         val results = linkedMapOf<String, SearchResponse>()
         document.select(cardSelector).forEach { element -> element.toSearchResult()?.let { results[contentKey(it.url)] = it } }
         if (results.size < 6) {
-            document.select("article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], .result-item a[href]")
+            document.select("article a[href], .post a[href], .item a[href], .movie a[href], .film a[href], .ml-item a[href], .result-item a[href], .entry-title a[href]")
                 .forEach { anchor -> anchor.toSearchResult()?.let { results[contentKey(it.url)] = it } }
         }
         return results.values.take(80)
@@ -317,11 +321,11 @@ class Film21 : MainAPI() {
             anchor.text(),
             titleFromUrl(href)
         ).firstOrNull { isUsefulTitle(it) }?.let { cleanTitle(it) } ?: return null
-        val poster = image?.imageUrl(mainUrl) ?: container.styleImage(mainUrl) ?: anchor.findNearbyImage(mainUrl) ?: return null
+        val poster = image?.imageUrl(mainUrl) ?: container.styleImage(mainUrl) ?: anchor.findNearbyImage(mainUrl)
         val text = cleanText(container.text())
         val type = inferType(href, title, text, 0, null)
         val year = Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull() ?: Regex("""\b(19|20)\d{2}\b""").find(text)?.value?.toIntOrNull()
-        val score = container.selectFirst(".rating, .score, .imdb, .vote")?.text()?.replace(",", ".")?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
+        val score = container.selectFirst(".gmr-rating-item, .rating, .score, .imdb, .vote")?.text()?.replace(",", ".")?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
         return if (type == TvType.TvSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = poster
@@ -417,7 +421,8 @@ class Film21 : MainAPI() {
                 "iframe[src], iframe[data-src], iframe[data-litespeed-src], embed[src], video[src], video source[src], source[src], " +
                 "a[href*='embed'], a[href*='player'], a[href*='stream'], a[href*='drive'], a[href*='gofile'], a[href*='dood'], a[href*='streamtape'], " +
                 "a[href*='filemoon'], a[href*='vidhide'], a[href*='vidguard'], a[href*='voe'], a[href*='mp4upload'], a[href*='uqload'], a[href*='krakenfiles'], " +
-                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='sht'], a[href*='short'], a[href*='.mp4'], a[href*='.m3u8']"
+                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='sht'], a[href*='short'], " +
+                "a[href*='p2pplay'], a[href*='playerp2p'], a[href*='vidplayer'], a[href*='.mp4'], a[href*='.m3u8']"
         ).forEach { element ->
             val value = element.attr("src").ifBlank { element.attr("data-src").ifBlank { element.attr("data-litespeed-src").ifBlank { element.attr("href") } } }
             fixUrl(value, baseUrl)?.let { if (!it.isNoiseUrl()) links.add(it) }
@@ -438,7 +443,7 @@ class Film21 : MainAPI() {
 
     private fun embeddedLinks(html: String, baseUrl: String): List<String> {
         val links = linkedSetOf<String>()
-        Regex("""(?i)['"]((?:https?:)?//[^'"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|gdplayer|gdriveplayer|hubcloud|short|sht|/e/|/v/|/d/)[^'"]*)['"]""")
+        Regex("""(?i)['"]((?:https?:)?//[^'"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|gdplayer|gdriveplayer|hubcloud|short|sht|p2pplay|playerp2p|vidplayer|/e/|/v/|/d/)[^'"]*)['"]""")
             .findAll(html).mapNotNull { fixUrl(it.groupValues[1], baseUrl) }.forEach { links.add(it) }
         return links.toList()
     }
@@ -473,45 +478,95 @@ class Film21 : MainAPI() {
         return null
     }
 
-
     private data class ResolvedPlayerLink(val url: String, val referer: String, val source: String)
 
     private suspend fun resolvePlayerLinks(url: String, referer: String): List<ResolvedPlayerLink> {
         val fixed = fixUrl(url, referer) ?: return emptyList()
         val host = try { URI(fixed).host.orEmpty().lowercase(Locale.ROOT) } catch (_: Throwable) { return emptyList() }
         return when {
-            host.contains("sf21.vidplayer.live") -> resolveSf21Player(fixed, referer)
+            isEncryptedPlayerHost(host) -> resolveEncryptedPlayer(fixed, referer)
             else -> emptyList()
         }
     }
 
-    private suspend fun resolveSf21Player(url: String, referer: String): List<ResolvedPlayerLink> {
+    private suspend fun resolveEncryptedPlayer(url: String, referer: String): List<ResolvedPlayerLink> {
         val uri = try { URI(url) } catch (_: Throwable) { return emptyList() }
-        val id = uri.rawFragment?.substringBefore("&")?.substringBefore("?")?.trim().orEmpty()
-            .ifBlank {
-                Regex("""(?i)(?:[?&]id=|/)([a-z0-9]{4,12})(?:[&#/?]|$)""").find(url)?.groupValues?.getOrNull(1).orEmpty()
-            }
+        val id = extractPlayerId(uri, url)
         if (id.isBlank()) return emptyList()
-        val playerOrigin = "https://sf21.vidplayer.live"
+        val playerOrigin = origin(url)
         val sourceHost = runCatching { URI(referer).host.orEmpty().removePrefix("www.") }.getOrNull().orEmpty().ifBlank { "palacepalace.com" }
-        val apiUrl = "$playerOrigin/api/v1/video?id=$id&w=1280&h=720&r=$sourceHost"
-        val encrypted = try {
-            app.get(apiUrl, headers = headers + mapOf("Accept" to "*/*", "Referer" to "$playerOrigin/"), referer = "$playerOrigin/").text
-        } catch (_: Throwable) { return emptyList() }
-        val json = decryptSf21Payload(encrypted) ?: return emptyList()
-        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
+        val apiUrls = listOf(
+            "$playerOrigin/api/v1/video?id=$id&w=1280&h=720&r=$sourceHost",
+            "$playerOrigin/api/v1/video?id=$id&w=421&h=935&r=$sourceHost"
+        ).distinct()
+        val playerHeaders = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "*/*",
+            "Referer" to "$playerOrigin/"
+        )
         val links = linkedSetOf<String>()
-        obj.optString("hlsVideoTiktok").takeIf { it.isNotBlank() }?.let { fixUrl(it, playerOrigin)?.let(links::add) }
-        obj.optString("source").takeIf { it.isNotBlank() }?.let { fixUrl(it, playerOrigin)?.let(links::add) }
-        return links.filter { it.isPlayableMedia() }.map { ResolvedPlayerLink(it, "$playerOrigin/", "$name Sf21") }
+        apiUrls.forEach { apiUrl ->
+            val encrypted = try { app.get(apiUrl, headers = playerHeaders, referer = "$playerOrigin/").text } catch (_: Throwable) { return@forEach }
+            val json = decryptPlayerPayload(encrypted) ?: return@forEach
+            parsePlayerJson(json, playerOrigin).forEach { links.add(it) }
+        }
+        val source = when {
+            uri.host.orEmpty().contains("p2pplay", true) -> "$name P2PPlay"
+            uri.host.orEmpty().contains("playerp2p", true) -> "$name PlayerP2P"
+            else -> "$name Player"
+        }
+        return links.filter { it.isPlayableMedia() }.map { ResolvedPlayerLink(it, "$playerOrigin/", source) }
     }
 
-    private fun decryptSf21Payload(value: String): String? = runCatching {
-        val cipherBytes = value.trim().chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(sf21Key, "AES"), IvParameterSpec(sf21Iv))
-        String(cipher.doFinal(cipherBytes))
-    }.getOrNull()
+    private fun parsePlayerJson(json: String, playerOrigin: String): List<String> {
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
+        val links = linkedSetOf<String>()
+        listOf("source", "hlsVideoTiktok", "cf").forEach { key ->
+            obj.optString(key).takeIf { it.isNotBlank() }?.let { raw ->
+                val fixed = fixUrl(raw, playerOrigin) ?: return@let
+                if (key == "hlsVideoTiktok") {
+                    val version = tiktokVersion(obj)
+                    links.add(if (version.isNotBlank() && !fixed.contains("?")) "$fixed?v=$version" else fixed)
+                } else {
+                    links.add(fixed)
+                }
+            }
+        }
+        return links.toList()
+    }
+
+    private fun tiktokVersion(obj: JSONObject): String {
+        val config = obj.optString("streamingConfig")
+        if (config.isBlank()) return ""
+        return runCatching {
+            JSONObject(config)
+                .optJSONObject("adjust")
+                ?.optJSONObject("Tiktok")
+                ?.optJSONObject("params")
+                ?.optString("v")
+                .orEmpty()
+        }.getOrDefault("")
+    }
+
+    private fun extractPlayerId(uri: URI, url: String): String {
+        uri.rawFragment?.substringBefore("&")?.substringBefore("?")?.trim()?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{4,32}")) }?.let { return it }
+        Regex("""(?i)(?:[?&]id=|/)([a-z0-9_-]{4,32})(?:[&#/?]|$)""").find(url)?.groupValues?.getOrNull(1)?.let { return it }
+        return ""
+    }
+
+    private fun isEncryptedPlayerHost(host: String): Boolean =
+        host.contains("sf21.vidplayer.live") || host.contains("p2pplay.pro") || host.contains("playerp2p.live")
+
+    private fun decryptPlayerPayload(value: String): String? {
+        val clean = value.trim()
+        if (clean.startsWith("{")) return clean
+        return runCatching {
+            val cipherBytes = clean.replace(Regex("[^0-9a-fA-F]"), "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(playerKey, "AES"), IvParameterSpec(playerIv))
+            String(cipher.doFinal(cipherBytes))
+        }.getOrNull()
+    }
 
     private fun buildXFileShareStream(html: String, baseUrl: String): String? {
         val host = runCatching { URI(baseUrl).host.orEmpty() }.getOrNull().orEmpty()
@@ -547,7 +602,8 @@ class Film21 : MainAPI() {
                 lower.contains("stream") || lower.contains("drive") || lower.contains("gofile") || lower.contains("dood") || lower.contains("filemoon") ||
                 lower.contains("vidhide") || lower.contains("vidguard") || lower.contains("voe") || lower.contains("mp4upload") || lower.contains("uqload") ||
                 lower.contains("hubcloud") || lower.contains("gdplayer") || lower.contains("gdriveplayer") || lower.contains("krakenfiles") || lower.contains("filelions") ||
-                lower.contains("sf21.vidplayer.live") || lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org")
+                lower.contains("sf21.vidplayer.live") || lower.contains("p2pplay.pro") || lower.contains("playerp2p.live") ||
+                lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org")
             )
     }
 
@@ -585,8 +641,8 @@ class Film21 : MainAPI() {
         val blocked = setOf(
             "genre", "year", "country", "tag", "category", "page", "dmca", "request-film", "faq", "privacy-policy", "contact",
             "beranda", "home", "wp-admin", "wp-content", "feed", "tv", "film-populer", "best-rating", "semi",
-            "action", "drama", "adventure", "science-fiction", "fantasy", "thriller", "crime", "comedy", "mystery",
-            "war", "anime", "romance", "history", "horror", "index-movie", "order-by-title", "semi-jepang", "semi-korea"
+            "action", "drama", "adventure", "science-fiction", "fantasy", "thriller", "crime", "comedy", "mystery", "horror",
+            "war", "anime", "romance", "history", "index-movie", "order-by-title", "semi-jepang", "semi-korea"
         )
         if (first in blocked) return false
         if (url.contains("?s=", true) || url.contains("youtube.com", true) || url.contains("youtu.be", true)) return false
@@ -597,7 +653,7 @@ class Film21 : MainAPI() {
         document.selectFirst("a.next, .pagination a:contains(Next), .page-numbers.next, a[href*='/page/${page + 1}/']") != null
 
     private fun findPoster(document: Document, baseUrl: String): String? {
-        listOf("meta[property=og:image]", "meta[name=twitter:image]", ".poster img", ".thumb img", ".cover img", ".entry-content img", "img[itemprop=image]", "article img").forEach { selector ->
+        listOf("meta[property=og:image]", "meta[name=twitter:image]", ".poster img", ".thumb img", ".cover img", ".gmr-movie-data img", ".entry-content img", "img[itemprop=image]", "article img").forEach { selector ->
             val element = document.selectFirst(selector) ?: return@forEach
             if (element.tagName().equals("meta", true)) {
                 fixUrl(element.attr("content"), baseUrl)?.takeIf { it.isImageLike() }?.let { return cleanImageUrl(it) }
@@ -642,7 +698,7 @@ class Film21 : MainAPI() {
     }
 
     private fun cleanTitle(value: String?): String = cleanText(value)
-        .replace(Regex("(?i)^permalink\\s+to:\\s*"), "")
+        .replace(Regex("(?i)^permalink\\s+(?:ke|to):\\s*"), "")
         .replace(Regex("(?i)^nonton\\s+film\\s+"), "")
         .replace(Regex("(?i)^nonton\\s+"), "")
         .replace(Regex("(?i)\\s*[-–|]\\s*film21\\s*film\\s*$"), "")
@@ -722,10 +778,10 @@ class Film21 : MainAPI() {
         }
     }
 
-    private val sf21Key = "kiemtienmua911ca".toByteArray()
-    private val sf21Iv = "1234567890oiuytr".toByteArray()
+    private val playerKey = "kiemtienmua911ca".toByteArray()
+    private val playerIv = "1234567890oiuytr".toByteArray()
 
     private val cardSelector = listOf(
-        "article", ".post", ".item", ".movie", ".film", ".ml-item", ".result-item", ".owl-item", ".swiper-slide", ".poster", ".thumbnail", ".box", ".col"
+        "article.item-infinite", "article", ".gmr-box-content", ".post", ".item", ".movie", ".film", ".ml-item", ".result-item", ".owl-item", ".swiper-slide", ".poster", ".thumbnail", ".box", ".col"
     ).joinToString(",")
 }
