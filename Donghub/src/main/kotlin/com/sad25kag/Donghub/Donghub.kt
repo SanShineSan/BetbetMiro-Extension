@@ -30,25 +30,10 @@ class Donghub : MainAPI() {
         "$mainUrl/anime/?type=movie&order=update&page={page}" to "Movie",
         "$mainUrl/anime/?type=ona&order=update&page={page}" to "ONA",
         "$mainUrl/anime/?type=special&order=update&page={page}" to "Special",
-
-        "$mainUrl/genres/2d/page/{page}/" to "2D",
         "$mainUrl/genres/action/page/{page}/" to "Action",
         "$mainUrl/genres/adventure/page/{page}/" to "Adventure",
-        "$mainUrl/genres/cultivation/page/{page}/" to "Cultivation",
-        "$mainUrl/genres/drama/page/{page}/" to "Drama",
         "$mainUrl/genres/fantasy/page/{page}/" to "Fantasy",
-        "$mainUrl/genres/historical/page/{page}/" to "Historical",
-        "$mainUrl/genres/isekai/page/{page}/" to "Isekai",
-        "$mainUrl/genres/martial-arts/page/{page}/" to "Martial Arts",
-        "$mainUrl/genres/mystery/page/{page}/" to "Mystery",
-        "$mainUrl/genres/psychological/page/{page}/" to "Psychological",
-        "$mainUrl/genres/reincarnation/page/{page}/" to "Reincarnation",
-        "$mainUrl/genres/romance/page/{page}/" to "Romance",
-        "$mainUrl/genres/sci-fi/page/{page}/" to "Sci-Fi",
-        "$mainUrl/genres/super-power/page/{page}/" to "Super Power",
-        "$mainUrl/genres/supranatural/page/{page}/" to "Supranatural",
-        "$mainUrl/genres/urban-fantasy/page/{page}/" to "Urban Fantasy",
-        "$mainUrl/genres/war/page/{page}/" to "War"
+        "$mainUrl/genres/romance/page/{page}/" to "Romance"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -58,7 +43,7 @@ class Donghub : MainAPI() {
             referer = "$mainUrl/"
         ).document
 
-        val items = document.select("div.listupd > article, article.bs, .listupd article, .bs, .listo > article, .listo article, article")
+        val items = document.select("div.listupd > article, article.bs, .listupd article, .bs, .listo > article, .listo article")
             .mapNotNull { it.toSearchResult() }
             .distinctBy { it.url }
 
@@ -66,7 +51,7 @@ class Donghub : MainAPI() {
 
         return newHomePageResponse(
             HomePageList(request.name, items, isHorizontalImages = false),
-            hasNext = hasNext || items.isNotEmpty()
+            hasNext = hasNext
         )
     }
 
@@ -163,7 +148,7 @@ class Donghub : MainAPI() {
             poster = findPoster(document.body(), url)
         }
 
-        val recommendations = document.select("div.listupd article.bs, .listupd article, article.bs, .listo article, article")
+        val recommendations = document.select("div.listupd article.bs, .listupd article, article.bs, .listo article")
             .mapNotNull { it.toRecommendResult() }
             .distinctBy { it.url }
 
@@ -255,18 +240,25 @@ class Donghub : MainAPI() {
     ): Boolean {
         val response = app.get(data, headers = defaultHeaders, referer = "$mainUrl/")
         val document = response.document
-        val emitted = linkedSetOf<String>()
+        val emittedDirect = linkedSetOf<String>()
+        val visitedEmbeds = linkedSetOf<String>()
+        var emittedVideoCount = 0
+
+        val countedCallback: (ExtractorLink) -> Unit = { link ->
+            emittedVideoCount++
+            callback.invoke(link)
+        }
 
         suspend fun emitDirect(rawUrl: String?, label: String = name) {
             val finalUrl = rawUrl
                 ?.decodeEscaped()
                 ?.absoluteUrl(data)
-                ?.takeIf { it.isNotBlank() }
+                ?.takeIf { it.isPlayableUrl() }
                 ?: return
 
-            if (!emitted.add(finalUrl)) return
+            if (!emittedDirect.add(finalUrl)) return
 
-            callback.invoke(
+            countedCallback.invoke(
                 newExtractorLink(
                     name,
                     label,
@@ -280,40 +272,40 @@ class Donghub : MainAPI() {
             )
         }
 
-        document.select(".mobius option, option[data-index], select option").forEach { item ->
-            val base64 = item.attr("value")
-            if (base64.isBlank()) return@forEach
-
-            val decoded = runCatching { base64Decode(base64) }.getOrNull() ?: return@forEach
-            val doc = Jsoup.parse(decoded)
-
-            val iframe = doc.selectFirst("iframe[src]")?.attr("src")
-                ?: doc.selectFirst("meta[itemprop=embedUrl]")?.attr("content")
-                ?: doc.selectFirst("a[href]")?.attr("href")
-
-            val fixedIframe = iframe
+        suspend fun resolveEmbed(rawUrl: String?, label: String = name) {
+            val fixedUrl = rawUrl
                 ?.decodeEscaped()
                 ?.absoluteUrl(data)
-                ?.takeIf { it.isNotBlank() }
-                ?: return@forEach
+                ?.takeIf { it.isPlayableOrKnownEmbed() }
+                ?: return
 
-            val label = item.text().trim().ifBlank { fixedIframe.hostName() }
+            if (fixedUrl.isPlayableUrl()) {
+                emitDirect(fixedUrl, label)
+                return
+            }
 
-            when {
-                fixedIframe.contains(".mp4", true) || fixedIframe.contains(".m3u8", true) -> {
-                    emitDirect(fixedIframe, label)
-                }
-                else -> {
-                    runCatching {
-                        loadExtractor(fixedIframe, data, subtitleCallback, callback)
-                    }.onSuccess { success ->
-                        if (success) emitted.add(fixedIframe)
-                    }
-                }
+            if (!visitedEmbeds.add(fixedUrl)) return
+
+            runCatching {
+                loadExtractor(fixedUrl, data, subtitleCallback, countedCallback)
+            }
+        }
+
+        document.select(".mobius option, option[data-index], select option, .mirror option, .server option").forEach { item ->
+            val value = item.attr("value").trim()
+            if (value.isBlank()) return@forEach
+
+            val label = item.text().trim().ifBlank { name }
+            collectEmbedUrls(value, data).forEach { url ->
+                resolveEmbed(url, label)
             }
         }
 
         val html = response.text
+        collectEmbedUrls(html, data).forEach { url ->
+            resolveEmbed(url, url.hostName())
+        }
+
         val patterns = listOf(
             Regex("""file\s*[:=]\s*['"]([^'"]+\.(?:m3u8|mp4)[^'"]*)['"]""", RegexOption.IGNORE_CASE),
             Regex("""source\s*[:=]\s*['"]([^'"]+\.(?:m3u8|mp4)[^'"]*)['"]""", RegexOption.IGNORE_CASE),
@@ -326,7 +318,61 @@ class Donghub : MainAPI() {
             }
         }
 
-        return emitted.isNotEmpty()
+        return emittedVideoCount > 0
+    }
+
+    private fun collectEmbedUrls(raw: String, pageUrl: String): List<String> {
+        val candidates = mutableListOf<String>()
+        val value = raw.trim().decodeEscaped()
+
+        if (value.isNotBlank()) {
+            if (value.startsWith("http", true) || value.startsWith("//")) {
+                candidates.add(value.absoluteUrl(pageUrl))
+            }
+
+            extractEmbedUrls(value, pageUrl).let(candidates::addAll)
+
+            runCatching { base64Decode(value) }
+                .getOrNull()
+                ?.decodeEscaped()
+                ?.let { decoded ->
+                    if (decoded.startsWith("http", true) || decoded.startsWith("//")) {
+                        candidates.add(decoded.absoluteUrl(pageUrl))
+                    }
+                    extractEmbedUrls(decoded, pageUrl).let(candidates::addAll)
+                }
+        }
+
+        return candidates
+            .map { it.absoluteUrl(pageUrl) }
+            .filter { it.isPlayableOrKnownEmbed() }
+            .distinct()
+    }
+
+    private fun extractEmbedUrls(fragment: String, pageUrl: String): List<String> {
+        val candidates = mutableListOf<String>()
+        val doc = Jsoup.parse(fragment)
+
+        doc.select("iframe[src], source[src], video[src], a[href], meta[itemprop=embedUrl], meta[property=og:video], meta[property=og:video:url]").forEach { item ->
+            val rawUrl = item.attr("src")
+                .ifBlank { item.attr("href") }
+                .ifBlank { item.attr("content") }
+                .trim()
+
+            if (rawUrl.isNotBlank()) {
+                candidates.add(rawUrl.absoluteUrl(pageUrl))
+            }
+        }
+
+        val urlRegex = Regex(
+            """(?i)(?:https?:)?//[^'"\s<>]+(?:dailymotion\.com|geo\.dailymotion\.com|ok\.ru|okru|rpmvid\.com|dmcdn\.net)[^'"\s<>]*|https?://[^'"\s<>]+\.(?:m3u8|mp4)[^'"\s<>]*"""
+        )
+
+        urlRegex.findAll(fragment).forEach { match ->
+            candidates.add(match.value.absoluteUrl(pageUrl))
+        }
+
+        return candidates.distinct()
     }
 
     private fun findPoster(element: Element, pageUrl: String): String? {
@@ -393,6 +439,21 @@ class Donghub : MainAPI() {
             contains(".png", true) ||
             contains(".webp", true) ||
             contains("/wp-content/uploads/", true)
+    }
+
+    private fun String.isPlayableUrl(): Boolean {
+        return contains(".m3u8", true) ||
+            contains(".mp4", true) ||
+            contains("dmcdn.net", true)
+    }
+
+    private fun String.isPlayableOrKnownEmbed(): Boolean {
+        return isPlayableUrl() ||
+            contains("dailymotion.com", true) ||
+            contains("geo.dailymotion.com", true) ||
+            contains("ok.ru", true) ||
+            contains("okru", true) ||
+            contains("rpmvid.com", true)
     }
 
     private fun buildPagedUrl(rawUrl: String, page: Int): String {
