@@ -380,7 +380,7 @@ class JSIProvider : MainAPI() {
         return emitted
     }
 
-    private fun collectSubtitles(document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
+    private suspend fun collectSubtitles(document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
         document.select("track[kind=subtitles], track[src], a[href$=.srt], a[href$=.vtt]").forEach { element ->
             val raw = element.attr("src").ifBlank { element.attr("href") }
             val url = fixUrlNull(raw) ?: return@forEach

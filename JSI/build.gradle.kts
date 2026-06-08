@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 2
+version = 3
 
 cloudstream {
     description = "JSI provider for JavSubIndo with HAR-backed Retrotube parser and Streamvid playback resolver."
