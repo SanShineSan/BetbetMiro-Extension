@@ -173,11 +173,12 @@ class DracinSI : MainAPI() {
 
             if (fixed.isDirectMedia()) {
                 val type = if (fixed.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                val mediaReferer = if (fixed.contains("cdn.dramacinasubindo.com", true)) "$mainUrl/" else refererUrl
                 callback(
                     newExtractorLink(sourceName, sourceName, fixed, type) {
                         quality = fixed.qualityFromUrl()
-                        referer = refererUrl
-                        headers = mapOf("Referer" to refererUrl, "User-Agent" to USER_AGENT)
+                        referer = mediaReferer
+                        headers = mapOf("Referer" to mediaReferer, "User-Agent" to USER_AGENT)
                     }
                 )
                 delivered++
@@ -219,7 +220,9 @@ class DracinSI : MainAPI() {
         val href = anchor.attr("href").absoluteUrl(mainUrl) ?: return null
         if (!href.startsWith(mainUrl) || (!href.contains("/drama/", true) && !href.contains("watch.php?id=", true))) return null
 
-        val scope = if (hasClass("card") || hasClass("episode-card")) this else anchor
+        val scope = anchor.selectFirst(".card")
+            ?: anchor.closest(".card")
+            ?: if (hasClass("card") || hasClass("episode-card")) this else anchor
         val title = listOf(
             scope.selectFirst(".card-title, .episode-info h6, h1, h2, h3, h6")?.text(),
             anchor.attr("title"),
@@ -231,7 +234,7 @@ class DracinSI : MainAPI() {
             ?.takeIf { it.length > 2 }
             ?: return null
 
-        val poster = scope.selectFirst("img")?.imageUrl(href)
+        val poster = scope.selectFirst("img")?.imageUrl(href) ?: anchor.selectFirst("img")?.imageUrl(href)
         val isEpisode = href.contains("/episode-", true) || href.contains("watch.php?id=", true)
         return if (isEpisode) {
             newMovieSearchResponse(title, href, TvType.Movie) { posterUrl = poster }
@@ -261,8 +264,21 @@ class DracinSI : MainAPI() {
             .ifBlank { attr("src") }
             .ifBlank { attr("data-src") }
             .ifBlank { attr("data-lazy-src") }
+            .ifBlank { attr("data-original") }
+            .ifBlank { attr("data-image") }
+            .ifBlank { attr("data-bg") }
             .ifBlank { attr("poster") }
+            .ifBlank { attr("srcset").substringBefore(" ").trim() }
+            .ifBlank { backgroundUrlFromStyle() }
         return raw.absoluteUrl(baseUrl)
+    }
+
+    private fun Element.backgroundUrlFromStyle(): String {
+        return Regex("""url\(['\"]?([^'\")]+)['\"]?\)""")
+            .find(attr("style"))
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
     }
 
     private fun String?.toShowStatus(): ShowStatus? {
@@ -287,15 +303,34 @@ class DracinSI : MainAPI() {
     }
 
     private fun String?.absoluteUrl(baseUrl: String): String? {
-        val raw = this?.trim()?.replace("&amp;", "&") ?: return null
+        val raw = this?.trim()
+            ?.replace("\\/", "/")
+            ?.replace("&amp;", "&")
+            ?: return null
         if (raw.isBlank() || raw == "#" || raw.startsWith("javascript", true)) return null
-        return runCatching { URI(baseUrl).resolve(raw).toString() }.getOrNull()
+        val safe = raw.encodeUrlWhitespace()
+        val sourceBase = if (
+            !safe.startsWith("http", true) &&
+            !safe.startsWith("/") &&
+            (safe.startsWith("uploads/", true) || safe.startsWith("assets/", true))
+        ) {
+            "$mainUrl/"
+        } else {
+            baseUrl
+        }
+        return runCatching { URI(sourceBase).resolve(safe).toString() }.getOrNull()
+    }
+
+    private fun String.encodeUrlWhitespace(): String {
+        return replace(Regex("\\s+"), "%20")
     }
 
     private fun String.cleanMediaUrl(): String {
         return replace("\\/", "/")
+            .replace("\\u0026", "&")
             .replace("&amp;", "&")
             .trim(' ', '\'', '"')
+            .encodeUrlWhitespace()
     }
 
     private fun String.isDirectMedia(): Boolean {
@@ -316,6 +351,6 @@ class DracinSI : MainAPI() {
     }
 
     companion object {
-        private val MEDIA_URL_REGEX = Regex("""https?://[^'"<>()\\s]+?(?:\.mp4|\.m3u8|\.webm|\.mkv|videoplayback)[^'"<>()\\s]*""", RegexOption.IGNORE_CASE)
+        private val MEDIA_URL_REGEX = Regex("""https?://[^'"<>()\s]+?(?:\.mp4|\.m3u8|\.webm|\.mkv|videoplayback)[^'"<>()\s]*""", RegexOption.IGNORE_CASE)
     }
 }
