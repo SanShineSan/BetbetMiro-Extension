@@ -1,4 +1,4 @@
-version = 3
+version = 4
 cloudstream {
     description = "DrakorIndo - drama Korea, serial Asia, TV show, dan movie subtitle Indonesia."
     language = "id"
@@ -11,5 +11,5 @@ cloudstream {
         "Movie",
     )
 
-    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://drakor-indo.one&size=%size%"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://drakor.kita.mobi&size=%size%"
 }
