@@ -249,11 +249,11 @@ object DuniaFilm21Extractor {
         return out.filterNot { it.isNoiseUrlDf21() }.toCollection(linkedSetOf())
     }
 
-    private fun emitGdriveHlsVariants(url: String, emit: (ExtractorLink) -> Unit) {
+    private suspend fun emitGdriveHlsVariants(url: String, emit: (ExtractorLink) -> Unit) {
         url.gdriveHlsVariants().forEach { videoUrl -> emitGdriveHls(videoUrl, emit) }
     }
 
-    private fun emitGdriveHls(url: String, emit: (ExtractorLink) -> Unit) {
+    private suspend fun emitGdriveHls(url: String, emit: (ExtractorLink) -> Unit) {
         emit(
             newExtractorLink("DuniaFilm21", "GdrivePlayer HLS", url, ExtractorLinkType.M3U8) {
                 this.referer = ""
