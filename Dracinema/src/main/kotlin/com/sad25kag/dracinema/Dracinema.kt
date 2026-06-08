@@ -1,9 +1,33 @@
 package com.sad25kag.dracinema
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SearchResponseList
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
+import com.lagradost.cloudstream3.fixUrlNull
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newSearchResponseList
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -60,16 +84,38 @@ class Dracinema : MainAPI() {
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     )
 
+    private val mediaHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "*/*",
+        "Range" to "bytes=0-"
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (request.data.startsWith("api:", true)) {
             val category = request.data.removePrefix("api:")
-            val items = getApiMovies(category, page)
+            val apiItems = getApiMovies(category, page)
                 .mapNotNull { it.toSearchResult() }
                 .distinctBy { it.url }
 
+            if (apiItems.isNotEmpty()) {
+                return newHomePageResponse(
+                    HomePageList(request.name, apiItems),
+                    hasNext = apiItems.size >= 12
+                )
+            }
+
+            val fallbackUrl = "$mainUrl/genre/${category.toCategorySlug()}${if (page > 1) "?page=$page" else ""}"
+            val fallbackDocument = runCatching {
+                app.get(fallbackUrl, headers = commonHeaders, referer = mainUrl).document
+            }.getOrNull()
+
+            val fallbackItems = fallbackDocument
+                ?.let { parseCards(it).distinctBy { item -> item.url } }
+                .orEmpty()
+
             return newHomePageResponse(
-                HomePageList(request.name, items),
-                hasNext = items.isNotEmpty()
+                HomePageList(request.name, fallbackItems),
+                hasNext = fallbackDocument?.hasNextPage(page) == true
             )
         }
 
@@ -82,23 +128,65 @@ class Dracinema : MainAPI() {
         }
 
         val list = parseCards(document).distinctBy { it.url }
-        val hasNext = document.selectFirst(
-            "a[rel=next], a:contains(Muat Lebih Banyak), button:contains(Muat Lebih Banyak), " +
-                "a[href*='page=${page + 1}'], a[href*='/page/${page + 1}']"
-        ) != null
-
-        return newHomePageResponse(request.name, list, hasNext = hasNext)
+        return newHomePageResponse(
+            request.name,
+            list,
+            hasNext = document.hasNextPage(page)
+        )
     }
 
-    private suspend fun getApiMovies(category: String, page: Int): List<DracinemaMovie> {
+    private suspend fun getApiMovies(category: String, page: Int): List<DracinemaApiMovie> {
         val encoded = URLEncoder.encode(category, "UTF-8")
+        val url = "$mainUrl/api/movie?page=${page.coerceAtLeast(1)}&categories=$encoded"
+        val text = runCatching {
+            app.get(url, headers = apiHeaders, referer = "$mainUrl/collections").text
+        }.getOrNull() ?: return emptyList()
+
+        return parseApiMovies(text)
+    }
+
+    private fun parseApiMovies(text: String): List<DracinemaApiMovie> {
         return runCatching {
-            app.get(
-                "$mainUrl/api/movie?page=${page.coerceAtLeast(1)}&categories=$encoded",
-                headers = apiHeaders,
-                referer = "$mainUrl/collections"
-            ).parsedSafe<List<DracinemaMovie>>()
+            val trimmed = text.trim()
+            val array = when {
+                trimmed.startsWith("[") -> JSONArray(trimmed)
+                trimmed.startsWith("{") -> JSONObject(trimmed).optJSONArray("data") ?: JSONArray()
+                else -> JSONArray()
+            }
+
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val bookId = item.optString("bookId")
+                    .takeIf { it.isNotBlank() }
+                    ?: item.optString("originalBookId").takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+
+                val title = listOf(
+                    item.optString("bookName"),
+                    item.optString("replacedBookName")
+                ).firstOrNull { it.isNotBlank() }?.cleanTitle()
+                    ?: return@mapNotNull null
+
+                DracinemaApiMovie(
+                    bookId = bookId,
+                    title = title,
+                    poster = item.optString("cover").takeIf { it.isNotBlank() },
+                    description = item.optString("introduction").takeIf { it.isNotBlank() },
+                    episodeCount = item.optInt("chapterCount").takeIf { it > 0 },
+                    tags = item.optJSONArray("typeTwoNames").toStringList()
+                )
+            }
         }.getOrNull().orEmpty()
+    }
+
+    private fun DracinemaApiMovie.toSearchResult(): SearchResponse? {
+        val title = this.title.cleanTitle().takeIf { it.length >= 2 } ?: return null
+        val slug = title.toUrlSlug().ifBlank { bookId }
+        val url = "$mainUrl/movie/$slug-$bookId"
+
+        return newTvSeriesSearchResponse(title, url, TvType.AsianDrama) {
+            posterUrl = fixUrlNull(poster)
+        }
     }
 
     private fun buildPageUrl(path: String, page: Int): String {
@@ -107,6 +195,8 @@ class Dracinema : MainAPI() {
             cleanPath.isBlank() && page <= 1 -> mainUrl
             cleanPath.isBlank() -> "$mainUrl?page=$page"
             page <= 1 -> "$mainUrl/$cleanPath"
+            cleanPath == "collections" -> "$mainUrl/collections?page=$page"
+            cleanPath.startsWith("genre/") -> "$mainUrl/$cleanPath?page=$page"
             else -> "$mainUrl/$cleanPath?page=$page"
         }
     }
@@ -174,30 +264,22 @@ class Dracinema : MainAPI() {
         }
     }
 
-    private fun DracinemaMovie.toSearchResult(): SearchResponse? {
-        val id = originalBookId.ifBlank { bookId }.takeIf { it.isNotBlank() } ?: return null
-        val title = bookName.cleanTitle().takeIf { it.isNotBlank() } ?: return null
-        val slug = replacedBookName.ifBlank { bookName }.toSlugSegment().takeIf { it.isNotBlank() } ?: return null
-        val href = "$mainUrl/movie/${slug.encodePath()}-$id"
-
-        return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) {
-            posterUrl = cover.takeIf { it.isNotBlank() }
-        }
-    }
-
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val keyword = query.trim()
         if (keyword.isBlank()) return newSearchResponseList(emptyList(), hasNext = false)
 
         val encoded = URLEncoder.encode(keyword, "UTF-8")
         val apiResults = runCatching {
-            app.get("$mainUrl/api/search?keyword=$encoded", headers = apiHeaders, referer = mainUrl)
-                .parsedSafe<DracinemaSearchResponse>()
-                ?.data
-                .orEmpty()
-                .mapNotNull { it.toSearchResult() }
-                .distinctBy { it.url }
-        }.getOrNull().orEmpty()
+            app.get(
+                "$mainUrl/api/search?keyword=$encoded",
+                headers = apiHeaders,
+                referer = mainUrl
+            ).text
+        }.getOrNull()
+            ?.let { parseApiMovies(it) }
+            ?.mapNotNull { it.toSearchResult() }
+            ?.distinctBy { it.url }
+            .orEmpty()
 
         if (apiResults.isNotEmpty()) {
             return newSearchResponseList(apiResults, hasNext = false)
@@ -230,8 +312,6 @@ class Dracinema : MainAPI() {
                     exactResults[item.url] = item
                 }
             }
-
-            if (exactResults.isNotEmpty()) return@forEach
         }
 
         val output = exactResults.values.ifEmpty { fallbackResults.values.take(12) }
@@ -278,7 +358,7 @@ class Dracinema : MainAPI() {
     private fun parseEpisodes(document: Document, fallbackUrl: String): List<Episode> {
         val episodes = linkedMapOf<Int, Episode>()
         val candidates = document.select(
-            "a[href*='/play/'], a[href*='episode'], a[href*='eps'], a[href*='watch'], " +
+            "a[href*='episode'], a[href*='eps'], a[href*='play'], a[href*='watch'], " +
                 "button[data-url], button[data-src], button[data-href], button[data-episode], " +
                 "[class*=episode] a[href], [class*=eps] a[href], [class*=episode][data-url], " +
                 "[data-episode], [data-episode-id], [data-ep], [data-id]"
@@ -286,6 +366,7 @@ class Dracinema : MainAPI() {
 
         candidates.forEachIndexed { index, element ->
             val text = element.text().trim()
+            val epNum = extractEpisodeNumber(text, element.outerHtml()) ?: (index + 1)
             val raw = listOf(
                 element.attr("href"),
                 element.attr("data-url"),
@@ -295,13 +376,12 @@ class Dracinema : MainAPI() {
                 element.attr("data-file")
             ).firstOrNull { it.isNotBlank() }.orEmpty()
 
-            if (raw.contains("/movie/", true)) return@forEachIndexed
-
-            val epNum = extractEpisodeNumber(text, element.outerHtml(), raw) ?: (index + 1)
             val fixed = when {
                 raw.isBlank() || raw == "#" || raw.startsWith("javascript", true) -> "$fallbackUrl?episode=$epNum"
                 else -> raw.absoluteUrl(fallbackUrl) ?: "$fallbackUrl?episode=$epNum"
             }
+
+            if (fixed.contains("/movie/", true)) return@forEachIndexed
 
             val nameText = text.cleanEpisodeName(epNum)
             episodes[epNum] = newEpisode(fixed) {
@@ -335,52 +415,32 @@ class Dracinema : MainAPI() {
         var found = false
 
         val pageTexts = mutableListOf<String>()
+        val playUrls = linkedSetOf(playUrl)
 
-        runCatching {
-            app.get(playUrl, headers = playerHeaders + mapOf("Referer" to mainUrl), referer = mainUrl).text
-        }.getOrNull()?.let(pageTexts::add)
+        if (targetEpisode == 1 && playUrl.matches(Regex(""".*/play/[^/]+/1/?$"""))) {
+            playUrls.add(playUrl.trimEnd('/').substringBeforeLast("/"))
+        }
 
-        val movieKey = playUrl.substringAfter("/play/", "").substringBefore("?").trim('/')
-        val basePlayPath = "/play/${movieKey.substringBefore("/")}"
-        val rscHeaders = playerHeaders + mapOf(
-            "Accept" to "*/*",
-            "RSC" to "1",
-            "Next-Url" to basePlayPath,
-            "Next-Router-State-Tree" to buildNextRouterStateTree(movieKey.substringBefore("/"))
-        )
-
-        if (pageTexts.none { it.containsVideoSourceMarker() }) {
-            listOf(
-                "$playUrl?_rsc=${rscToken(movieKey)}",
-                "${playUrl.substringBefore("?").substringBeforeLast("/").takeIf { movieKey.contains("/") } ?: playUrl}?_rsc=${rscToken(movieKey + "base")}"
-            ).distinct().forEach { rscUrl ->
-                runCatching {
-                    app.get(rscUrl, headers = rscHeaders, referer = playUrl).text
-                }.getOrNull()?.let(pageTexts::add)
-            }
+        playUrls.forEach { url ->
+            runCatching {
+                app.get(url, headers = playerHeaders, referer = mainUrl).text
+            }.getOrNull()?.let(pageTexts::add)
         }
 
         pageTexts.flatMap { extractDracinemaVideoSources(it) }
-            .distinctBy { it.url.stableVideoKey() }
+            .distinctBy { it.url.videoKey() }
             .forEach { source ->
-                val key = source.url.stableVideoKey()
-                if (!emitted.add(key)) return@forEach
+                if (!emitted.add(source.url.videoKey())) return@forEach
 
                 if (source.url.isHlsUrl()) {
-                    generateM3u8(name, source.url, playUrl).forEach {
-                        callback(it)
-                        found = true
-                    }
+                    if (emitHlsLink(source, playUrl, callback)) found = true
                 } else {
                     callback(
                         newExtractorLink(name, "Dracinema ${source.quality ?: Qualities.Unknown.value}p", source.url, ExtractorLinkType.VIDEO) {
                             referer = mainUrl
-                            quality = source.quality ?: Qualities.P720.value
-                            headers = mapOf(
-                                "User-Agent" to USER_AGENT,
-                                "Accept" to "*/*",
-                                "Range" to "bytes=0-"
-                            )
+                            quality = source.quality ?: getQualityFromName(source.url).takeIf { it != Qualities.Unknown.value }
+                                ?: Qualities.P720.value
+                            headers = mediaHeaders
                         }
                     )
                     found = true
@@ -393,10 +453,11 @@ class Dracinema : MainAPI() {
         val embedLinks = linkedSetOf<String>()
 
         fun addCandidate(raw: String?, base: String = playUrl) {
-            val fixed = raw?.cleanEscaped()?.absoluteUrl(base) ?: return
+            val fixed = raw?.cleanEscaped()?.absoluteUrl(base)?.trimMediaUrl() ?: return
             if (fixed.isNoiseUrl()) return
             when {
-                fixed.isVideoUrl() -> directLinks.add(fixed)
+                fixed.isDracinemaVideoUrl() || fixed.isHlsUrl() -> directLinks.add(fixed)
+                fixed.contains(".mp4", true) || fixed.contains(".webm", true) -> directLinks.add(fixed)
                 fixed.startsWith("http", true) -> embedLinks.add(fixed)
             }
         }
@@ -419,19 +480,16 @@ class Dracinema : MainAPI() {
         }
 
         directLinks.forEach { link ->
-            val key = link.stableVideoKey()
-            if (!emitted.add(key)) return@forEach
+            if (!emitted.add(link.videoKey())) return@forEach
+            val source = DracinemaVideoSource(link, getQualityFromName(link).takeIf { it != Qualities.Unknown.value })
             if (link.isHlsUrl()) {
-                generateM3u8(name, link, playUrl).forEach {
-                    callback(it)
-                    found = true
-                }
+                if (emitHlsLink(source, playUrl, callback)) found = true
             } else {
                 callback(
                     newExtractorLink(name, name, link, ExtractorLinkType.VIDEO) {
                         referer = mainUrl
-                        quality = getQualityFromName(link).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value
-                        headers = mapOf("User-Agent" to USER_AGENT, "Accept" to "*/*", "Range" to "bytes=0-")
+                        quality = source.quality ?: Qualities.Unknown.value
+                        headers = mediaHeaders
                     }
                 )
                 found = true
@@ -449,18 +507,34 @@ class Dracinema : MainAPI() {
         return found
     }
 
-    private data class DracinemaSearchResponse(
-        @JsonProperty("data") val data: List<DracinemaMovie> = emptyList()
-    )
+    private suspend fun emitHlsLink(
+        source: DracinemaVideoSource,
+        playUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val playlist = runCatching {
+            app.get(source.url, headers = mediaHeaders).text
+        }.getOrNull()
 
-    private data class DracinemaMovie(
-        @JsonProperty("bookId") val bookId: String = "",
-        @JsonProperty("originalBookId") val originalBookId: String = "",
-        @JsonProperty("bookName") val bookName: String = "",
-        @JsonProperty("cover") val cover: String = "",
-        @JsonProperty("introduction") val introduction: String = "",
-        @JsonProperty("chapterCount") val chapterCount: Int? = null,
-        @JsonProperty("replacedBookName") val replacedBookName: String = ""
+        if (playlist != null && !playlist.trimStart().startsWith("#EXTM3U")) return false
+
+        callback(
+            newExtractorLink(name, "Dracinema HLS ${source.quality ?: Qualities.Unknown.value}p", source.url, ExtractorLinkType.M3U8) {
+                referer = playUrl
+                quality = source.quality ?: Qualities.P720.value
+                headers = mediaHeaders
+            }
+        )
+        return true
+    }
+
+    private data class DracinemaApiMovie(
+        val bookId: String,
+        val title: String,
+        val poster: String?,
+        val description: String?,
+        val episodeCount: Int?,
+        val tags: List<String>
     )
 
     private data class DracinemaVideoSource(val url: String, val quality: Int?)
@@ -471,33 +545,47 @@ class Dracinema : MainAPI() {
         val movieKey = clean.substringAfter("/movie/", "").substringBefore("?").trim('/').takeIf { it.isNotBlank() }
             ?: return clean
         val base = "$mainUrl/play/$movieKey"
-        return if (targetEpisode != null && targetEpisode > 1) "$base/$targetEpisode" else base
+        return if (targetEpisode != null && targetEpisode > 0) "$base/$targetEpisode" else base
     }
 
     private fun extractDracinemaVideoSources(text: String): List<DracinemaVideoSource> {
         val clean = text.cleanEscaped()
         val sources = linkedMapOf<String, DracinemaVideoSource>()
 
-        Regex("""["\\]?quality["\\]?\s*:\s*(\d+)[\s\S]{0,140}?["\\]?url["\\]?\s*:\s*["\\](https?://[^"\\]+)""", RegexOption.IGNORE_CASE)
+        Regex("""["\\]?quality["\\]?\s*:\s*(\d+)[\s\S]{0,220}?["\\]?url["\\]?\s*:\s*["\\](https?://[^"\\]+)""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .forEach { match ->
                 val quality = match.groupValues.getOrNull(1)?.toIntOrNull()
-                val url = match.groupValues.getOrNull(2)?.cleanEscaped()?.takeIf { it.isVideoUrl() } ?: return@forEach
+                val url = match.groupValues.getOrNull(2)?.cleanEscaped()?.trimMediaUrl()
+                    ?.takeIf { it.isDracinemaVideoUrl() || it.isHlsUrl() }
+                    ?: return@forEach
                 sources[url] = DracinemaVideoSource(url, quality)
             }
 
-        Regex("""["\\]?url["\\]?\s*:\s*["\\](https?://[^"\\]+)[\s\S]{0,140}?["\\]?quality["\\]?\s*:\s*(\d+)""", RegexOption.IGNORE_CASE)
+        Regex("""["\\]?url["\\]?\s*:\s*["\\](https?://[^"\\]+)""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .forEach { match ->
-                val url = match.groupValues.getOrNull(1)?.cleanEscaped()?.takeIf { it.isVideoUrl() } ?: return@forEach
-                val quality = match.groupValues.getOrNull(2)?.toIntOrNull()
-                sources.putIfAbsent(url, DracinemaVideoSource(url, quality))
+                val url = match.groupValues.getOrNull(1)?.cleanEscaped()?.trimMediaUrl()
+                    ?.takeIf { it.isDracinemaVideoUrl() || it.isHlsUrl() }
+                    ?: return@forEach
+                sources.putIfAbsent(url, DracinemaVideoSource(url, getQualityFromName(url).takeIf { q -> q != Qualities.Unknown.value }))
             }
 
-        Regex("""https?://[^"'\\\s<>\]}]+?(?:\.mp4|\.m3u8|\.webm|/hls|/api/[^"'\\\s<>\]}]*hls)[^"'\\\s<>\]}]*""", RegexOption.IGNORE_CASE)
+        Regex("""https?://cdn\.dramabos\.video/api/flickreels/hls\?[^"'\\\s<>\]}]+""", RegexOption.IGNORE_CASE)
             .findAll(clean)
-            .map { it.value.cleanEscaped() }
-            .filter { it.isVideoUrl() }
+            .map { it.value.cleanEscaped().trimMediaUrl() }
+            .forEach { url -> sources.putIfAbsent(url, DracinemaVideoSource(url, Qualities.P720.value)) }
+
+        Regex("""https?://awscdn\.netshort\.com/[^"'\\\s<>\]}]+""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.value.cleanEscaped().trimMediaUrl() }
+            .filter { it.isDracinemaVideoUrl() }
+            .forEach { url -> sources.putIfAbsent(url, DracinemaVideoSource(url, Qualities.P720.value)) }
+
+        Regex("""https?://[^"'\\\s<>\]}]+?(?:\.mp4|\.m3u8|\.webm)(?:\?[^"'\\\s<>\]}]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.value.cleanEscaped().trimMediaUrl() }
+            .filterNot { it.isNoiseUrl() }
             .forEach { url -> sources.putIfAbsent(url, DracinemaVideoSource(url, getQualityFromName(url).takeIf { q -> q != Qualities.Unknown.value })) }
 
         return sources.values.toList()
@@ -509,29 +597,19 @@ class Dracinema : MainAPI() {
 
         Regex("""https?://[^\"'\s<>)\]}]+""", RegexOption.IGNORE_CASE)
             .findAll(clean)
-            .map { it.value.cleanEscaped().trimEnd('.', ',', ';') }
+            .map { it.value.cleanEscaped().trimMediaUrl() }
             .filterNot { it.isNoiseUrl() }
             .forEach { urls.add(it) }
 
         return urls.toList()
     }
 
-    private fun String.containsVideoSourceMarker(): Boolean {
-        val lower = lowercase()
-        return lower.contains("videourls") ||
-            lower.contains("awscdn.netshort.com") ||
-            lower.contains("cdn.dramabos.video") ||
-            lower.contains("mime_type=video_mp4") ||
-            lower.contains(".m3u8") ||
-            lower.contains(".mp4")
-    }
-
-    private fun String.isVideoUrl(): Boolean {
+    private fun String.isDracinemaVideoUrl(): Boolean {
         val lower = lowercase()
         return lower.contains("awscdn.netshort.com") ||
+            lower.contains("mime_type=video_mp4") ||
             lower.contains("cdn.dramabos.video") ||
             lower.contains("flickreels/hls") ||
-            lower.contains("mime_type=video_mp4") ||
             lower.contains(".mp4") ||
             lower.contains(".m3u8") ||
             lower.contains(".webm")
@@ -540,16 +618,8 @@ class Dracinema : MainAPI() {
     private fun String.isHlsUrl(): Boolean {
         val lower = lowercase()
         return lower.contains(".m3u8") ||
-            lower.contains("/hls") ||
             lower.contains("flickreels/hls") ||
-            lower.contains("application/vnd.apple.mpegurl")
-    }
-
-    private fun String.stableVideoKey(): String {
-        return substringBefore("&Expires=")
-            .substringBefore("?Expires=")
-            .substringBefore("&token=")
-            .substringBefore("?token=")
+            lower.matches(Regex(""".*/hls(?:\?.*)?$"""))
     }
 
     private fun Element.getImageAttr(): String? {
@@ -563,19 +633,15 @@ class Dracinema : MainAPI() {
         }
     }
 
-    private fun extractEpisodeNumber(text: String, fallback: String, rawUrl: String = ""): Int? {
+    private fun extractEpisodeNumber(text: String, fallback: String): Int? {
         return Regex("""(?:episode|eps?|ep)\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""(?:episode|eps?|ep)[-/]?(\d+)""", RegexOption.IGNORE_CASE).find(fallback)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""data-(?:episode|ep|id)=["']?(\d+)""", RegexOption.IGNORE_CASE).find(fallback)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            ?: Regex("""/play/[^/?#]+/(\d+)""", RegexOption.IGNORE_CASE).find(rawUrl)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""\b(\d{1,4})\b""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun extractEpisodeCount(text: String): Int? {
-        return Regex("""(?:Episodes?|Episode)\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            ?: Regex("""(\d+)\s*Episode""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            ?: Regex(""""totalEps"\s*:\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            ?: Regex(""""chapterCount"\s*:\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return Regex("""(\d+)\s*Episode""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun String.cleanEpisodeName(epNum: Int): String {
@@ -595,13 +661,12 @@ class Dracinema : MainAPI() {
     private fun String.cleanEscaped(): String {
         return replace("\\/", "/")
             .replace("\\u002F", "/")
+            .replace("\\u002f", "/")
             .replace("\\u0026", "&")
             .replace("\\u003d", "=")
             .replace("\\u003D", "=")
             .replace("\\u003f", "?")
             .replace("\\u003F", "?")
-            .replace("\\u003a", ":")
-            .replace("\\u003A", ":")
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .trim()
@@ -623,7 +688,6 @@ class Dracinema : MainAPI() {
             lower.contains("facebook") ||
             lower.contains("doubleclick") ||
             lower.endsWith(".jpg") ||
-            lower.endsWith(".jpeg") ||
             lower.endsWith(".png") ||
             lower.endsWith(".webp") ||
             lower.endsWith(".css") ||
@@ -639,34 +703,44 @@ class Dracinema : MainAPI() {
             .trim()
     }
 
-    private fun String.toSlugSegment(): String {
-        return cleanTitle()
-            .replace("/", "-")
-            .replace(Regex("""\s+"""), "-")
-            .replace(Regex("""-+"""), "-")
+    private fun String.toUrlSlug(): String {
+        return lowercase()
+            .replace(Regex("""[^\p{L}\p{N}]+"""), "-")
             .trim('-')
     }
 
-    private fun String.encodePath(): String {
-        return split("/").joinToString("/") {
-            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+    private fun String.toCategorySlug(): String {
+        return lowercase()
+            .replace("+", "plus")
+            .replace(Regex("""[^\p{L}\p{N}]+"""), "-")
+            .trim('-')
+    }
+
+    private fun String.trimMediaUrl(): String {
+        return trim()
+            .trimEnd(',', ';', '.', ')', ']', '}', '"', '\'')
+    }
+
+    private fun String.videoKey(): String {
+        return substringBefore("&Expires=")
+            .substringBefore("?Expires=")
+            .substringBefore("&Signature=")
+            .substringBefore("?Signature=")
+            .substringBefore("&sig=")
+            .substringBefore("?sig=")
+    }
+
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return (0 until length()).mapNotNull { index ->
+            optString(index).trim().takeIf { it.isNotBlank() }
         }
     }
 
-    private fun buildNextRouterStateTree(movieKey: String): String {
-        val tree = """["",{"children":["(other)",{"children":["play",{"children":[["movieKey","$movieKey","d"],{"children":["__PAGE__",{},null,null]},null,null,true]}},null,null]},null,null,true]"""
-        return URLEncoder.encode(tree, "UTF-8")
-    }
-
-    private fun rscToken(seed: String): String {
-        val alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-        val raw = seed.hashCode().let { if (it == Int.MIN_VALUE) 0 else kotlin.math.abs(it) }
-        return buildString {
-            var value = raw
-            repeat(5) {
-                append(alphabet[value % alphabet.length])
-                value = value / alphabet.length + 7
-            }
-        }
+    private fun Document.hasNextPage(page: Int): Boolean {
+        return selectFirst(
+            "a[rel=next], a:contains(Muat Lebih Banyak), button:contains(Muat Lebih Banyak), " +
+                "a[href*='page=${page + 1}'], a[href*='/page/${page + 1}']"
+        ) != null
     }
 }
