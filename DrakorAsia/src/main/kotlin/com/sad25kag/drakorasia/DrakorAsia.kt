@@ -32,6 +32,10 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class DrakorAsia : MainAPI() {
     override var mainUrl = "https://www.drakorasia.eu.org"
@@ -280,11 +284,22 @@ class DrakorAsia : MainAPI() {
         }
 
         url.toAbyssPlayerUrl()?.let { abyssUrl ->
-            var found = loadExtractor(abyssUrl, "$mainUrl/", subtitleCallback, callback)
+            if (resolveAbyssPlayer(abyssUrl, referer, callback)) return true
+            abyssUrl.toAbyssToUrl()?.let { abyssToUrl ->
+                if (resolveAbyssPlayer(abyssToUrl, referer, callback)) return true
+            }
+            var found = loadExtractor(abyssUrl, referer, subtitleCallback, callback)
             if (!found && abyssUrl != url) {
-                found = loadExtractor(url, "$mainUrl/", subtitleCallback, callback)
+                found = loadExtractor(url, referer, subtitleCallback, callback)
             }
             return found
+        }
+
+        if (url.isAbyssPlayerPage()) {
+            if (resolveAbyssPlayer(url, referer, callback)) return true
+            url.toAbyssToUrl()?.let { abyssToUrl ->
+                if (resolveAbyssPlayer(abyssToUrl, referer, callback)) return true
+            }
         }
 
         return when {
@@ -575,7 +590,7 @@ class DrakorAsia : MainAPI() {
         return urlDecoded
     }
 
-    private suspend fun emitDirect(mediaUrl: String, referer: String, callback: (ExtractorLink) -> Unit, label: String? = null) {
+    private fun emitDirect(mediaUrl: String, referer: String, callback: (ExtractorLink) -> Unit, label: String? = null) {
         val fixed = mediaUrl.replace("\\/", "/").htmlUnescape()
         val type = if (fixed.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
         val quality = getQualityFromName(fixed).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
@@ -600,11 +615,112 @@ class DrakorAsia : MainAPI() {
         )
     }
 
+    private suspend fun resolveAbyssPlayer(abyssUrl: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val pageUrl = abyssUrl.replace("abyss.to/", "abyssplayer.com/")
+        val html = runCatching {
+            app.get(pageUrl, headers = headers, referer = referer.ifBlank { mainUrl }).text
+        }.getOrNull().orEmpty()
+        if (html.isBlank()) return false
+
+        val payload = parseAbyssPayload(html) ?: return false
+        val mediaJson = decryptAbyssMedia(payload) ?: return false
+        val root = runCatching { JsonParser().parse(mediaJson).asJsonObject }.getOrNull() ?: return false
+        val mp4 = root.obj("mp4") ?: return false
+        var emitted = false
+
+        val sourcesByRes = mp4.array("sources")
+            ?.mapNotNull { it.asObjectOrNull() }
+            ?.filter { it.bool("status", true) }
+            ?.associateBy { it.int("res_id") ?: -1 }
+            .orEmpty()
+
+        val firstData = mp4.array("fristDatas") ?: mp4.array("firstDatas")
+        firstData?.mapNotNull { it.asObjectOrNull() }?.forEach { item ->
+            val videoUrl = item.string("url")?.takeIf { it.startsWith("http", true) } ?: return@forEach
+            val source = sourcesByRes[item.int("res_id") ?: -1]
+            val label = source?.string("label") ?: item.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
+            runCatching {
+                emitDirect(videoUrl, ABYSS_REFERER, callback, "AbyssPlayer $label")
+                emitted = true
+            }
+        }
+
+        if (!emitted) {
+            mp4.array("sources")?.mapNotNull { it.asObjectOrNull() }?.forEach { source ->
+                if (!source.bool("status", true)) return@forEach
+                val host = source.string("url")?.trimEnd('/').orEmpty()
+                val path = source.string("path")?.trimStart('/').orEmpty()
+                if (host.isBlank() || path.isBlank()) return@forEach
+                val label = source.string("label") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
+                runCatching {
+                    emitDirect("$host/$path", ABYSS_REFERER, callback, "AbyssPlayer $label")
+                    emitted = true
+                }
+            }
+        }
+
+        return emitted
+    }
+
+    private fun parseAbyssPayload(html: String): DrakorAsiaAbyssPayload? {
+        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=]+)["']""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return null
+        val json = runCatching { String(Base64.decode(encoded, Base64.DEFAULT), Charsets.ISO_8859_1) }.getOrNull() ?: return null
+        val node = runCatching { JsonParser().parse(json).asJsonObject }.getOrNull() ?: return null
+        val slug = node.string("slug").orEmpty()
+        val md5Id = node.string("md5_id").orEmpty()
+        val userId = node.string("user_id").orEmpty()
+        val media = node.string("media").orEmpty()
+        if (slug.isBlank() || md5Id.isBlank() || userId.isBlank() || media.isBlank()) return null
+        return DrakorAsiaAbyssPayload(slug, md5Id, userId, media)
+    }
+
+    private fun decryptAbyssMedia(payload: DrakorAsiaAbyssPayload): String? {
+        return runCatching {
+            val key = md5Hex("${payload.userId}:${payload.slug}:${payload.md5Id}").toByteArray(Charsets.UTF_8)
+            val counter = key.copyOfRange(0, 16)
+            val encrypted = ByteArray(payload.media.length) { index -> payload.media[index].code.toByte() }
+            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(counter))
+            String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        }.getOrNull()
+    }
+
+    private fun md5Hex(value: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte) }
+    }
+
+    private fun Int.toAbyssQualityLabel(): String {
+        return when (this) {
+            5 -> "1080p"
+            4 -> "720p"
+            3 -> "480p"
+            2 -> "360p"
+            else -> "Auto"
+        }
+    }
+
     private fun String.toAbyssPlayerUrl(): String? {
         val clean = replace("\\/", "/").trim().trim('"', '\'', ',', ';')
+        if (clean.isAbyssPlayerPage()) return clean
         if (!clean.contains("short.ink", true)) return null
         val id = clean.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
         return "https://abyssplayer.com/$id"
+    }
+
+    private fun String.toAbyssToUrl(): String? {
+        val clean = replace("\\/", "/").trim().trim('"', '\'', ',', ';')
+        val id = clean.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
+        return "https://abyss.to/$id"
+    }
+
+    private fun String.isAbyssPlayerPage(): Boolean {
+        val value = lowercase()
+        return value.contains("abyssplayer.com/") || value.contains("abyss.to/")
     }
 
     private fun String.isPlayableCandidate(): Boolean {
@@ -763,6 +879,14 @@ class DrakorAsia : MainAPI() {
         return get(key)?.takeIf { !it.isJsonNull }?.asString
     }
 
+    private fun JsonObject.int(key: String): Int? {
+        return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asInt }.getOrNull()
+    }
+
+    private fun JsonObject.bool(key: String, default: Boolean): Boolean {
+        return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asBoolean }.getOrNull() ?: default
+    }
+
     private data class MainPageData(
         val items: List<SearchResponse>,
         val hasNext: Boolean
@@ -776,10 +900,18 @@ class DrakorAsia : MainAPI() {
         val content: String
     )
 
+    private data class DrakorAsiaAbyssPayload(
+        val slug: String,
+        val md5Id: String,
+        val userId: String,
+        val media: String
+    )
+
     companion object {
         private const val MAIN_PAGE_LIMIT = 20
         private const val SEARCH_LIMIT = 30
         private const val SEARCH_SERIES_LIMIT = 150
         private const val EPISODE_LIMIT = 150
+        private const val ABYSS_REFERER = "https://abyssplayer.com/"
     }
 }
