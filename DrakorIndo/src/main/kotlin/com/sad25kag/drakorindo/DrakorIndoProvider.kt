@@ -53,7 +53,7 @@ class DrakorIndoProvider : MainAPI() {
         "" to "Latest Update",
         "all?media_type=movie" to "Movie",
         "all?media_type=tv" to "Series",
-        "all?status=returning series" to "Ongoing",
+        "all?status=returning%20series" to "Ongoing",
         "all?status=ended" to "Complete",
         "all" to "All",
         "all?genre=Drama" to "Drama",
@@ -112,11 +112,14 @@ class DrakorIndoProvider : MainAPI() {
             referer = mainUrl,
         ).document
 
-        val rawTitle = document.selectFirst("h1[itemprop=headline], .breadcrumb_last, h1, meta[property=og:title], meta[name=title]")
-            ?.let { element -> element.attr("content").ifBlank { element.text() } }
-            ?.cleanTitle()
-            ?.takeIf { it.isNotBlank() }
-            ?: throw ErrorLoadingException("Judul DrakorIndo tidak ditemukan")
+        val rawTitle = listOf(
+            document.extractMovieTitleFromScripts(),
+            document.selectFirst(".breadcrumb_last")?.text(),
+            document.selectFirst("h1[itemprop=headline], h1")?.text(),
+            document.selectFirst("meta[property=og:title], meta[name=title]")?.attr("content"),
+        ).firstNotNullOfOrNull { value ->
+            value?.cleanTitle()?.takeIf { it.isNotBlank() }
+        } ?: throw ErrorLoadingException("Judul DrakorIndo tidak ditemukan")
 
         val poster = document.findPoster()
         val plot = document.findPlot()
@@ -169,53 +172,71 @@ class DrakorIndoProvider : MainAPI() {
             ?: return false
 
         val emitted = AtomicInteger(0)
-        suspend fun emit(linkUrl: String, label: String, referer: String) {
-            emitted.incrementAndGet()
-            emitDirect(linkUrl, label, referer, callback)
+
+        suspend fun emitVideoPayload(videoPayload: JSONObject, referer: String) {
+            emitSubtitles(videoPayload.optString("subtitle"), referer, subtitleCallback)
+
+            val candidates = linkedMapOf<String, String>()
+            val fileText = videoPayload.optString("file").replace("\\/", "/")
+            fileText.extractQualityLinks().forEach { (quality, link) ->
+                candidates[link.cleanPlayableUrl()] = quality.stripHtml().ifBlank { qualityLabel(inferQuality(link)) }
+            }
+
+            if (candidates.isEmpty()) {
+                val rawText = videoPayload.toString().replace("\\/", "/")
+                extractUrls(rawText, referer)
+                    .filter { it.isPlayableCandidate() }
+                    .forEach { link -> candidates[link.cleanPlayableUrl()] = qualityLabel(inferQuality(link)) }
+            }
+
+            for ((link, label) in candidates) {
+                if (link.isBlank() || !link.isPlayableCandidate()) continue
+                if (link.isHlsLike()) {
+                    if (!validateHlsPlaylist(link, referer)) continue
+                    emitted.incrementAndGet()
+                    emitDirect(link, label, referer, callback)
+                } else {
+                    val before = emitted.get()
+                    loadExtractor(link, referer, subtitleCallback) { linkOut ->
+                        emitted.incrementAndGet()
+                        callback.invoke(linkOut)
+                    }
+                    if (emitted.get() == before && link.isDirectMedia()) {
+                        emitted.incrementAndGet()
+                        emitDirect(link, label, referer, callback)
+                    }
+                }
+            }
         }
 
-        val withEpisode = if (playerData.episodeId.isBlank()) {
-            val episodePayload = runCatching { fetchEpisodePayload(playerData) }.getOrNull()
-            playerData.copy(
-                episodeId = episodePayload?.optString("first_ep_id").orEmpty(),
-                serverXid = episodePayload?.optString("server_xid").orEmpty().ifBlank { playerData.serverXid.ifBlank { "f2" } },
-            )
-        } else {
-            playerData
-        }
+        val episodePayload = runCatching { fetchEpisodePayload(playerData) }.getOrNull()
+        val episodeId = playerData.episodeId.ifBlank { episodePayload?.optString("first_ep_id").orEmpty() }
+        if (episodeId.isBlank()) return false
 
-        if (withEpisode.episodeId.isBlank()) return false
-
-        val serverPayload = runCatching { fetchServerPayload(withEpisode) }.getOrNull()
-        val serverData = serverPayload?.optJSONObject("data")
-        val withServer = withEpisode.copy(
-            serverXid = serverData?.optString("server_xid").orEmpty().ifBlank { withEpisode.serverXid.ifBlank { "f2" } },
-            serverId = serverData?.optString("server_id").orEmpty().ifBlank { withEpisode.serverId.ifBlank { withEpisode.serverXid.ifBlank { "f2" } } },
-            quality = serverData?.optString("qua").orEmpty().ifBlank { withEpisode.quality.ifBlank { "web" } },
+        val baseData = playerData.copy(
+            episodeId = episodeId,
+            serverXid = playerData.serverXid.ifBlank { episodePayload?.optString("server_xid").orEmpty() },
         )
 
-        val videoPayload = runCatching { fetchVideoPayload(withServer) }.getOrNull() ?: return false
-        val fileText = videoPayload.optString("file").replace("\\/", "/")
-        val subtitles = videoPayload.optString("subtitle")
-        emitSubtitles(subtitles, withServer.detailUrl, subtitleCallback)
+        val serverXids = linkedSetOf<String>()
+        if (baseData.serverXid.isNotBlank()) serverXids += baseData.serverXid
+        parseEpisodeServerXids(episodePayload?.optString("episode_lists").orEmpty()).forEach { serverXids += it }
+        serverXids += listOf("f1", "f2")
 
-        fileText.extractQualityLinks().forEach { (quality, link) ->
-            emit(link, quality, withServer.detailUrl)
-        }
-
-        if (emitted.get() == 0) {
-            extractUrls(fileText, withServer.detailUrl)
-                .filter { it.isPlayableCandidate() }
-                .distinct()
-                .forEach { link -> emit(link, qualityLabel(inferQuality(link)), withServer.detailUrl) }
-        }
-
-        if (emitted.get() == 0) {
-            val rawText = videoPayload.toString().replace("\\/", "/")
-            extractUrls(rawText, withServer.detailUrl)
-                .filter { it.isPlayableCandidate() }
-                .distinct()
-                .forEach { link -> emit(link, qualityLabel(inferQuality(link)), withServer.detailUrl) }
+        for (serverXid in serverXids.filter { it.isNotBlank() }) {
+            val serverPayload = runCatching { fetchServerPayload(baseData.copy(serverXid = serverXid)) }.getOrNull() ?: continue
+            val choices = parseServerChoices(serverPayload, baseData.copy(serverXid = serverXid))
+            for (choice in choices) {
+                val videoData = baseData.copy(
+                    serverXid = choice.serverXid,
+                    serverId = choice.serverId,
+                    quality = choice.quality,
+                    tag = choice.tag.ifBlank { baseData.tag },
+                )
+                val videoPayload = runCatching { fetchVideoPayload(videoData) }.getOrNull() ?: continue
+                emitVideoPayload(videoPayload, baseData.detailUrl)
+                if (emitted.get() > 0) return true
+            }
         }
 
         return emitted.get() > 0
@@ -271,7 +292,82 @@ class DrakorIndoProvider : MainAPI() {
             "Accept" to "text/plain, */*; q=0.01",
             "Origin" to mainUrl,
             "Referer" to referer,
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Dest" to "empty",
         )
+    }
+
+    private fun mediaHeaders(referer: String): Map<String, String> {
+        return baseHeaders + mapOf(
+            "Accept" to "*/*",
+            "Origin" to mainUrl,
+            "Referer" to referer,
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Dest" to "empty",
+        )
+    }
+
+    private suspend fun validateHlsPlaylist(url: String, referer: String): Boolean {
+        if (!url.isHlsLike()) return true
+        return runCatching {
+            val response = app.get(url, headers = mediaHeaders(referer), referer = referer)
+            response.text.trimStart().startsWith("#EXTM3U", ignoreCase = true)
+        }.getOrDefault(false)
+    }
+
+    private fun parseEpisodeServerXids(episodeHtml: String): List<String> {
+        if (episodeHtml.isBlank()) return emptyList()
+        val doc = Jsoup.parse(episodeHtml.replace("\\/", "/"), mainUrl)
+        return doc.select("a[data-server_xid]")
+            .map { it.attr("data-server_xid") }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun parseServerChoices(payload: JSONObject, baseData: PlayerData): List<ServerChoice> {
+        val choices = linkedMapOf<String, ServerChoice>()
+        val data = payload.optJSONObject("data")
+        if (data != null) {
+            val serverId = data.optString("server_id").ifBlank { data.optString("server_xid") }.ifBlank { baseData.serverXid }
+            val quality = data.optString("qua").ifBlank { baseData.quality.ifBlank { "web" } }
+            val label = data.optString("svname").ifBlank { "Server $serverId" }
+            if (serverId.isNotBlank()) {
+                val choice = ServerChoice(
+                    serverXid = data.optString("server_xid").ifBlank { baseData.serverXid.ifBlank { serverId } },
+                    serverId = serverId,
+                    quality = quality,
+                    tag = data.optString("tag").ifBlank { baseData.tag },
+                    label = label,
+                )
+                choices["${choice.serverId}|${choice.quality}"] = choice
+            }
+        }
+
+        val serverList = payload.optString("server_lists").replace("\\/", "/")
+        SERVER_CHOICE_REGEX.findAll(serverList).forEach { match ->
+            val fn = match.groupValues.getOrNull(1).orEmpty().removePrefix("loadVideo").ifBlank { "Server" }
+            val quality = match.groupValues.getOrNull(3).orEmpty().ifBlank { "web" }
+            val resolution = match.groupValues.getOrNull(4).orEmpty()
+            val serverId = match.groupValues.getOrNull(5).orEmpty()
+            val tag = match.groupValues.getOrNull(6).orEmpty().ifBlank { baseData.tag }
+            if (serverId.isBlank()) return@forEach
+            val choice = ServerChoice(
+                serverXid = serverId,
+                serverId = serverId,
+                quality = quality,
+                tag = tag,
+                label = listOf(fn, resolution).filter { it.isNotBlank() }.joinToString(" ").ifBlank { "Server $serverId" },
+            )
+            choices["${choice.serverId}|${choice.quality}"] = choice
+        }
+
+        if (choices.isEmpty() && baseData.serverXid.isNotBlank()) {
+            val choice = ServerChoice(baseData.serverXid, baseData.serverXid, baseData.quality.ifBlank { "web" }, baseData.tag, "Server ${baseData.serverXid}")
+            choices["${choice.serverId}|${choice.quality}"] = choice
+        }
+        return choices.values.toList()
     }
 
     private fun parseEpisodes(episodeHtml: String, baseData: PlayerData): List<com.lagradost.cloudstream3.Episode> {
@@ -285,12 +381,15 @@ class DrakorIndoProvider : MainAPI() {
                 if (episodeId.isBlank()) return@mapIndexedNotNull null
 
                 val tag = element.attr("data-tag").ifBlank { baseData.tag }
-                val serverXid = element.attr("data-server_xid").ifBlank { baseData.serverXid.ifBlank { "f2" } }
-                val nameText = element.text().cleanSpaces()
-                val episodeNumber = extractEpisodeNumber(nameText) ?: (index + 1)
+                val serverXid = element.attr("data-server_xid").ifBlank { baseData.serverXid.ifBlank { "f1" } }
+                val rawName = element.text().stripHtml().cleanSpaces()
+                val episodeNumber = extractEpisodeNumber(rawName)
+                    ?: Regex("epz-([A-Za-z0-9_-]+)", RegexOption.IGNORE_CASE).find(element.attr("class"))?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    ?: (index + 1)
                 val episodeName = when {
-                    nameText.isBlank() || nameText.equals("unnamed", true) -> "HARDSUB INDO"
-                    else -> nameText
+                    rawName.isBlank() || rawName.equals("unnamed", true) || rawName == episodeNumber.toString() -> "Episode $episodeNumber"
+                    rawName.matches(Regex("(?i)^(?:E|EP|Episode)?\\s*${episodeNumber}$")) -> "Episode $episodeNumber"
+                    else -> rawName.cleanEpisodeTitle(episodeNumber)
                 }
 
                 newEpisode(baseData.copy(episodeId = episodeId, tag = tag, serverXid = serverXid).pack()) {
@@ -299,6 +398,7 @@ class DrakorIndoProvider : MainAPI() {
                 }
             }
             .distinctBy { it.data }
+            .sortedBy { it.episode ?: 0 }
     }
 
     private fun Document.extractPlayerConfig(pageUrl: String): PlayerData? {
@@ -328,9 +428,11 @@ class DrakorIndoProvider : MainAPI() {
 
             val builder = StringBuilder()
             chunks.forEach { chunk ->
-                val raw = runCatching {
-                    String(Base64.decode(chunk, Base64.DEFAULT), Charsets.UTF_8)
-                }.getOrNull().orEmpty()
+                val raw = listOf(Base64.DEFAULT, Base64.URL_SAFE or Base64.NO_WRAP)
+                    .firstNotNullOfOrNull { flag ->
+                        runCatching { String(Base64.decode(chunk, flag), Charsets.UTF_8) }.getOrNull()
+                    }
+                    .orEmpty()
                 val code = raw.filter { it.isDigit() }.toIntOrNull() ?: return@forEach
                 builder.append(code.toChar())
             }
@@ -343,14 +445,25 @@ class DrakorIndoProvider : MainAPI() {
         return decoded
     }
 
+    private fun Document.extractMovieTitleFromScripts(): String? {
+        val decoded = decodeInlineConfigScripts(html()).joinToString("\n")
+        return Regex("""var\s+movie_title\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            .find(decoded)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.cleanTitle()
+            ?.takeIf { it.isNotBlank() }
+    }
+
     private fun Document.extractSearchResults(): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val seen = linkedSetOf<String>()
 
-        select("a[href*='/detail/']").forEach { element ->
-            val response = element.toSearchResult() ?: return@forEach
-            if (seen.add(response.url)) results.add(response)
-        }
+        select(".col-lg-8 .row .card a[href*='/detail/'], .card.mx-auto a[href*='/detail/'], a.poster[href*='/detail/']")
+            .forEach { element ->
+                val response = element.toSearchResult() ?: return@forEach
+                if (seen.add(response.url)) results.add(response)
+            }
 
         return results
     }
@@ -359,29 +472,37 @@ class DrakorIndoProvider : MainAPI() {
         val href = fixUrl(attr("abs:href").ifBlank { attr("href") })
         if (!href.startsWith(mainUrl, true) || !href.contains("/detail/", true)) return null
 
-        val container = parents().firstOrNull { parent ->
-            parent.selectFirst("img[src], img[data-src], h2, h3, h4, .title, .jdl, .ml-title") != null
-        } ?: this
+        val card = parents().firstOrNull { parent -> parent.hasClass("card") } ?: this
+        val hasListingAncestor = card.parents().any { parent ->
+            parent.hasClass("col-lg-8") || parent.hasClass("row")
+        }
+        if (!hasListingAncestor) return null
 
-        val rawTitle = listOf(
-            attr("title"),
-            selectFirst("img[alt]")?.attr("alt").orEmpty(),
-            container.selectFirst("h1, h2, h3, h4, .title, .jdl, .ml-title, .card-title")?.text().orEmpty(),
-            text(),
-        ).firstOrNull { it.isNotBlank() }.orEmpty()
-
-        val title = rawTitle.cleanTitle().takeIf { it.length >= 2 } ?: return null
-        val poster = container.selectFirst("img[src], img[data-src], img[data-lazy-src]")
+        val title = extractCardTitle(card).takeIf { it.length >= 2 && !it.isMenuNoise() } ?: return null
+        val poster = card.selectFirst("img[src], img[data-src], img[data-lazy-src]")
             ?.let { img -> img.attr("abs:data-src").ifBlank { img.attr("abs:data-lazy-src") }.ifBlank { img.attr("abs:src") } }
-            ?.takeIf { it.isNotBlank() }
+            ?.takeIf { it.isNotBlank() && !it.contains("favicon", true) }
 
-        val cardText = container.text()
-        val isMovie = cardText.contains("Movie", ignoreCase = true) || title.hasYearSuffix()
+        val cardText = card.text()
+        val isMovie = cardText.contains(" WEB ", ignoreCase = true) ||
+            cardText.contains("Movie", ignoreCase = true) ||
+            (!cardText.contains(Regex("E\\d+", RegexOption.IGNORE_CASE)) && title.hasYearSuffix())
+
         return if (isMovie) {
             newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
         } else {
             newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = poster }
         }
+    }
+
+    private fun extractCardTitle(card: Element): String {
+        val fromTitle = card.selectFirst("a[href*='/detail/'][title]")?.attr("title").orEmpty()
+        val fromAlt = card.selectFirst("img[alt]")?.attr("alt").orEmpty()
+        val fromNode = card.selectFirst(".card-title, .jdl, .title, h2, h3, h4")?.text().orEmpty()
+        val fromText = card.selectFirst("a[href*='/detail/']")?.text().orEmpty()
+        return listOf(fromTitle, fromAlt, fromNode, fromText)
+            .firstNotNullOfOrNull { value -> value.cleanTitle().takeIf { it.isNotBlank() } }
+            .orEmpty()
     }
 
     private fun Document.findPoster(): String? {
@@ -396,18 +517,32 @@ class DrakorIndoProvider : MainAPI() {
     }
 
     private fun Document.findPlot(): String? {
-        return selectFirst(".sinopsis .desc-wrap, .sinopsis p, .mv-description .desc-wrap, meta[property=og:description]")
-            ?.let { element -> element.attr("content").ifBlank { element.text() } }
-            ?.replace("Selengkapnya", "")
-            ?.cleanSpaces()
-            ?.takeIf { it.length >= 20 }
+        return listOf(
+            selectFirst(".sinopsis.mv-description .desc-wrap p")?.text(),
+            selectFirst(".sinopsis .desc-wrap p")?.text(),
+            selectFirst(".sinopsis.mv-description .desc-wrap")?.text(),
+            selectFirst(".sinopsis .desc-wrap")?.text(),
+        ).firstNotNullOfOrNull { value ->
+            value?.replace("Selengkapnya", "")
+                ?.cleanSpaces()
+                ?.takeIf { it.length >= 20 && !it.isSeoDescription() }
+        }
     }
 
     private fun Document.findTags(): List<String> {
-        return select(".gnr a, .breadcrumb a[href*='genre='], a[href*='genre=']")
-            .map { it.text().cleanSpaces() }
+        val tags = linkedSetOf<String>()
+        select("ol.breadcrumb a[href*='genre='], .breadcrumb a[href*='genre=']")
+            .map { it.text().cleanSpaces().trim(',') }
             .filter { it.isNotBlank() && !it.isMenuNoise() }
-            .distinct()
+            .forEach { tag -> tags.add(tag) }
+
+        select("ul.anf li").firstOrNull { item ->
+            item.selectFirst("b")?.text()?.contains("Genre", ignoreCase = true) == true
+        }?.select("a[href*='genre=']")
+            ?.map { it.text().cleanSpaces().trim(',') }
+            ?.filter { it.isNotBlank() && !it.isMenuNoise() }
+            ?.forEach { tag -> tags.add(tag) }
+        return tags.take(8)
     }
 
     private fun Document.findInfoValue(label: String): String {
@@ -441,11 +576,7 @@ class DrakorIndoProvider : MainAPI() {
             newExtractorLink(name, "$name ${qualityLabel(quality)}", fixedUrl, type) {
                 this.referer = referer
                 this.quality = quality
-                this.headers = baseHeaders + mapOf(
-                    "Accept" to "*/*",
-                    "Origin" to mainUrl,
-                    "Referer" to referer,
-                )
+                this.headers = mediaHeaders(referer)
             },
         )
     }
@@ -479,7 +610,7 @@ class DrakorIndoProvider : MainAPI() {
         val normalized = text.replace("\\/", "/")
         val urls = linkedSetOf<String>()
 
-        Regex("""https?://[^"'\s<>\\]+""", RegexOption.IGNORE_CASE)
+        Regex("""https?://[^"'\s<>\\,\]\)]+""", RegexOption.IGNORE_CASE)
             .findAll(normalized)
             .map { it.value.trim().trim('"', '\'', ',', ';', ')', ']', '}') }
             .map { fixUrl(it, referer) }
@@ -546,7 +677,7 @@ class DrakorIndoProvider : MainAPI() {
     private fun String.isHlsLike(): Boolean {
         val host = runCatching { URI(this).host.orEmpty().lowercase() }.getOrDefault("")
         return contains(".m3u8", true) ||
-            (contains("/v/", true) && (host.contains("handal.bid") || host.contains("uyeshare.cc")))
+            (contains("/v/", true) && (host.contains("handal.bid") || host.contains("drakor.bid") || host.contains("uyeshare.cc")))
     }
 
     private fun String.isPlayableCandidate(): Boolean {
@@ -564,19 +695,56 @@ class DrakorIndoProvider : MainAPI() {
     }
 
     private fun String.cleanTitle(): String {
-        return cleanSpaces()
-            .replace(Regex("(?i)^Nonton\\s+"), "")
-            .replace(Regex("(?i)\\s+Subtitle\\s+Indonesia.*$"), "")
-            .replace(Regex("(?i)\\s+Sub\\s+Indo.*$"), "")
-            .replace(Regex("(?i)\\s+(WEB[- ]?DL|HDTV|BluRay|HDRip|DVDRip).*$"), "")
-            .replace(Regex("(?i)\\s+[-–|]\\s+DrakorKita.*$"), "")
-            .replace(Regex("(?i)^Drama Korea\\s+"), "")
-            .trim()
+        return stripHtml()
+            .replace(Regex("""(?i)^\d{1,2}:\d{2}(?::\d{2})?\s+"""), "")
+            .replace(Regex("""(?i)^(?:Streaming|Nonton|Download|WATCH|Free download)\s+"""), "")
+            .replace(Regex("""(?i)^Drama\s+Korea\s+"""), "")
+            .replace(Regex("""(?i)^Film\s+"""), "")
+            .replace(Regex("""(?i)\s+Subtitle\s+Indonesia.*$"""), "")
+            .replace(Regex("""(?i)\s+Sub\s+Indo.*$"""), "")
+            .replace(Regex("""(?i)\s+Episode\s+\d+(?:\s*[-–]\s*\d+)?.*$"""), "")
+            .replace(Regex("""(?i)\s+E\d+(?:/\d+|\s*END)?.*$"""), "")
+            .replace(Regex("""(?i)\s+(?:2160p|1080p|720p|480p|360p|4K)(?:,?\s*(?:2160p|1080p|720p|480p|360p|4K|&))*.*$"""), "")
+            .replace(Regex("""(?i)\s+\[(?:SOFTSUB|HARDSUB).*?]"""), "")
+            .replace(Regex("""(?i)\s+(WEB[- ]?DL|HDTV|BluRay|HDRip|DVDRip|WEB|HD)\b.*$"""), "")
+            .replace(Regex("""(?i)\s+Full\s+Movie.*$"""), "")
+            .replace(Regex("""(?i)\s+[-–|]\s+(?:DrakorKita|DrakorIndo|DramaQu|BioskopKeren).*$"""), "")
+            .cleanSpaces()
+            .trim('-', '–', '|', ',', ' ')
     }
 
     private fun String.cleanSpaces(): String = replace(Regex("\\s+"), " ").trim()
 
     private fun String.stripHtml(): String = Jsoup.parse(this).text().cleanSpaces()
+
+    private fun String.cleanEpisodeTitle(episodeNumber: Int): String {
+        val cleaned = cleanTitle()
+        return when {
+            cleaned.isBlank() || cleaned.equals("unnamed", true) -> "Episode $episodeNumber"
+            cleaned == episodeNumber.toString() -> "Episode $episodeNumber"
+            else -> cleaned
+        }
+    }
+
+    private fun String.isSeoDescription(): Boolean {
+        val value = lowercase()
+        return value.contains("watch ") ||
+            value.contains("free download") ||
+            value.contains("subtitle indonesia gratis") ||
+            value.contains("drakorindo,drakorkita") ||
+            value.contains("bioskopkeren") ||
+            value.startsWith("streaming ")
+    }
+
+    private fun String.cleanPlayableUrl(): String {
+        return replace("\\/", "/")
+            .trim()
+            .trim('"', '\'', ',', ';', ')', ']', '}', '[')
+    }
+
+    private fun String.isDirectMedia(): Boolean {
+        return contains(".m3u8", true) || contains(".mp4", true) || isHlsLike()
+    }
 
     private fun String.isMenuNoise(): Boolean {
         val value = cleanSpaces().lowercase()
@@ -584,6 +752,14 @@ class DrakorIndoProvider : MainAPI() {
     }
 
     private fun String.hasYearSuffix(): Boolean = Regex("\\(\\d{4}\\)").containsMatchIn(this)
+
+    private data class ServerChoice(
+        val serverXid: String,
+        val serverId: String,
+        val quality: String,
+        val tag: String,
+        val label: String,
+    )
 
     private data class PlayerData(
         val detailUrl: String,
@@ -630,7 +806,8 @@ class DrakorIndoProvider : MainAPI() {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
         private val LOAD_EPISODE_REGEX = Regex("""loadEpisode\(['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
         private val INLINE_B64_REGEX = Regex("""[A-Za-z_$][\w$]*\s*=\s*['"]([A-Za-z0-9+/=_-]+(?:\.[A-Za-z0-9+/=_-]+){20,})['"]""")
-        private val QUALITY_LINK_REGEX = Regex("""\[([^\]]+)]\s*(https?://[^,\s"'<>]+)""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        private val QUALITY_LINK_REGEX = Regex("""\[([^\]]+)]\s*(https?://[^,\s"'<>\]\)]+)""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        private val SERVER_CHOICE_REGEX = Regex("""loadVideo([A-Za-z0-9_]+)\('([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'(?:\s*,\s*'([^']*)')?\)""", RegexOption.IGNORE_CASE)
         private fun VAR_REGEX(name: String) = Regex("""var\s+$name\s*=\s*['"]([^'"]*)['"]""", RegexOption.IGNORE_CASE)
     }
 }
