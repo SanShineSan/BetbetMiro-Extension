@@ -86,14 +86,36 @@ class Dracinema : MainAPI() {
 
     private val mediaHeaders = mapOf(
         "User-Agent" to USER_AGENT,
-        "Accept" to "*/*",
-        "Range" to "bytes=0-"
+        "Accept" to "*/*"
     )
 
     private val hlsHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "*/*"
     )
+
+    private fun rscHeaders(movieKey: String, episode: Int): Map<String, String> {
+        val previousEpisode = (episode - 1).coerceAtLeast(1).toString()
+        val stateTree = """["",{"children":["(other)",{"children":["play",{"children":[["movieKey","$movieKey","d"],{"children":[["eps","$previousEpisode","d"],{"children":["__PAGE__",{},null,null]},null,null]},null,null]},null,null]},null,null]},null,null,true]"""
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "*/*",
+            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "RSC" to "1",
+            "Next-Url" to "/play/$movieKey/$previousEpisode",
+            "Next-Router-State-Tree" to URLEncoder.encode(stateTree, "UTF-8"),
+            "Sec-Fetch-Site" to "same-origin",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Dest" to "empty"
+        )
+    }
+
+    private fun String.hasPlayableEvidence(): Boolean {
+        return contains("videoUrls", true) ||
+            contains("awscdn.netshort.com", true) ||
+            contains("cdn.dramabos.video", true) ||
+            contains("flickreels/hls", true)
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (request.data.startsWith("api:", true)) {
@@ -432,6 +454,20 @@ class Dracinema : MainAPI() {
             }.getOrNull()?.let(pageTexts::add)
         }
 
+        if (pageTexts.none { it.hasPlayableEvidence() }) {
+            val movieKey = playUrl.substringAfter("/play/", "").substringBefore("/").substringBefore("?")
+            if (movieKey.isNotBlank() && targetEpisode != null && targetEpisode > 0) {
+                val rscUrl = "$playUrl?_rsc=1"
+                runCatching {
+                    app.get(
+                        rscUrl,
+                        headers = rscHeaders(movieKey, targetEpisode),
+                        referer = "$mainUrl/play/$movieKey/${(targetEpisode - 1).coerceAtLeast(1)}"
+                    ).text
+                }.getOrNull()?.let(pageTexts::add)
+            }
+        }
+
         pageTexts.flatMap { extractDracinemaVideoSources(it) }
             .distinctBy { it.url.videoKey() }
             .forEach { source ->
@@ -562,7 +598,7 @@ class Dracinema : MainAPI() {
             .forEach { match ->
                 val quality = match.groupValues.getOrNull(1)?.toIntOrNull()
                 val url = match.groupValues.getOrNull(2)?.cleanEscaped()?.trimMediaUrl()
-                    ?.takeIf { it.isDracinemaVideoUrl() || it.isHlsUrl() }
+                    ?.takeIf { !it.isNoiseUrl() && (it.isDracinemaVideoUrl() || it.isHlsUrl()) }
                     ?: return@forEach
                 sources[url] = DracinemaVideoSource(url, quality)
             }
@@ -571,7 +607,7 @@ class Dracinema : MainAPI() {
             .findAll(clean)
             .forEach { match ->
                 val url = match.groupValues.getOrNull(1)?.cleanEscaped()?.trimMediaUrl()
-                    ?.takeIf { it.isDracinemaVideoUrl() || it.isHlsUrl() }
+                    ?.takeIf { !it.isNoiseUrl() && (it.isDracinemaVideoUrl() || it.isHlsUrl()) }
                     ?: return@forEach
                 sources.putIfAbsent(url, DracinemaVideoSource(url, getQualityFromName(url).takeIf { q -> q != Qualities.Unknown.value }))
             }
@@ -693,6 +729,8 @@ class Dracinema : MainAPI() {
         return lower.contains("google") ||
             lower.contains("facebook") ||
             lower.contains("doubleclick") ||
+            lower.contains("core.mebilu.com/api/subtitle") ||
+            lower.contains("mime_type=text_plain") ||
             lower.endsWith(".jpg") ||
             lower.endsWith(".png") ||
             lower.endsWith(".webp") ||
