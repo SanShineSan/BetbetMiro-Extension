@@ -1,6 +1,9 @@
 package com.sad25kag.drakorasia
 
 import android.util.Base64
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
@@ -24,6 +27,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
@@ -50,52 +54,109 @@ class DrakorAsia : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    override val mainPage = mainPageOf(
-        "" to "Episode Terbaru",
-        "search/label/Action" to "Action",
-        "search/label/Comedy" to "Comedy",
-        "search/label/Drama" to "Drama",
-        "search/label/Fantasy" to "Fantasy",
-        "search/label/Historical" to "Historical",
-        "search/label/Mystery" to "Mystery",
-        "search/label/Romance" to "Romance",
-        "search/label/Thriller" to "Thriller",
-        "search/label/Family" to "Family",
-        "search/label/Sci-Fi" to "Sci-Fi",
-        "search/label/Supernatural" to "Supernatural",
-        "search/label/War" to "War",
-        "p/drama-list.html" to "Drama List"
+    private val feedHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "application/json,text/javascript,*/*;q=0.8",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer" to "$mainUrl/"
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest) = newHomePageResponse(
-        request.name,
-        parseCards(app.get(buildPageUrl(request.data, page), headers = headers, referer = mainUrl).document),
-        hasNext = false
+    private val genreLabels = setOf(
+        "Action", "Adventure", "Comedy", "Crime", "Drama", "Family", "Fantasy",
+        "Historical", "Horror", "Law", "Life", "Melodrama", "Mystery", "Political",
+        "Psychological", "Romance", "School", "Sci-Fi", "Sports", "Supernatural",
+        "Thriller", "War", "Youth"
     )
+
+    private val nonSeriesLabels = genreLabels + setOf(
+        "Eps. TV", "TV", "Movie", "Series", "Completed", "CompletedTV", "Ongoing",
+        "South Korea", "Thailand", "China", "Japan", "Netflix", "Disney+", "GMM 25",
+        "Channel 3", "Viu", "TVING", "ENA", "jTBC", "KBS2", "MBC", "SBS", "tvN"
+    )
+
+    override val mainPage = mainPageOf(
+        "" to "Episode Terbaru",
+        "Series" to "Drama List",
+        "Movie" to "Movie",
+        "Action" to "Action",
+        "Adventure" to "Adventure",
+        "Comedy" to "Comedy",
+        "Crime" to "Crime",
+        "Drama" to "Drama",
+        "Family" to "Family",
+        "Fantasy" to "Fantasy",
+        "Historical" to "Historical",
+        "Horror" to "Horror",
+        "Law" to "Law",
+        "Life" to "Life",
+        "Melodrama" to "Melodrama",
+        "Mystery" to "Mystery",
+        "Political" to "Political",
+        "Psychological" to "Psychological",
+        "Romance" to "Romance",
+        "School" to "School",
+        "Sci-Fi" to "Sci-Fi",
+        "Sports" to "Sports",
+        "Supernatural" to "Supernatural",
+        "Thriller" to "Thriller",
+        "War" to "War",
+        "Youth" to "Youth"
+    )
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest) = getMainPageData(request.data, page).let { data ->
+        newHomePageResponse(
+            request.name,
+            data.items,
+            hasNext = data.hasNext
+        )
+    }
+
+    private suspend fun getMainPageData(label: String, page: Int): MainPageData {
+        val posts = fetchFeed(label.ifBlank { null }, page, MAIN_PAGE_LIMIT)
+        val filtered = filterMainPagePosts(label, posts)
+        val fromFeed = filtered.mapNotNull { it.toSearchResult() }.distinctBy { it.url }
+        if (fromFeed.isNotEmpty()) return MainPageData(fromFeed, posts.size >= MAIN_PAGE_LIMIT)
+
+        val fallback = runCatching {
+            parseCards(app.get(buildPageUrl(label, page), headers = headers, referer = mainUrl).document)
+        }.getOrDefault(emptyList())
+
+        return MainPageData(fallback, fallback.size >= MAIN_PAGE_LIMIT)
+    }
+
+    private fun filterMainPagePosts(label: String, posts: List<BloggerPost>): List<BloggerPost> {
+        val filtered = when {
+            label.isBlank() -> posts.filter { it.isEpisodePost() || it.isMoviePost() }
+            label.equals("Series", true) -> posts.filter { it.isSeriesPost() && !it.isEpisodePost() }
+            label.equals("Movie", true) -> posts.filter { it.isMoviePost() }
+            else -> posts.filter { (it.isSeriesPost() || it.isMoviePost()) && !it.isEpisodePost() }
+                .ifEmpty { posts.filter { it.isEpisodePost() || it.isSeriesPost() || it.isMoviePost() } }
+        }
+        return filtered.filter { it.isValidContentPost() }
+    }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val keyword = query.trim()
         if (keyword.isBlank()) return emptyList()
-        val encoded = URLEncoder.encode(keyword, "UTF-8")
-        val urls = listOf(
-            "$mainUrl/search?q=$encoded",
-            "$mainUrl/search/label/Series%20$encoded",
-            "$mainUrl/p/drama-list.html"
-        )
 
         val results = linkedMapOf<String, SearchResponse>()
-        urls.forEach { url ->
-            val document = runCatching {
-                app.get(url, headers = headers, referer = mainUrl).document
-            }.getOrNull() ?: return@forEach
-
-            parseCards(document).forEach { response ->
-                val haystack = response.name.lowercase()
-                if (haystack.contains(keyword.lowercase()) || keyword.lowercase().split(Regex("\\s+")).any { it.length >= 3 && haystack.contains(it) }) {
-                    results[response.url] = response
-                }
-            }
+        fetchSearchFeed(keyword).forEach { post ->
+            if (post.matchesKeyword(keyword)) post.toSearchResult()?.let { results[it.url] = it }
         }
+
+        fetchFeed("Series", 1, SEARCH_SERIES_LIMIT)
+            .filter { it.matchesKeyword(keyword) }
+            .forEach { post -> post.toSearchResult()?.let { results[it.url] = it } }
+
+        val encoded = URLEncoder.encode(keyword, "UTF-8")
+        val documentResults = runCatching {
+            parseCards(app.get("$mainUrl/search?q=$encoded", headers = headers, referer = mainUrl).document)
+        }.getOrDefault(emptyList())
+
+        documentResults.forEach { response ->
+            if (response.name.matchesKeyword(keyword)) results[response.url] = response
+        }
+
         return results.values.toList()
     }
 
@@ -103,64 +164,42 @@ class DrakorAsia : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val fixedUrl = normalizeUrl(url)
-        val isSeriesLabel = fixedUrl.contains("search?q=label%3ASeries", true) || fixedUrl.contains("/search/label/Series", true)
-        val document = app.get(fixedUrl, headers = headers, referer = mainUrl).document
+        val document = app.get(withMobileParam(fixedUrl), headers = headers, referer = mainUrl).document
+        val title = readTitle(document, fixedUrl)
+        val poster = readPoster(document)
+        val plot = readPlot(document)
+        val tags = readTags(document)
+        val seriesLabel = readSeriesLabel(document, title, fixedUrl)
 
-        return if (isSeriesLabel) {
-            loadSeriesLabel(fixedUrl, document)
+        val episodes = seriesLabel?.let { label ->
+            fetchFeed(label, 1, EPISODE_LIMIT)
+                .filter { it.isEpisodePost() || it.title.contains("Episode", true) }
+                .mapNotNull { it.toEpisode(label) }
+                .distinctBy { it.data }
+                .sortedBy { it.episode ?: Int.MAX_VALUE }
+        }.orEmpty()
+
+        return if (episodes.isNotEmpty()) {
+            val seriesTitle = seriesLabel?.cleanTitle().orEmpty().ifBlank { cleanEpisodeTitle(title) }
+            newTvSeriesLoadResponse(seriesTitle, fixedUrl, TvType.AsianDrama, episodes) {
+                posterUrl = poster ?: episodes.firstOrNull()?.posterUrl
+                this.plot = plot
+                this.tags = tags
+            }
         } else {
-            val seriesLink = document.select("a[href*='label%3ASeries'], a[href*='/search/label/Series']")
-                .firstOrNull()
-                ?.attr("abs:href")
-                ?.takeIf { it.isNotBlank() }
-            val title = cleanEpisodeTitle(readTitle(document, fixedUrl))
-            val poster = readPoster(document)
-            val plot = readPlot(document)
-            val tags = readTags(document)
-
-            val episodes = if (!seriesLink.isNullOrBlank()) {
-                runCatching {
-                    parseEpisodeCards(app.get(seriesLink, headers = headers, referer = fixedUrl).document, title)
-                }.getOrDefault(emptyList())
-            } else {
-                emptyList()
+            val tvType = if (tags.any { it.equals("Movie", true) } || title.contains("Movie", true)) TvType.Movie else TvType.AsianDrama
+            newMovieLoadResponse(title, fixedUrl, tvType, fixedUrl) {
+                posterUrl = poster
+                this.plot = plot
+                this.tags = tags
             }
-
-            if (episodes.size > 1 && !title.contains("Episode", true)) {
-                newTvSeriesLoadResponse(title, seriesLink ?: fixedUrl, TvType.AsianDrama, episodes) {
-                    posterUrl = poster
-                    this.plot = plot
-                    this.tags = tags
-                }
-            } else {
-                newMovieLoadResponse(readTitle(document, fixedUrl), fixedUrl, TvType.AsianDrama, fixedUrl) {
-                    posterUrl = poster
-                    this.plot = plot
-                    this.tags = tags
-                }
-            }
-        }
-    }
-
-    private suspend fun loadSeriesLabel(url: String, document: Document): LoadResponse {
-        val title = decodeSeriesTitle(url).ifBlank {
-            document.selectFirst("h1, h2, h3, title")?.text()?.cleanTitle().orEmpty()
-        }.ifBlank { "DrakorAsia" }
-        val episodes = parseEpisodeCards(document, title)
-        val poster = episodes.firstOrNull()?.posterUrl
-        return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
-            posterUrl = poster
-            tags = document.select("a[href*='/search/label/']")
-                .map { it.text().trim() }
-                .filter { it.isNotBlank() && !it.equals("Series", true) }
-                .distinct()
         }
     }
 
     private fun parseCards(document: Document): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
 
-        document.select("article, .post, .blog-posts .hentry, .hentry, .item, .grid-post, .post-outer, a[href]")
+        document.select("article.post, article.hentry, .blog-posts .hentry, .post-outer, .grid-post, .related-post, .item-post")
             .forEach { element ->
                 element.toSearchResult()?.let { results[it.url] = it }
             }
@@ -169,15 +208,9 @@ class DrakorAsia : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val anchor = when {
-            tagName().equals("a", true) -> this
-            else -> selectFirst("a[href*='.html'], a[href*='label%3ASeries'], a[href*='/search/label/Series'], a[href]")
-        } ?: return null
-
+        val anchor = selectFirst("a[href*='.html']") ?: return null
         val href = normalizeUrl(anchor.attr("abs:href").ifBlank { anchor.attr("href") })
-        if (!href.startsWith(mainUrl)) return null
-        if (href == mainUrl || href.contains("/search/label/") && !href.contains("Series", true)) return null
-        if (href.contains("/p/", true) && !href.contains("drama-list", true)) return null
+        if (!isValidContentUrl(href)) return null
 
         val title = listOf(
             selectFirst("h1, h2, h3, h4, .entry-title, .post-title, .title")?.text(),
@@ -186,12 +219,10 @@ class DrakorAsia : MainAPI() {
             anchor.text()
         ).firstOrNull { !it.isNullOrBlank() }
             ?.cleanTitle()
-            ?.takeIf { it.length >= 2 }
+            ?.takeIf { isValidTitle(it) }
             ?: return null
 
-        if (title.equals("Tonton", true) || title.equals("Home", true) || title.equals("Genre", true) || title.equals("Season", true)) return null
-
-        val poster = fixUrlNull(selectFirst("img")?.imageAttr())
+        val poster = fixUrlNull(selectFirst("img")?.imageAttr()?.fixBloggerImage())
         val isMovie = href.contains("/movie/", true) || title.contains("Movie", true)
 
         return if (isMovie) {
@@ -201,34 +232,6 @@ class DrakorAsia : MainAPI() {
         }
     }
 
-    private fun parseEpisodeCards(document: Document, seriesTitle: String): List<Episode> {
-        val episodes = linkedMapOf<Int, Episode>()
-        document.select("article, .hentry, .post-outer, .post, a[href*='.html']").forEachIndexed { index, element ->
-            val anchor = when {
-                element.tagName().equals("a", true) -> element
-                else -> element.selectFirst("a[href*='.html']")
-            } ?: return@forEachIndexed
-
-            val href = normalizeUrl(anchor.attr("abs:href").ifBlank { anchor.attr("href") })
-            if (!href.startsWith(mainUrl) || !href.contains(".html", true)) return@forEachIndexed
-
-            val text = listOf(
-                element.selectFirst("h1, h2, h3, h4, .entry-title, .post-title")?.text(),
-                anchor.attr("title"),
-                anchor.text()
-            ).firstOrNull { !it.isNullOrBlank() }?.cleanTitle().orEmpty()
-            if (!text.contains("Episode", true) && !href.contains("episode", true)) return@forEachIndexed
-
-            val ep = extractEpisodeNumber(text, href) ?: (index + 1)
-            episodes[ep] = newEpisode(href) {
-                name = text.ifBlank { "$seriesTitle Episode $ep" }
-                episode = ep
-                posterUrl = fixUrlNull(element.selectFirst("img")?.imageAttr())
-            }
-        }
-        return episodes.values.sortedBy { it.episode ?: Int.MAX_VALUE }
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -236,10 +239,19 @@ class DrakorAsia : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = normalizeUrl(data)
-        val emitted = linkedSetOf<String>()
-        var loaded = false
+        val visitedCandidates = linkedSetOf<String>()
+        val emittedLinks = linkedSetOf<String>()
+        var emittedCount = 0
 
-        val document = app.get(pageUrl, headers = headers, referer = mainUrl).document
+        val countedCallback: (ExtractorLink) -> Unit = { link ->
+            val key = link.url.substringBefore("#")
+            if (emittedLinks.add(key)) {
+                emittedCount++
+                callback.invoke(link)
+            }
+        }
+
+        val document = app.get(withMobileParam(pageUrl), headers = headers, referer = mainUrl).document
         val candidates = linkedSetOf<String>()
         collectCandidates(document.html(), pageUrl, candidates)
         document.select("iframe[src], embed[src], video[src], video source[src], a[href], option[value], [data-url], [data-src], [data-link], [data-href], [data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream]").forEach { element ->
@@ -254,23 +266,31 @@ class DrakorAsia : MainAPI() {
         }
 
         candidates.filter { it.isPlayableCandidate() }.forEach { candidate ->
-            if (resolveCandidate(candidate, pageUrl, emitted, subtitleCallback, callback)) loaded = true
+            resolveCandidate(candidate, pageUrl, visitedCandidates, subtitleCallback, countedCallback)
         }
 
-        return loaded
+        return emittedCount > 0
     }
 
     private suspend fun resolveCandidate(
         candidate: String,
         referer: String,
-        emitted: MutableSet<String>,
+        visited: MutableSet<String>,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
         depth: Int = 0
     ): Boolean {
         val url = candidate.replace("\\/", "/").trim().trim('"', '\'', ',', ';')
         if (!url.startsWith("http", true)) return false
-        if (!emitted.add(url.substringBefore("#"))) return false
+        if (!visited.add(url.substringBefore("#"))) return false
+
+        url.toAbyssPlayerUrl()?.let { abyssUrl ->
+            var found = loadExtractor(abyssUrl, "$mainUrl/", subtitleCallback, callback)
+            if (!found && abyssUrl != url) {
+                found = loadExtractor(url, "$mainUrl/", subtitleCallback, callback)
+            }
+            return found
+        }
 
         return when {
             url.isDirectMedia() -> {
@@ -289,53 +309,150 @@ class DrakorAsia : MainAPI() {
                         val nested = linkedSetOf<String>()
                         collectCandidates(it, url, nested)
                         nested.filter { item -> item.isPlayableCandidate() }.forEach { item ->
-                            if (resolveCandidate(item, url, emitted, subtitleCallback, callback, depth + 1)) found = true
+                            if (resolveCandidate(item, url, visited, subtitleCallback, callback, depth + 1)) found = true
                         }
                     }
                 }
-                if (!found) loadExtractor(url, referer, subtitleCallback, callback).also { found = true }
+                if (!found) found = loadExtractor(url, referer, subtitleCallback, callback)
                 found
             }
-            else -> {
-                loadExtractor(url, referer, subtitleCallback, callback)
-                true
-            }
+            else -> loadExtractor(url, referer, subtitleCallback, callback)
         }
     }
 
-    private suspend fun emitDirect(mediaUrl: String, referer: String, callback: (ExtractorLink) -> Unit) {
-        val fixed = mediaUrl.replace("\\/", "/")
-        val type = if (fixed.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-        val quality = getQualityFromName(fixed).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
-        callback.invoke(
-            newExtractorLink(
-                source = name,
-                name = "$name ${if (quality == Qualities.Unknown.value) "Auto" else "${quality}p"}",
-                url = fixed,
-                type = type
-            ) {
-                this.quality = quality
-                this.referer = referer
-                this.headers = mapOf(
-                    "Referer" to referer,
-                    "User-Agent" to USER_AGENT
-                )
+    private fun BloggerPost.toSearchResult(): SearchResponse? {
+        if (!isValidContentUrl(url) || !isValidTitle(title)) return null
+        val fixedPoster = fixUrlNull(poster?.fixBloggerImage())
+        return if (isMoviePost()) {
+            newMovieSearchResponse(title.cleanTitle(), url, TvType.Movie) { posterUrl = fixedPoster }
+        } else {
+            newTvSeriesSearchResponse(title.cleanTitle(), url, TvType.AsianDrama) { posterUrl = fixedPoster }
+        }
+    }
+
+    private fun BloggerPost.toEpisode(seriesTitle: String): Episode? {
+        if (!isValidContentUrl(url)) return null
+        val ep = extractEpisodeNumber(title, url)
+        return newEpisode(url) {
+            name = title.cleanTitle().ifBlank { "$seriesTitle Episode ${ep ?: ""}".trim() }
+            episode = ep
+            posterUrl = fixUrlNull(poster?.fixBloggerImage())
+        }
+    }
+
+    private suspend fun fetchSearchFeed(query: String): List<BloggerPost> {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        return fetchFeedUrl("$mainUrl/feeds/posts/default?alt=json&q=$encoded&max-results=$SEARCH_LIMIT")
+    }
+
+    private suspend fun fetchFeed(label: String?, page: Int, max: Int): List<BloggerPost> {
+        val start = ((page - 1).coerceAtLeast(0) * max) + 1
+        val encodedLabel = label?.trim()?.takeIf { it.isNotBlank() }?.let { encodeLabelPath(it) }
+        val url = if (encodedLabel.isNullOrBlank()) {
+            "$mainUrl/feeds/posts/default?alt=json&start-index=$start&max-results=$max&orderby=published"
+        } else {
+            "$mainUrl/feeds/posts/default/-/$encodedLabel?alt=json&start-index=$start&max-results=$max"
+        }
+        return fetchFeedUrl(url)
+    }
+
+    private suspend fun fetchFeedUrl(url: String): List<BloggerPost> {
+        return runCatching {
+            parseBloggerFeed(app.get(url, headers = feedHeaders, referer = mainUrl).text)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parseBloggerFeed(raw: String): List<BloggerPost> {
+        val json = unwrapJson(raw)
+        val root = runCatching { JsonParser().parse(json).asJsonObject }.getOrNull() ?: return emptyList()
+        val entries = root.obj("feed")?.array("entry") ?: return emptyList()
+        return entries.mapNotNull { element ->
+            val entry = element.asObjectOrNull() ?: return@mapNotNull null
+            val title = entry.obj("title")?.string("\$t")?.cleanTitle().orEmpty()
+            val url = entry.array("link")
+                ?.mapNotNull { it.asObjectOrNull() }
+                ?.firstOrNull { it.string("rel").equals("alternate", true) }
+                ?.string("href")
+                ?.let { normalizeUrl(it) }
+                .orEmpty()
+
+            val labels = entry.array("category")
+                ?.mapNotNull { it.asObjectOrNull()?.string("term")?.cleanTitle() }
+                ?.filter { it.isNotBlank() }
+                ?.distinct()
+                .orEmpty()
+
+            val content = entry.obj("content")?.string("\$t")
+                ?: entry.obj("summary")?.string("\$t")
+                ?: ""
+
+            val poster = listOf(
+                entry.obj("media\$thumbnail")?.string("url"),
+                extractImageFromContent(content)
+            ).firstOrNull { !it.isNullOrBlank() }?.fixBloggerImage()
+
+            BloggerPost(
+                title = title,
+                url = url,
+                poster = poster,
+                labels = labels,
+                content = content
+            )
+        }
+    }
+
+    private fun unwrapJson(raw: String): String {
+        val stripped = raw.trim().replace(Regex("^\\s*//.*?\\n"), "")
+        val start = stripped.indexOf('{')
+        val end = stripped.lastIndexOf('}')
+        return if (start >= 0 && end > start) stripped.substring(start, end + 1) else stripped
+    }
+
+    private fun extractImageFromContent(content: String): String? {
+        return Jsoup.parse(content).selectFirst("img[src], img[data-src], img[data-original]")
+            ?.imageAttr()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun readSeriesLabel(document: Document, title: String, fallbackUrl: String): String? {
+        Regex("""var\s+label_episode\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            .find(document.html())
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.urlDecodeSafe()
+            ?.cleanTitle()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
+        title.toSeriesLabelFromEpisode()?.let { return it }
+
+        val slug = fallbackUrl.substringBefore('?').substringAfterLast('/').substringBeforeLast('.')
+        Regex("""(?i)^(.+?)-episode[-\s]*\d+""").find(slug)?.groupValues?.getOrNull(1)
+            ?.replace('-', ' ')
+            ?.urlDecodeSafe()
+            ?.cleanTitle()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
+        return document.select("a[rel=tag][href*='/search/label/'], a[href*='/search/label/']")
+            .map { it.text().trim(',', ' ', '\n', '\t').cleanTitle() }
+            .firstOrNull { label ->
+                label.isNotBlank() &&
+                    label.length > 1 &&
+                    !label.matches(Regex("^[A-Z0-9]$")) &&
+                    !nonSeriesLabels.any { it.equals(label, true) }
             }
-        )
     }
 
     private fun buildPageUrl(path: String, page: Int): String {
         val base = when {
             path.isBlank() -> mainUrl
+            path.equals("Series", true) -> "$mainUrl/search/label/Series"
             path.startsWith("http", true) -> path
-            else -> "$mainUrl/${path.trimStart('/')}"
+            else -> "$mainUrl/search/label/${encodeLabelPath(path)}"
         }
         if (page <= 1) return base
-        return if (base.contains("/search/label/", true)) {
-            "$base?max-results=20"
-        } else {
-            base
-        }
+        return if (base.contains("/search/label/", true)) "$base?max-results=$MAIN_PAGE_LIMIT" else base
     }
 
     private fun readTitle(document: Document, fallbackUrl: String): String {
@@ -348,21 +465,29 @@ class DrakorAsia : MainAPI() {
 
     private fun readPoster(document: Document): String? {
         return fixUrlNull(document.selectFirst("meta[property=og:image], meta[name=twitter:image], article img, .post img, img")
-            ?.let { if (it.hasAttr("content")) it.attr("content") else it.imageAttr() })
+            ?.let { if (it.hasAttr("content")) it.attr("content") else it.imageAttr() }
+            ?.fixBloggerImage())
     }
 
     private fun readPlot(document: Document): String? {
-        return document.selectFirst("meta[property=og:description], meta[name=description], .post-body p, .entry-content p, article p")
+        return document.selectFirst("meta[property=og:description], meta[name=description], .sinoposis, .sinopsis, .post-body p, .entry-content p, article p")
             ?.let { if (it.hasAttr("content")) it.attr("content") else it.text() }
             ?.cleanTitle()
             ?.takeIf { it.length > 20 }
     }
 
     private fun readTags(document: Document): List<String> {
-        return document.select("a[href*='/search/label/'], a[href*='label%3A']")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() && !it.equals("Series", true) }
+        return document.select("a[rel=tag][href*='/search/label/'], a[href*='/search/label/']")
+            .map { it.text().trim(',', ' ', '\n', '\t').cleanTitle() }
+            .filter {
+                it.isNotBlank() &&
+                    it.length > 1 &&
+                    !it.matches(Regex("^[A-Z0-9]$")) &&
+                    !it.equals(name, true) &&
+                    !it.equals("Series", true)
+            }
             .distinct()
+            .take(20)
     }
 
     private fun collectCandidates(text: String, referer: String, output: MutableSet<String>) {
@@ -372,7 +497,7 @@ class DrakorAsia : MainAPI() {
             .map { it.value.trim().trim('"', '\'', ',', ';', ')', ']', '}') }
             .forEach(output::add)
 
-        Regex("""(?:src|href|file|url)\s*[:=]\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
+        Regex("""(?:src|href|file|url|value)\s*[:=]\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
             .findAll(normalized)
             .mapNotNull { it.groupValues.getOrNull(1) }
             .map { normalizeUrl(it, referer) }
@@ -393,17 +518,100 @@ class DrakorAsia : MainAPI() {
         return urlDecoded
     }
 
-    private fun decodeSeriesTitle(url: String): String {
-        val label = url.substringAfter("label%3ASeries+", "")
-            .ifBlank { url.substringAfter("/search/label/Series%20", "") }
-            .substringBefore('&')
-            .substringBefore('?')
-            .replace('+', ' ')
-        return runCatching { URLDecoder.decode(label, "UTF-8") }.getOrDefault(label).cleanTitle()
+    private suspend fun emitDirect(mediaUrl: String, referer: String, callback: (ExtractorLink) -> Unit) {
+        val fixed = mediaUrl.replace("\\/", "/")
+        val type = if (fixed.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        val quality = getQualityFromName(fixed).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
+        val linkHeaders = linkedMapOf(
+            "Referer" to referer,
+            "User-Agent" to USER_AGENT
+        )
+        if (referer.contains("abyssplayer.com", true)) {
+            linkHeaders["Origin"] = "https://abyssplayer.com"
+        }
+        callback.invoke(
+            newExtractorLink(
+                source = name,
+                name = "$name ${if (quality == Qualities.Unknown.value) "Auto" else "${quality}p"}",
+                url = fixed,
+                type = type
+            ) {
+                this.quality = quality
+                this.referer = referer
+                this.headers = linkHeaders
+            }
+        )
+    }
+
+    private fun String.toAbyssPlayerUrl(): String? {
+        val clean = replace("\\/", "/").trim().trim('"', '\'', ',', ';')
+        if (!clean.contains("short.ink", true)) return null
+        val id = clean.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
+        return "https://abyssplayer.com/$id"
+    }
+
+    private fun String.isPlayableCandidate(): Boolean {
+        val value = lowercase()
+        return isDirectMedia() || listOf(
+            "short.ink", "abyssplayer.com", "abyss.to", "blogger.com/video.g", "googlevideo.com", "blogspot.com",
+            "dailymotion", "ok.ru", "odnoklassniki", "streamtape", "filemoon", "dood", "vidhide", "vidguard",
+            "voe.sx", "mixdrop", "mp4upload", "abyssplayer", "streamwish", "streamruby", "sendvid", "uqload",
+            "desustream", "ondesu"
+        ).any { value.contains(it) }
+    }
+
+    private fun String.isDirectMedia(): Boolean {
+        val value = lowercase().substringBefore("#")
+        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback")
+    }
+
+    private fun isValidContentUrl(url: String): Boolean {
+        return url.startsWith(mainUrl, true) &&
+            url.contains(".html", true) &&
+            !url.contains("/p/", true) &&
+            !url.contains("/search/", true)
+    }
+
+    private fun isValidTitle(title: String): Boolean {
+        val clean = title.cleanTitle()
+        if (clean.length < 2) return false
+        return !listOf(
+            "Home", "Genre", "Season", "Drama List", "DRAMA LIST", "Video Server",
+            "Server 1", "Tonton", "Nonton", name, "drakorasia"
+        ).any { clean.equals(it, true) }
+    }
+
+    private fun BloggerPost.isValidContentPost(): Boolean = isValidContentUrl(url) && isValidTitle(title)
+
+    private fun BloggerPost.isEpisodePost(): Boolean {
+        return title.contains("Episode", true) ||
+            labels.any { it.equals("Eps. TV", true) || it.startsWith("Eps.", true) }
+    }
+
+    private fun BloggerPost.isSeriesPost(): Boolean = labels.any { it.equals("Series", true) }
+    private fun BloggerPost.isMoviePost(): Boolean = labels.any { it.equals("Movie", true) }
+
+    private fun BloggerPost.matchesKeyword(keyword: String): Boolean {
+        val words = keyword.lowercase().split(Regex("\\s+")).filter { it.length >= 2 }
+        val haystack = (title + " " + labels.joinToString(" ")).lowercase()
+        return words.all { haystack.contains(it) } || title.lowercase().contains(keyword.lowercase())
+    }
+
+    private fun String.matchesKeyword(keyword: String): Boolean {
+        val words = keyword.lowercase().split(Regex("\\s+")).filter { it.length >= 2 }
+        val haystack = lowercase()
+        return words.all { haystack.contains(it) } || haystack.contains(keyword.lowercase())
+    }
+
+    private fun String.toSeriesLabelFromEpisode(): String? {
+        return replace(Regex("(?i)\\s+Episode\\s+\\d+.*$"), "")
+            .replace(Regex("(?i)\\s+Eps?\\.?\\s*\\d+.*$"), "")
+            .cleanTitle()
+            .takeIf { it.isNotBlank() && it != this.cleanTitle() }
     }
 
     private fun cleanEpisodeTitle(title: String): String {
-        return title.replace(Regex("(?i)\\s+Episode\\s+\\d+.*$"), "")
+        return title.toSeriesLabelFromEpisode() ?: title
             .replace(Regex("(?i)\\s+Sub\\s+Indo.*$"), "")
             .cleanTitle()
     }
@@ -412,6 +620,10 @@ class DrakorAsia : MainAPI() {
         return Regex("(?i)episode[-\\s]*(\\d+)").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("(?i)episode[-\\s]*(\\d+)").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("(?i)eps?\\.?[-\\s]*(\\d+)").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun String.urlDecodeSafe(): String {
+        return runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
     }
 
     private fun normalizeUrl(url: String, referer: String = mainUrl): String {
@@ -425,6 +637,14 @@ class DrakorAsia : MainAPI() {
         }
     }
 
+    private fun withMobileParam(url: String): String {
+        return if (url.contains("?", true)) url else "$url?m=1"
+    }
+
+    private fun encodeLabelPath(label: String): String {
+        return URLEncoder.encode(label.trim(), "UTF-8").replace("+", "%20")
+    }
+
     private fun Element.imageAttr(): String {
         return attr("abs:src").ifBlank { attr("abs:data-src") }
             .ifBlank { attr("abs:data-original") }
@@ -433,18 +653,9 @@ class DrakorAsia : MainAPI() {
             .ifBlank { attr("data-original") }
     }
 
-    private fun String.isPlayableCandidate(): Boolean {
-        val value = lowercase()
-        return isDirectMedia() || listOf(
-            "blogger.com/video.g", "googlevideo.com", "blogspot.com", "dailymotion", "ok.ru", "odnoklassniki",
-            "streamtape", "filemoon", "dood", "vidhide", "vidguard", "voe.sx", "mixdrop", "mp4upload",
-            "abyssplayer", "streamwish", "streamruby", "sendvid", "uqload", "short.ink", "desustream", "ondesu"
-        ).any { value.contains(it) }
-    }
-
-    private fun String.isDirectMedia(): Boolean {
-        val value = lowercase().substringBefore("#")
-        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback")
+    private fun String.fixBloggerImage(): String {
+        return replace(Regex("/s\\d+(-c|-rw)?/"), "/s500/")
+            .replace(Regex("=s\\d+(-c|-rw)?"), "=s500")
     }
 
     private fun inferQuality(url: String): Int {
@@ -474,5 +685,39 @@ class DrakorAsia : MainAPI() {
             .replace("&lt;", "<")
             .replace("&gt;", ">")
             .replace("&nbsp;", " ")
+    }
+
+    private fun JsonElement?.asObjectOrNull(): JsonObject? {
+        return this?.takeIf { it.isJsonObject }?.asJsonObject
+    }
+
+    private fun JsonObject.obj(key: String): JsonObject? {
+        return get(key).asObjectOrNull()
+    }
+
+    private fun JsonObject.array(key: String) = get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+
+    private fun JsonObject.string(key: String): String? {
+        return get(key)?.takeIf { !it.isJsonNull }?.asString
+    }
+
+    private data class MainPageData(
+        val items: List<SearchResponse>,
+        val hasNext: Boolean
+    )
+
+    private data class BloggerPost(
+        val title: String,
+        val url: String,
+        val poster: String?,
+        val labels: List<String>,
+        val content: String
+    )
+
+    companion object {
+        private const val MAIN_PAGE_LIMIT = 20
+        private const val SEARCH_LIMIT = 30
+        private const val SEARCH_SERIES_LIMIT = 150
+        private const val EPISODE_LIMIT = 150
     }
 }
