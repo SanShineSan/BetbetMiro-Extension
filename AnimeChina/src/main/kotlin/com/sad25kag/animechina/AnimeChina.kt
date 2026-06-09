@@ -26,20 +26,29 @@ class AnimeChina : MainAPI() {
 
     override val mainPage = mainPageOf(
         "" to "Latest Update",
-        "ongoing/" to "Ongoing",
-        "index-list/" to "Index List",
-        "genres/drama/" to "Drama",
-        "genres/action/" to "Action",
-        "genres/actions/" to "Actions",
-        "genres/adventure/" to "Adventure",
-        "genres/fantasy/" to "Fantasy",
-        "genres/cultivation/" to "Cultivation",
-        "genres/comedy/" to "Comedy",
-        "genres/demons/" to "Demons",
-        "genres/crossdressing/" to "Crossdressing",
+        "index:ALL" to "All Anime",
+        "index:A" to "A Titles",
+        "index:B" to "B Titles",
+        "index:D" to "D Titles",
+        "index:H" to "H Titles",
+        "index:L" to "L Titles",
+        "index:M" to "M Titles",
+        "index:P" to "P Titles",
+        "index:Q" to "Q Titles",
+        "index:S" to "S Titles",
+        "index:T" to "T Titles",
+        "index:W" to "W Titles",
+        "index:X" to "X Titles",
+        "index:Z" to "Z Titles",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        if (request.data.startsWith("index:", ignoreCase = true)) {
+            val indexDocument = app.get("$mainUrl/index-list/", headers = browserHeaders).document
+            val indexResult = parseIndexListCards(indexDocument, request.data.substringAfter(":"), page)
+            return newHomePageResponse(request.name, indexResult.results, indexResult.hasNext)
+        }
+
         val url = buildPageUrl(request.data, page)
         val document = app.get(url, headers = browserHeaders).document
         val results = parseAnimeChinaCards(document).distinctBy { it.url.normalizedKey() }
@@ -167,6 +176,24 @@ class AnimeChina : MainAPI() {
             }
         }
         return emitted.isNotEmpty()
+    }
+
+    private data class IndexPageResult(
+        val results: List<SearchResponse>,
+        val hasNext: Boolean,
+    )
+
+    private fun parseIndexListCards(document: Document, section: String, page: Int): IndexPageResult {
+        val pageSize = 30
+        val normalizedSection = section.uppercase(Locale.ROOT)
+        val cards = parseAnimeChinaCards(document).filter { card ->
+            normalizedSection == "ALL" || card.name.indexLetter() == normalizedSection
+        }.distinctBy { it.url.normalizedKey() }
+        val start = ((page.coerceAtLeast(1) - 1) * pageSize).coerceAtLeast(0)
+        return IndexPageResult(
+            results = cards.drop(start).take(pageSize),
+            hasNext = cards.size > start + pageSize,
+        )
     }
 
     private fun buildPageUrl(path: String, page: Int): String {
@@ -331,6 +358,11 @@ class AnimeChina : MainAPI() {
         if (value.contains("Subtitle", true)) return false
         if (value.contains("Nonton", true)) return false
         return true
+    }
+
+    private fun String.indexLetter(): String? {
+        val first = cleanText().firstOrNull { it.isLetterOrDigit() } ?: return null
+        return if (first.isDigit()) "#" else first.uppercaseChar().toString()
     }
 
     private fun cleanCardTitle(raw: String): String {
