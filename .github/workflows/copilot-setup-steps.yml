@@ -1,0 +1,45 @@
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare Gradle wrapper
+        run: chmod +x ./gradlew
+
+      - name: Count provider modules
+        run: python scripts/count_providers.py
+
+      - name: Validate repository metadata
+        run: python scripts/validate_metadata.py
