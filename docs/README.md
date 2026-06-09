@@ -86,6 +86,22 @@ Recommended for:
 
 ---
 
+## Repository Metadata Guide
+
+- [`REPO_METADATA_GUIDE.md`](REPO_METADATA_GUIDE.md)
+
+Use this guide when checking `repo.json`, `plugins.json`, provider metadata, generated artifacts, or install/publish metadata.
+
+Recommended for:
+
+- Repository install metadata review.
+- Plugin list validation.
+- Provider `build.gradle.kts` metadata checks.
+- Artifact and URL validation.
+- Avoiding unsupported metadata claims.
+
+---
+
 ## Troubleshooting
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
