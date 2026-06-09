@@ -24,6 +24,8 @@ class AnimeChina : MainAPI() {
         "Referer" to "$mainUrl/",
     )
 
+    private val indexPosterCache = mutableMapOf<String, String?>()
+
     override val mainPage = mainPageOf(
         "" to "Latest Update",
         "index:ALL" to "All Anime",
@@ -183,17 +185,43 @@ class AnimeChina : MainAPI() {
         val hasNext: Boolean,
     )
 
-    private fun parseIndexListCards(document: Document, section: String, page: Int): IndexPageResult {
-        val pageSize = 30
+    private suspend fun parseIndexListCards(document: Document, section: String, page: Int): IndexPageResult {
+        val pageSize = 16
         val normalizedSection = section.uppercase(Locale.ROOT)
         val cards = parseAnimeChinaCards(document).filter { card ->
             normalizedSection == "ALL" || card.name.indexLetter() == normalizedSection
         }.distinctBy { it.url.normalizedKey() }
         val start = ((page.coerceAtLeast(1) - 1) * pageSize).coerceAtLeast(0)
+        val pageCards = cards.drop(start).take(pageSize)
         return IndexPageResult(
-            results = cards.drop(start).take(pageSize),
+            results = pageCards.map { it.withIndexPoster() },
             hasNext = cards.size > start + pageSize,
         )
+    }
+
+    private suspend fun SearchResponse.withIndexPoster(): SearchResponse {
+        val detailUrl = canonicalSeriesUrl(url)
+        val poster = resolvePosterFromDetail(detailUrl)
+        return newMovieSearchResponse(name, detailUrl, TvType.Anime) {
+            this.posterUrl = poster
+            this.posterHeaders = mapOf("Referer" to detailUrl)
+        }
+    }
+
+    private suspend fun resolvePosterFromDetail(detailUrl: String): String? {
+        val canonicalUrl = canonicalSeriesUrl(detailUrl)
+        if (indexPosterCache.containsKey(canonicalUrl)) return indexPosterCache[canonicalUrl]
+        val poster = runCatching {
+            val document = app.get(canonicalUrl, headers = browserHeaders, referer = "$mainUrl/index-list/").document
+            extractPoster(document, canonicalUrl)
+        }.getOrNull()
+        indexPosterCache[canonicalUrl] = poster
+        return poster
+    }
+
+    private fun extractPoster(document: Document, referer: String): String? {
+        return document.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(referer)
+            ?: document.selectFirst("meta[property=og:image], meta[name=twitter:image]")?.attr("content")?.toAbsoluteUrl(referer)
     }
 
     private fun buildPageUrl(path: String, page: Int): String {
