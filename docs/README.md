@@ -54,6 +54,22 @@ Recommended for:
 
 ---
 
+## Build Guide
+
+- [`BUILD_GUIDE.md`](BUILD_GUIDE.md)
+
+Use this guide when running or reporting local Gradle builds on Linux, macOS, Termux, or Windows.
+
+Recommended for:
+
+- Local build setup.
+- Java and Gradle wrapper checks.
+- Common build failure triage.
+- Build status reporting.
+- Distinguishing local Gradle and GitHub Actions results.
+
+---
+
 ## Troubleshooting
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
