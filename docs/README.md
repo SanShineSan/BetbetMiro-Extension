@@ -22,6 +22,22 @@ Recommended for:
 
 ---
 
+## Workflow Guide
+
+- [`WORKFLOW_GUIDE.md`](WORKFLOW_GUIDE.md)
+
+Use this guide for the full maintenance flow from issue/report to evidence, patch, build, metadata checks, Actions, and final status.
+
+Recommended for:
+
+- Provider fix workflow.
+- New provider workflow.
+- Build failure workflow.
+- Metadata and documentation workflow.
+- Stop conditions before guessing.
+
+---
+
 ## Evidence Collection Guide
 
 - [`EVIDENCE_COLLECTION_GUIDE.md`](EVIDENCE_COLLECTION_GUIDE.md)
@@ -67,6 +83,22 @@ Recommended for:
 - Homepage/search/load/loadLinks implementation checks.
 - Initial provider version and build metadata review.
 - Avoiding unfinished skeleton providers.
+
+---
+
+## Pull Request Review Guide
+
+- [`PR_REVIEW_GUIDE.md`](PR_REVIEW_GUIDE.md)
+
+Use this guide when reviewing provider fixes, new providers, documentation changes, metadata changes, build changes, and workflow changes.
+
+Recommended for:
+
+- Scope review.
+- Evidence and root cause review.
+- Version bump checks.
+- Build, Actions, metadata, and runtime review.
+- Merge blocker decisions.
 
 ---
 
@@ -210,6 +242,21 @@ Recommended for:
 - `mainUrl` redirect checks.
 - Reviewing automated domain update diffs.
 - Avoiding false claims that a domain update proves provider playback.
+
+---
+
+## FAQ
+
+- [`FAQ.md`](FAQ.md)
+
+Use this page for quick answers about builds, runtime proof, provider version bumps, broken provider reports, new provider expectations, and docs-only changes.
+
+Recommended for:
+
+- New contributors.
+- Issue reporters.
+- Quick policy lookup.
+- Avoiding repeated explanation in reviews.
 
 ---
 
