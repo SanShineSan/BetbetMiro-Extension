@@ -610,9 +610,9 @@ class TurnstileInterceptor(
     private val targetCookies: List<String> = listOf("cf_clearance", "_as_turnstile")
 ) : Interceptor {
     companion object {
-        private const val POLL_INTERVAL_MS = 500L
-        private const val MAX_ATTEMPTS = 30
-        private const val PAGE_WAIT_SECONDS = 45L
+        private const val POLL_INTERVAL_MS = 250L
+        private const val MAX_ATTEMPTS = 12
+        private const val PAGE_WAIT_SECONDS = 8L
     }
 
     private fun getCookieHeader(url: String, domainUrl: String): String {
@@ -670,15 +670,20 @@ class TurnstileInterceptor(
         val domainUrl = "${originalRequest.url.scheme}://${originalRequest.url.host}"
         val cookieManager = CookieManager.getInstance()
 
+        val cookieHeader = getCookieHeader(url, domainUrl)
         if (getCookieValue(url, domainUrl) != null) {
             val response = chain.proceed(
                 originalRequest.newBuilder()
-                    .header("Cookie", getCookieHeader(url, domainUrl))
+                    .header("Cookie", cookieHeader)
                     .build()
             )
             if (!hasChallenge(response)) return response
             response.close()
             invalidateCookie(domainUrl)
+        } else {
+            val normalResponse = chain.proceed(originalRequest)
+            if (!hasChallenge(normalResponse)) return normalResponse
+            normalResponse.close()
         }
 
         val context = AcraApplication.context
@@ -742,15 +747,13 @@ class TurnstileInterceptor(
         }
 
         val finalCookies = getCookieHeader(url, domainUrl)
-        val finalResponse = chain.proceed(
-            originalRequest.newBuilder()
-                .header("Cookie", finalCookies)
-                .apply { if (resolvedUserAgent.isNotBlank()) header("User-Agent", resolvedUserAgent) }
-                .build()
-        )
+        val finalRequest = originalRequest.newBuilder()
+            .apply {
+                if (finalCookies.isNotBlank()) header("Cookie", finalCookies)
+                if (resolvedUserAgent.isNotBlank()) header("User-Agent", resolvedUserAgent)
+            }
+            .build()
 
-        if (!hasChallenge(finalResponse)) return finalResponse
-
-        return finalResponse
+        return chain.proceed(finalRequest)
     }
 }
