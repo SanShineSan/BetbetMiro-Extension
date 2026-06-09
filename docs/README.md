@@ -245,6 +245,21 @@ Recommended for:
 
 ---
 
+## Health Check Guide
+
+- [`HEALTH_CHECK_GUIDE.md`](HEALTH_CHECK_GUIDE.md)
+
+Use this guide before running or reviewing provider domain health checks.
+
+Recommended for:
+
+- Read-only domain availability reports.
+- Detecting redirects, timeouts, and HTTP status changes.
+- Reviewing health-check workflow artifacts.
+- Avoiding false claims that domain health proves homepage, detail, or playback.
+
+---
+
 ## FAQ
 
 - [`FAQ.md`](FAQ.md)
