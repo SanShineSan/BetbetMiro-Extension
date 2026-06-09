@@ -1,0 +1,49 @@
+name: Provider Domain Health Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "Health check config path"
+        required: false
+        default: "healthcheck/providers.example.json"
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  domain-health:
+    name: Check provider domains
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run domain health check
+        run: |
+          CONFIG_PATH="${{ github.event.inputs.config }}"
+          if [ -z "$CONFIG_PATH" ]; then
+            CONFIG_PATH="healthcheck/providers.example.json"
+          fi
+
+          python scripts/health_check_domains.py \
+            --config "$CONFIG_PATH" \
+            --json-output healthcheck-report.json \
+            --markdown-output healthcheck-report.md
+
+      - name: Upload health check reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-domain-health-report
+          path: |
+            healthcheck-report.json
+            healthcheck-report.md
