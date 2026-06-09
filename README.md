@@ -4,7 +4,7 @@
 
 ### CloudStream provider repository maintained by @sad25kag
 
-Anime • Donghua • Drama • Movie • Multi-Source • NSFW
+Anime • Donghua • Drama • Movie • Multi-Source • Age-Restricted Providers
 
 <img src="https://img.shields.io/github/stars/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=yellow" />
 <img src="https://img.shields.io/github/forks/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=blue" />
@@ -54,7 +54,7 @@ Repository ini dapat memuat provider untuk beberapa kategori berikut:
 - Film Indonesia
 - Film Barat dan Asia
 - Multi-source provider
-- Konten dewasa/NSFW untuk pengguna yang memenuhi syarat usia
+- Provider terbatas usia sesuai aturan wilayah masing-masing
 
 Ketersediaan kategori mengikuti provider yang sedang aktif dan dapat berubah sewaktu-waktu.
 
@@ -107,6 +107,23 @@ Output build akan tersedia di:
 ```text
 /builds
 ```
+
+---
+
+## Dokumentasi
+
+Dokumentasi lengkap tersedia di:
+
+- [`docs/README.md`](docs/README.md) — index dokumentasi maintainer dan contributor.
+
+Panduan penting:
+
+- [`docs/WORKFLOW_GUIDE.md`](docs/WORKFLOW_GUIDE.md) — alur kerja issue, evidence, patch, build, metadata, Actions, dan final status.
+- [`docs/EVIDENCE_COLLECTION_GUIDE.md`](docs/EVIDENCE_COLLECTION_GUIDE.md) — standar pengumpulan bukti sebelum patch provider.
+- [`docs/RUNTIME_TESTING_GUIDE.md`](docs/RUNTIME_TESTING_GUIDE.md) — standar validasi runtime di aplikasi CloudStream.
+- [`docs/PROVIDER_MAINTENANCE.md`](docs/PROVIDER_MAINTENANCE.md) — standar pemeliharaan provider.
+- [`docs/BUILD_GUIDE.md`](docs/BUILD_GUIDE.md) — panduan build lokal.
+- [`docs/FAQ.md`](docs/FAQ.md) — pertanyaan umum.
 
 ---
 
@@ -217,15 +234,15 @@ Pemilik repository tidak berafiliasi dengan CloudStream maupun sumber pihak keti
 
 ---
 
-## Peringatan Konten Dewasa
+## Peringatan Konten Terbatas Usia
 
-Sebagian provider dalam repository ini dapat mengakses konten dewasa/NSFW.
+Sebagian provider dalam repository ini dapat mengakses sumber yang dibatasi usia atau wilayah.
 
 Dengan menggunakan repository ini, pengguna menyatakan bahwa:
 
 - Telah memenuhi batas usia yang berlaku di wilayah masing-masing.
 - Bertanggung jawab penuh atas penggunaan repository dan provider di dalamnya.
-- Memahami hukum, aturan, dan risiko penggunaan konten di wilayah masing-masing.
+- Memahami hukum, aturan, dan risiko penggunaan sumber di wilayah masing-masing.
 
 ---
 
