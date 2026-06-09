@@ -1,42 +1,134 @@
-name: Request provider baru
-description: Minta penambahan provider baru.
-title: "[Request Provider]: "
-labels: ["provider-request", "enhancement"]
+name: New provider request
+about: Request a new CloudStream provider/source
+title: "[Provider Request]: "
+labels: ["provider-request", "enhancement", "needs-triage"]
+assignees: []
+
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new provider.
+
+        Please provide enough source information so the maintainer can evaluate whether the provider is possible and worth maintaining.
+
   - type: input
     id: provider_name
     attributes:
-      label: Nama provider
-      placeholder: "Contoh: DuniaFilm21"
+      label: Source / provider name
+      description: Write the official source name or the proposed provider name.
+      placeholder: Example: DuniaFilm21, ExampleAnime, ExampleDrama
     validations:
       required: true
 
   - type: input
     id: source_url
     attributes:
-      label: URL sumber
-      placeholder: "https://contoh.com/"
+      label: Main source URL
+      description: Paste the official source website URL.
+      placeholder: https://example.com/
     validations:
       required: true
 
   - type: textarea
-    id: categories
+    id: sample_urls
     attributes:
-      label: Kategori yang diharapkan
-      description: Tulis kategori penting jika ada. Kalau kosong, kategori akan disesuaikan dengan website sumber.
-      placeholder: "Movie, Series, Anime, Genre, Tahun, Negara, dll."
+      label: Sample URLs
+      description: Add sample URLs that can help provider development.
+      placeholder: |
+        Homepage: https://example.com/
+        Category: https://example.com/genre/action
+        Search: https://example.com/?s=query
+        Detail: https://example.com/title/example
+        Episode/Movie player: https://example.com/title/example-episode-1
+    validations:
+      required: false
+
+  - type: dropdown
+    id: content_type
+    attributes:
+      label: Content type
+      description: What type of content does this source provide?
+      multiple: true
+      options:
+        - Movies
+        - TV series
+        - Anime
+        - Donghua
+        - Drama
+        - Live TV
+        - Sports
+        - Documentary
+        - Adult / NSFW
+        - Other
+    validations:
+      required: true
 
   - type: textarea
-    id: notes
+    id: expected_categories
     attributes:
-      label: Catatan tambahan
-      placeholder: "Contoh: website pakai server 1/2/3, perlu subtitle, domain mirror, dll."
+      label: Expected categories / genres
+      description: List important categories if available. If empty, categories may follow the source website.
+      placeholder: Movie, Series, Anime, Latest, Popular, Genre, Year, Country, etc.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: source_access
+    attributes:
+      label: Source accessibility
+      description: Does the source open normally?
+      options:
+        - Opens normally without VPN
+        - Requires VPN
+        - Region locked
+        - Cloudflare or heavy protection
+        - Login required
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: playback_info
+    attributes:
+      label: Playback / player information
+      description: Add known player/server information if you have it.
+      placeholder: |
+        Example:
+        - Server list: Server 1, Server 2, Dood, StreamSB, etc.
+        - Subtitle available: yes/no
+        - Player opens in iframe/API/direct m3u8/mp4
+    validations:
+      required: false
+
+  - type: textarea
+    id: why_add
+    attributes:
+      label: Why should this provider be added?
+      description: Explain why the source is useful for CloudStream users.
+      placeholder: Example: active source, complete subtitle, unique catalog, fast updates, etc.
+    validations:
+      required: false
 
   - type: checkboxes
-    id: checklist
+    id: checks
     attributes:
-      label: Checklist
+      label: Basic checks
       options:
-        - label: URL sumber bisa dibuka.
-        - label: Website memiliki konten yang bisa diuji.
-        - label: Saya paham provider baru belum tentu langsung stabil jika sumber memakai proteksi berat.
+        - label: I checked that the source website is reachable.
+          required: true
+        - label: I checked that the source has playable content that can be tested.
+          required: true
+        - label: I understand that a new provider may be rejected if the source has heavy protection, illegal content risks, or cannot be maintained reliably.
+          required: true
+        - label: I did not include explicit media or illegal content in this request.
+          required: true
+
+  - type: textarea
+    id: extra_notes
+    attributes:
+      label: Additional notes / Catatan tambahan
+      description: Add mirror domains, region notes, subtitle notes, or other context.
+      placeholder: Website pakai server 1/2/3, subtitle tersedia, domain mirror, perlu VPN, dll.
+    validations:
+      required: false
