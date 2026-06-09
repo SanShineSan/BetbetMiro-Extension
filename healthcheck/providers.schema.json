@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sad25kag/BetbetMiro-Extension/healthcheck/providers.schema.json",
+  "title": "BetbetMiro provider health check config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providers"],
+  "properties": {
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "mainUrl"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "module": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mainUrl": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "expectedStatus": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "default": [200, 301, 302, 403]
+          },
+          "sampleSearch": {
+            "type": "string"
+          },
+          "searchUrl": {
+            "type": "string",
+            "description": "Full search URL template. Use {query} where the encoded query should be inserted."
+          },
+          "sampleDetail": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "expectedKeywords": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": []
+          },
+          "blockedKeywords": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [
+              "captcha",
+              "cloudflare",
+              "access denied",
+              "checking your browser"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
