@@ -70,6 +70,22 @@ Recommended for:
 
 ---
 
+## GitHub Actions Guide
+
+- [`ACTIONS_GUIDE.md`](ACTIONS_GUIDE.md)
+
+Use this guide when reading workflow runs, job logs, artifacts, and remote build/publish status.
+
+Recommended for:
+
+- GitHub Actions status reporting.
+- Failed workflow triage.
+- Artifact validation.
+- `repo.json` and `plugins.json` workflow checks.
+- Avoiding false runtime claims from green workflows.
+
+---
+
 ## Troubleshooting
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
