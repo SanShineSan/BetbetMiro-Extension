@@ -1,0 +1,125 @@
+name: Bug report
+about: Report a repository, build, workflow, or documentation problem
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+
+        Use this template for repository, build, workflow, documentation, or tooling issues.
+
+        If a CloudStream provider is broken, please use the **Broken provider** template instead.
+
+  - type: dropdown
+    id: bug_area
+    attributes:
+      label: Bug area
+      description: What part of the repository is affected?
+      multiple: true
+      options:
+        - Gradle build
+        - GitHub Actions
+        - repo.json
+        - plugins.json
+        - Documentation
+        - README
+        - Issue template
+        - Pull request template
+        - DomainCheck.py
+        - VS Code settings
+        - Repository structure
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly.
+      placeholder: Explain what is wrong and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Write exact steps or commands if possible.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. See error ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste build logs, GitHub Actions error, or command output. Remove private data before posting.
+      render: text
+      placeholder: Paste logs here.
+    validations:
+      required: false
+
+  - type: input
+    id: branch_commit
+    attributes:
+      label: Branch or commit
+      description: Add the branch name or commit SHA where the bug happened, if known.
+      placeholder: master / commit SHA / unknown
+    validations:
+      required: false
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      description: Where did you see the issue?
+      multiple: true
+      options:
+        - GitHub Actions
+        - Local Linux
+        - Local Windows
+        - Local macOS
+        - Termux
+        - Android device
+        - VS Code
+        - Other
+    validations:
+      required: false
+
+  - type: input
+    id: java_version
+    attributes:
+      label: Java version
+      description: Required only for build issues.
+      placeholder: Example: Java 17 / Java 21 / unknown
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add screenshots, workflow run links, related PRs/issues, or extra details.
+      placeholder: Any additional context.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Basic checks
+      options:
+        - label: I checked that this is not a duplicate issue.
+          required: true
+        - label: I used the broken provider template instead if this is only about one provider not working.
+          required: true
+        - label: I included logs or reproduction steps when available.
+          required: false
