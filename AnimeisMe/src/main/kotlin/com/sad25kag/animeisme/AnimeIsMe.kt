@@ -32,6 +32,14 @@ class AnimeIsMe : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
+    private val bloggerHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "*/*",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin" to "https://www.blogger.com",
+        "Referer" to "https://www.blogger.com/"
+    )
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Update Terbaru",
         "$mainUrl/anime/?status=&type=&sub=&order=" to "Daftar Anime",
@@ -127,17 +135,24 @@ class AnimeIsMe : MainAPI() {
             enqueueFromText(response.text, url)
         }
 
-        suspend fun emitDirect(url: String, label: String?, referer: String) {
+        suspend fun emitDirect(url: String, label: String?, referer: String, extraHeaders: Map<String, String> = emptyMap()) {
             val fixed = normalizeMediaUrl(url) ?: return
             val key = fixed.normalizedMediaKey()
             if (!emitted.add(key)) return
             val qualityLabel = label?.cleanLabel().orEmpty().ifBlank { fixed.qualityLabelFromUrl() }
             val quality = qualityLabel.takeIf { it.isNotBlank() }?.let { getQualityFromName(it) }
                 ?: fixed.parseQuality()
+                ?: fixed.parseGoogleVideoQuality()
                 ?: Qualities.Unknown.value
+            val headers = when {
+                extraHeaders.isNotEmpty() -> extraHeaders
+                fixed.contains("googlevideo.com/videoplayback", true) -> googleVideoHeaders
+                else -> siteHeaders + mapOf("Range" to "bytes=0-")
+            }
+            val finalReferer = headers["Referer"] ?: referer
 
             if (fixed.contains(".m3u8", true)) {
-                val links = M3u8Helper.generateM3u8(name, fixed, referer, headers = siteHeaders)
+                val links = M3u8Helper.generateM3u8(name, fixed, finalReferer, headers = headers)
                 for (link in links) {
                     callback(link)
                     hasLinks = true
@@ -150,19 +165,31 @@ class AnimeIsMe : MainAPI() {
                         url = fixed,
                         type = ExtractorLinkType.VIDEO
                     ) {
-                        this.referer = referer
+                        this.referer = finalReferer
                         this.quality = quality
-                        this.headers = siteHeaders + mapOf("Range" to "bytes=0-")
+                        this.headers = headers
                     }
                 )
                 hasLinks = true
             }
         }
 
+        suspend fun resolveBlogger(url: String, label: String?, referer: String): Boolean {
+            val links = resolveBloggerVideo(url, referer)
+            links.forEach { link ->
+                emitDirect(link, label ?: "Blogger", "https://youtube.googleapis.com/", googleVideoHeaders)
+            }
+            return links.isNotEmpty()
+        }
+
         suspend fun emitExtractor(url: String, label: String?, referer: String) {
             val fixed = normalizeMediaUrl(url) ?: return
             if (fixed.isDirectMedia()) {
                 emitDirect(fixed, label, referer)
+                return
+            }
+            if (fixed.isBloggerVideoUrl()) {
+                if (resolveBlogger(fixed, label, referer)) hasLinks = true
                 return
             }
             val key = fixed.normalizedMediaKey()
@@ -184,21 +211,58 @@ class AnimeIsMe : MainAPI() {
             if (!visited.add(fixed.normalizedMediaKey())) continue
             val referer = candidate.referer ?: pageUrl
 
-            if (fixed.isDirectMedia()) {
-                emitDirect(fixed, candidate.label, referer)
-                continue
+            when {
+                fixed.isDirectMedia() -> emitDirect(fixed, candidate.label, referer)
+                fixed.isBloggerVideoUrl() -> if (resolveBlogger(fixed, candidate.label, referer)) hasLinks = true
+                !fixed.startsWith(mainUrl, true) -> {
+                    emitExtractor(fixed, candidate.label, referer)
+                    if (fixed.shouldInlineResolve()) enqueueFromUrl(fixed, referer)
+                }
+                fixed.isInternalPlayerUrl() -> enqueueFromUrl(fixed, referer)
             }
-
-            if (!fixed.startsWith(mainUrl, true)) {
-                emitExtractor(fixed, candidate.label, referer)
-                if (fixed.shouldInlineResolve()) enqueueFromUrl(fixed, referer)
-                continue
-            }
-
-            if (fixed.isInternalPlayerUrl()) enqueueFromUrl(fixed, referer)
         }
 
         return hasLinks
+    }
+
+    private val googleVideoHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "*/*",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer" to "https://youtube.googleapis.com/",
+        "Origin" to "https://www.blogger.com",
+        "Range" to "bytes=0-"
+    )
+
+    private suspend fun resolveBloggerVideo(url: String, referer: String): List<String> {
+        val token = url.extractQueryValue("token") ?: return emptyList()
+        val page = runCatching {
+            app.get(url, headers = bloggerHeaders, referer = referer)
+        }.getOrNull() ?: return emptyList()
+
+        val html = page.text
+        val fSid = html.extractJsonValue("FdrFJe") ?: return emptyList()
+        val bl = html.extractJsonValue("cfb2h") ?: return emptyList()
+        val reqId = ((System.currentTimeMillis() % 90000L) + 10000L).toString()
+        val endpoint = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
+            "?rpcids=WcwnYd&source-path=%2Fvideo.g" +
+            "&f.sid=${fSid.urlEncode()}" +
+            "&bl=${bl.urlEncode()}" +
+            "&hl=id&_reqid=$reqId&rt=c"
+        val request = "[[[\"WcwnYd\",\"[\\\"${token.escapeJson()}\\\",null,0]\",null,\"generic\"]]]"
+        val response = runCatching {
+            app.post(
+                endpoint,
+                data = mapOf("f.req" to request),
+                headers = bloggerHeaders + mapOf(
+                    "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
+                    "X-Same-Domain" to "1"
+                ),
+                referer = "https://www.blogger.com/"
+            )
+        }.getOrNull() ?: return emptyList()
+
+        return response.text.extractGoogleVideoLinks()
     }
 
     private fun buildPageUrl(data: String, page: Int): String {
@@ -396,7 +460,7 @@ class AnimeIsMe : MainAPI() {
     }
 
     private fun normalizeMediaUrl(raw: String?): String? {
-        return raw?.basicHtmlDecode()?.unescapeJs()?.replace("\\/", "/")?.toAbsoluteUrl()
+        return raw?.basicHtmlDecode()?.unescapeJs()?.cleanEscapedUrl()?.toAbsoluteUrl()
     }
 
     private fun String.isPotentialPlayerUrl(): Boolean {
@@ -416,6 +480,11 @@ class AnimeIsMe : MainAPI() {
         val lower = lowercase()
         return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") ||
             lower.contains("googlevideo.com/videoplayback") || lower.contains("mime=video") || lower.contains("cloudflarestorage.com")
+    }
+
+    private fun String.isBloggerVideoUrl(): Boolean {
+        val lower = lowercase()
+        return lower.contains("blogger.com/video.g") && lower.contains("token=")
     }
 
     private fun String.shouldInlineResolve(): Boolean {
@@ -558,15 +627,78 @@ class AnimeIsMe : MainAPI() {
         }.getOrNull()?.takeIf { it.contains("http", true) || it.contains("<iframe", true) }
     }
 
+    private fun String.cleanEscapedUrl(): String {
+        return replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\&", "&")
+            .replace("\\=", "=")
+            .replace("\\?", "?")
+    }
+
+    private fun String.extractJsonValue(key: String): String? {
+        return Regex(""""${Regex.escape(key)}"\s*:\s*"([^"]+)"""")
+            .find(this)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.basicHtmlDecode()
+            ?.unescapeJs()
+    }
+
+    private fun String.extractQueryValue(key: String): String? {
+        return Regex("""[?&]${Regex.escape(key)}=([^&#]+)""", RegexOption.IGNORE_CASE)
+            .find(this)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun String.extractGoogleVideoLinks(): List<String> {
+        val links = linkedSetOf<String>()
+        val cleaned = basicHtmlDecode().unescapeJs()
+        Regex("""https?://[^"'<>\s]+googlevideo\.com/videoplayback[^"'<>\s]+""", RegexOption.IGNORE_CASE)
+            .findAll(cleaned)
+            .forEach { match ->
+                match.value.cleanEscapedUrl().toAbsoluteUrl()?.takeIf { it.contains("googlevideo.com/videoplayback", true) }?.let { links.add(it) }
+            }
+        return links.toList()
+    }
+
+    private fun String.escapeJson(): String {
+        return replace("\\", "\\\\").replace("\"", "\\\"")
+    }
+
+    private fun String.urlEncode(): String = URLEncoder.encode(this, "UTF-8")
+
     private fun String.parseQuality(): Int? = Regex("""(\d{3,4})p""", RegexOption.IGNORE_CASE).find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun String.parseGoogleVideoQuality(): Int? {
+        val itag = extractQueryValue("itag")?.toIntOrNull() ?: return null
+        return when (itag) {
+            18 -> Qualities.P360.value
+            22 -> Qualities.P720.value
+            37 -> Qualities.P1080.value
+            59, 78 -> Qualities.P480.value
+            133, 160 -> Qualities.P144.value
+            134 -> Qualities.P360.value
+            135 -> Qualities.P480.value
+            136 -> Qualities.P720.value
+            137 -> Qualities.P1080.value
+            else -> null
+        }
+    }
+
     private fun String.qualityLabelFromUrl(): String = parseQuality()?.let { "${it}p" }.orEmpty()
     private fun String.cleanLabel(): String = htmlDecode().replace(Regex("\\s+"), " ").trim()
 
     private fun playerHeaders(url: String): Map<String, String> {
         val lower = url.lowercase()
-        return siteHeaders + when {
-            lower.contains(mainUrl.removePrefix("https://")) -> mapOf("Referer" to "$mainUrl/")
-            else -> mapOf("Referer" to "$mainUrl/")
+        return when {
+            lower.contains("blogger.com") -> bloggerHeaders
+            lower.contains("googlevideo.com/videoplayback") -> googleVideoHeaders
+            lower.contains(mainUrl.removePrefix("https://")) -> siteHeaders + mapOf("Referer" to "$mainUrl/")
+            else -> siteHeaders + mapOf("Referer" to "$mainUrl/")
         }
     }
 
