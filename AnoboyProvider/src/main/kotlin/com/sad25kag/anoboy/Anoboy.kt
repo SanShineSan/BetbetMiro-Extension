@@ -182,12 +182,7 @@ class Anoboy : MainAPI() {
 
         val episodes = parseEpisodeList(document, fixedUrl)
 
-        val tags = document.select(
-            "a[href*='/genres/'], a[href*='/category/'], .genres a, .genre-info a, " +
-                ".info-content a[href*='/genres/'], .info-content a[href*='/category/']"
-        ).map { it.text().trim() }
-            .filter { it.isNotBlank() && it.length < 40 }
-            .distinct()
+        val tags = extractDetailTags(document)
 
         val recommendations = collectRecommendations(document)
             .distinctBy { it.url }
@@ -209,7 +204,7 @@ class Anoboy : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         } else {
-            newMovieLoadResponse(pageTitle, fixedUrl, type, moviePlaybackData ?: fixedUrl) {
+            newMovieLoadResponse(pageTitle, fixedUrl, type, encodeEpisodeData(fixedUrl, moviePlaybackData ?: fixedUrl)) {
                 posterUrl = poster
                 plot = description
                 this.tags = tags
@@ -225,9 +220,12 @@ class Anoboy : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val (embeddedReferer, requestData) = decodeEpisodeData(data)
-        val referer = embeddedReferer ?: mainUrl
+        val rootReferer = embeddedReferer ?: mainUrl
         val emittedKeys = linkedSetOf<String>()
-        val visitedCandidates = linkedSetOf<String>()
+        val discovered = linkedSetOf<String>()
+        val candidateReferers = mutableMapOf<String, String>()
+        val queued = ArrayDeque<Pair<String, String>>()
+        val crawled = linkedSetOf<String>()
         var emitted = false
 
         fun callbackOnce(link: ExtractorLink) {
@@ -238,41 +236,27 @@ class Anoboy : MainAPI() {
             }
         }
 
-        suspend fun processCandidate(raw: String?, baseUrl: String = requestData) {
+        fun rememberCandidate(raw: String?, baseUrl: String, referer: String = baseUrl) {
             val url = resolvePlayerUrl(raw, baseUrl) ?: return
-            val visitKey = canonicalLink(url)
-            if (!visitedCandidates.add(visitKey)) return
-            if (!isPlayerCandidate(url)) return
-
-            val candidateReferer = baseUrl.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
-                ?: referer
-
-            if (isDirectMedia(url)) {
-                emitDirect(url, candidateReferer, ::callbackOnce)
-            } else if (url.contains("blogger.com/video.g", ignoreCase = true)) {
-                emitBloggerVideo(url, candidateReferer, ::callbackOnce)
-            } else {
-                try {
-                    loadExtractor(url, candidateReferer, subtitleCallback, ::callbackOnce)
-                } catch (_: Exception) {
-                }
-
-                if (!emitted) {
-                    val nested = runCatching {
-                        app.get(
-                            url,
-                            referer = candidateReferer,
-                            headers = defaultHeaders(candidateReferer),
-                            timeout = 20L
-                        ).document
-                    }.getOrNull()
-
-                    nested?.let { nestedDocument ->
-                        collectPlayerCandidates(nestedDocument)
-                            .forEach { processCandidate(it, url) }
-                    }
-                }
+            if (isBadUrl(url)) return
+            if (discovered.add(url)) {
+                candidateReferers[url] = referer.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+                    ?: rootReferer
+                if (shouldCrawlPlayerPage(url)) queued.add(url to (candidateReferers[url] ?: rootReferer))
             }
+        }
+
+        suspend fun crawlDocument(pageUrl: String, pageReferer: String) {
+            val page = runCatching {
+                app.get(
+                    pageUrl,
+                    referer = pageReferer,
+                    headers = defaultHeaders(pageReferer),
+                    timeout = 20L
+                ).document
+            }.getOrNull() ?: return
+
+            collectPlayerCandidates(page).forEach { rememberCandidate(it, pageUrl, pageUrl) }
         }
 
         if (requestData.startsWith("multi::")) {
@@ -280,23 +264,44 @@ class Anoboy : MainAPI() {
                 .split("||")
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
-                .forEach { processCandidate(it, referer) }
+                .forEach { rememberCandidate(it, rootReferer, rootReferer) }
         } else {
-            val page = runCatching {
-                app.get(
-                    requestData,
-                    referer = referer,
-                    headers = defaultHeaders(referer),
-                    timeout = 20L
-                ).document
-            }.getOrNull()
+            crawlDocument(requestData, rootReferer)
+            rememberCandidate(requestData, rootReferer, rootReferer)
+        }
 
-            if (page != null) {
-                collectPlayerCandidates(page)
-                    .forEach { processCandidate(it, requestData) }
+        var safety = 0
+        while (queued.isNotEmpty() && safety++ < 120) {
+            val (nextUrl, nextReferer) = queued.removeFirst()
+            val crawlKey = canonicalLink(nextUrl)
+            if (!crawled.add(crawlKey)) continue
+            crawlDocument(nextUrl, nextReferer)
+        }
+
+        suspend fun processResolvedCandidate(url: String) {
+            val candidateReferer = candidateReferers[url] ?: rootReferer
+            when {
+                isDirectMedia(url) -> emitDirect(url, candidateReferer, ::callbackOnce)
+                url.contains("blogger.com/video.g", ignoreCase = true) ||
+                    url.contains("blogger.googleusercontent.com", ignoreCase = true) -> {
+                    emitBloggerVideo(url, candidateReferer, ::callbackOnce)
+                }
+                isPlayerCandidate(url) -> {
+                    try {
+                        loadExtractor(url, candidateReferer, subtitleCallback, ::callbackOnce)
+                    } catch (_: Exception) {
+                    }
+
+                    if (!emitted && shouldCrawlPlayerPage(url)) {
+                        crawlDocument(url, candidateReferer)
+                    }
+                }
             }
+        }
 
-            processCandidate(requestData, referer)
+        discovered.toList().forEach { processResolvedCandidate(it) }
+        if (!emitted) {
+            discovered.toList().forEach { processResolvedCandidate(it) }
         }
 
         return emitted
@@ -335,12 +340,9 @@ class Anoboy : MainAPI() {
         }
 
         document.select(
-            "#fplay [data-video], #fplay [data-src], #fplay [data-url], #fplay [data-iframe], " +
-                "#fplay [data-embed], #fplay [data-player], #fplay [data-file], " +
-                ".player [data-video], .player [data-src], .player [data-url], .player [data-iframe], " +
-                ".player [data-embed], .player [data-player], .player [data-file], " +
-                ".server [data-video], .server [data-src], .server [data-url], .server [data-iframe], " +
-                ".server [data-embed], .server [data-player], .server [data-file]"
+            "#fplay a#allmiror[data-video], #fplay a[data-video], #fplay [data-video], " +
+                "a#allmiror[data-video], a[data-video], [data-video], [data-src], [data-url], " +
+                "[data-iframe], [data-embed], [data-player], [data-file]"
         ).forEach { element ->
             candidates.add(element.attr("data-video"))
             candidates.add(element.attr("data-src"))
@@ -349,12 +351,14 @@ class Anoboy : MainAPI() {
             candidates.add(element.attr("data-embed"))
             candidates.add(element.attr("data-player"))
             candidates.add(element.attr("data-file"))
+            candidates.add(element.attr("href"))
         }
 
         document.select(
             "a[href*='gofile.io'], a[href*='mp4upload.com'], a[href*='mir.cr'], " +
                 "a[href*='ranoz.gg'], a[href*='playerwish.com'], a[href*='blogger.com/video.g'], " +
-                "a[href*='filedon'], a[href*='.mp4'], a[href*='.m3u8']"
+                "a[href*='filedon'], a[href*='yourupload.com'], a[href*='/uploads/'], " +
+                "a[href*='.mp4'], a[href*='.m3u8']"
         ).forEach { element ->
             candidates.add(element.attr("href"))
         }
@@ -369,6 +373,21 @@ class Anoboy : MainAPI() {
         Regex("""(?i)(?:src|file|url)\s*[:=]\s*["']([^"']+)["']""")
             .findAll(html)
             .forEach { match -> candidates.add(match.groupValues[1]) }
+
+        Regex("""(?i)/uploads/(?:adsbatch|acbatch|yupbatch|stream/embed\.php)[^"'<>\s]+""")
+            .findAll(html)
+            .forEach { match -> candidates.add(match.value) }
+
+        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+""")
+            .findAll(html)
+            .filter { match ->
+                val lower = match.value.lowercase()
+                lower.contains("blogger.com/video.g") ||
+                    lower.contains("yourupload.com") ||
+                    lower.contains("filedon") ||
+                    lower.contains("/uploads/")
+            }
+            .forEach { match -> candidates.add(match.value) }
 
         return candidates
             .map { it.trim() }
@@ -409,6 +428,10 @@ class Anoboy : MainAPI() {
                 .forEach { match -> candidates.add(match.value) }
 
             Regex("""(?<!:)//[^"'<>\s&]+""")
+                .findAll(payload)
+                .forEach { match -> candidates.add(match.value) }
+
+            Regex("""(?i)/uploads/(?:adsbatch|acbatch|yupbatch|stream/embed\.php)[^"'<>\s&]+""")
                 .findAll(payload)
                 .forEach { match -> candidates.add(match.value) }
         }
@@ -467,6 +490,43 @@ class Anoboy : MainAPI() {
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#038;", "&")
+    }
+
+    private fun extractDetailTags(document: Document): List<String> {
+        val tags = linkedSetOf<String>()
+
+        fun addTag(text: String?) {
+            val clean = text.orEmpty().trim()
+            if (clean.isBlank()) return
+            if (clean.length >= 40) return
+            if (isNavigationTitle(clean)) return
+            val lower = clean.lowercase()
+            if (lower.endsWith(" all") || lower == "all") return
+            tags.add(clean)
+        }
+
+        document.select(
+            ".info-content a[href*='/genres/'], .genre-info a[href*='/genres/'], " +
+                "div.bigcontent a[href*='/genres/'], article a[href*='/genres/'], " +
+                "div.unduhan table tr:has(th:matchesOwn((?i)Genre)) td a, " +
+                "tr:has(th:matchesOwn((?i)Genre)) td a"
+        ).forEach { addTag(it.text()) }
+
+        if (tags.isEmpty()) {
+            document.select("a[href*='/genres/']")
+                .filterNot { element ->
+                    element.parents().any { parent ->
+                        val cls = parent.className().lowercase()
+                        cls.contains("sidebar") || cls.contains("side_home") ||
+                            cls.contains("filter") || cls.contains("advanced") ||
+                            cls.contains("bixbox") && parent.text().contains("Genre All", true)
+                    }
+                }
+                .take(12)
+                .forEach { addTag(it.text()) }
+        }
+
+        return tags.toList()
     }
 
     private fun collectCards(document: Document): List<CardData> {
@@ -619,18 +679,23 @@ class Anoboy : MainAPI() {
         if (videos.isEmpty()) return false
 
         videos.forEach { videoUrl ->
+            val directReferer = if (videoUrl.contains("googlevideo.com/", true)) {
+                "https://youtube.googleapis.com/"
+            } else {
+                referer
+            }
             callback(
                 newExtractorLink(
                     source = "Blogger",
                     name = "Blogger",
                     url = videoUrl,
-                    type = ExtractorLinkType.VIDEO
+                    type = if (isM3u8Media(videoUrl)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 ) {
-                    this.referer = "https://www.blogger.com/"
+                    this.referer = directReferer
                     this.quality = qualityFromBloggerUrl(videoUrl)
                     this.headers = mapOf(
                         "User-Agent" to USER_AGENT,
-                        "Referer" to "https://www.blogger.com/",
+                        "Referer" to directReferer,
                         "Accept" to "*/*"
                     )
                 }
@@ -641,18 +706,20 @@ class Anoboy : MainAPI() {
     }
 
     private suspend fun extractBloggerDirectVideos(url: String, referer: String): List<String> {
+        val fixedUrl = if (url.startsWith("//")) "https:$url" else url
+        if (fixedUrl.contains("blogger.googleusercontent.com", true)) return listOf(fixedUrl)
+
         val token = Regex("""[?&]token=([^&#]+)""")
-            .find(url)
+            .find(fixedUrl)
             ?.groupValues
             ?.getOrNull(1)
             ?: return emptyList()
 
         val bloggerOrigin = "https://www.blogger.com"
-        val bloggerReferer = "$bloggerOrigin/"
-
         val page = runCatching {
             app.get(
-                url,
+                fixedUrl,
+                referer = referer,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -681,7 +748,7 @@ class Anoboy : MainAPI() {
 
         val rpcId = "WcwnYd"
         val reqId = (System.currentTimeMillis() % 90000L + 10000L).toString()
-        val payload = """[[["$rpcId","[\"$token\",null,0]",null,"generic"]]]"""
+        val payload = """[[["$rpcId","[\"$token\",\"\",0]",null,"generic"]]]"""
         val apiUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
             "?rpcids=$rpcId&source-path=%2Fvideo.g&f.sid=$fSid&bl=$bl&hl=$hl&_reqid=$reqId&rt=c"
 
@@ -689,14 +756,15 @@ class Anoboy : MainAPI() {
             app.post(
                 apiUrl,
                 data = mapOf("f.req" to payload),
-                referer = bloggerReferer,
+                referer = fixedUrl,
                 cookies = cookies,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
                     "Origin" to bloggerOrigin,
                     "Accept" to "*/*",
                     "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
-                    "X-Same-Domain" to "1"
+                    "X-Same-Domain" to "1",
+                    "Referer" to fixedUrl
                 )
             ).text
         }.getOrNull() ?: return emptyList()
@@ -710,7 +778,10 @@ class Anoboy : MainAPI() {
         return Regex("""https://[^\s"'\\]+""")
             .findAll(decoded)
             .map { decodeBloggerEscapes(it.value) }
-            .filter { it.contains("googlevideo.com/videoplayback", ignoreCase = true) }
+            .filter {
+                it.contains("googlevideo.com/videoplayback", ignoreCase = true) ||
+                    it.contains("blogger.googleusercontent.com", ignoreCase = true)
+            }
             .distinct()
             .toList()
     }
@@ -891,6 +962,27 @@ class Anoboy : MainAPI() {
             Regex("""\beps?\s*\d+\b""").containsMatchIn(lowerTitle)
     }
 
+    private fun shouldCrawlPlayerPage(url: String): Boolean {
+        val lower = url.lowercase()
+        if (isBadUrl(url)) return false
+        if (isDirectMedia(url)) return false
+        if (lower.contains("blogger.com/video.g") || lower.contains("blogger.googleusercontent.com")) return false
+
+        return lower.contains("/uploads/adsbatch") ||
+            lower.contains("/uploads/acbatch") ||
+            lower.contains("/uploads/yupbatch") ||
+            lower.contains("/uploads/stream/embed.php") ||
+            lower.contains("filedon") ||
+            lower.contains("yourupload.com/embed/") ||
+            lower.contains("yourupload.com/watch/") ||
+            (lower.startsWith(mainUrl.lowercase()) && (
+                lower.contains("embed") ||
+                    lower.contains("player") ||
+                    lower.contains("stream") ||
+                    lower.contains("video")
+                ))
+    }
+
     private fun isPlayerCandidate(url: String): Boolean {
         val lower = url.lowercase()
 
@@ -903,7 +995,12 @@ class Anoboy : MainAPI() {
             lower.contains("mp4upload.com") ||
             lower.contains("mir.cr") ||
             lower.contains("ranoz.gg") ||
-            lower.contains("filedon")
+            lower.contains("filedon") ||
+            lower.contains("yourupload.com") ||
+            lower.contains("/uploads/adsbatch") ||
+            lower.contains("/uploads/acbatch") ||
+            lower.contains("/uploads/yupbatch") ||
+            lower.contains("/uploads/stream/embed.php")
     }
 
     private fun isBadUrl(url: String): Boolean {
@@ -960,6 +1057,7 @@ class Anoboy : MainAPI() {
             path.endsWith(".ts") ||
             lower.contains("googlevideo.com/videoplayback") ||
             lower.contains("redirector.googlevideo.com/videoplayback") ||
+            lower.contains("blogger.googleusercontent.com") ||
             (lower.contains("gofile.io") && lower.contains("/download/"))
     }
 
