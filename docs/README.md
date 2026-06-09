@@ -102,6 +102,22 @@ Recommended for:
 
 ---
 
+## Commit Guide
+
+- [`COMMIT_GUIDE.md`](COMMIT_GUIDE.md)
+
+Use this guide before writing commit messages for provider fixes, new providers, documentation, build, metadata, or workflow changes.
+
+Recommended for:
+
+- Provider fix commit bodies.
+- Version bump wording.
+- Evidence-backed commit summaries.
+- Upstream/reference credit wording.
+- Avoiding build/playback/metadata overclaims.
+
+---
+
 ## Troubleshooting
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
