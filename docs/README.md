@@ -4,295 +4,40 @@ This directory contains maintenance and compatibility documentation for **Betbet
 
 Use this page as a quick map for repository contributors, issue reporters, and maintainers.
 
----
-
-## Provider Maintenance
-
-- [`PROVIDER_MAINTENANCE.md`](PROVIDER_MAINTENANCE.md)
-
-Use this guide for provider fixes, new providers, version bump rules, source evidence, CloudStream behavior validation, and honest status reporting.
-
-Recommended for:
-
-- Provider fixes.
-- New provider development.
-- Domain migration review.
-- Playback resolver validation.
-- Pull Request review.
-
----
-
-## Workflow Guide
-
-- [`WORKFLOW_GUIDE.md`](WORKFLOW_GUIDE.md)
-
-Use this guide for the full maintenance flow from issue/report to evidence, patch, build, metadata checks, Actions, and final status.
-
-Recommended for:
-
-- Provider fix workflow.
-- New provider workflow.
-- Build failure workflow.
-- Metadata and documentation workflow.
-- Stop conditions before guessing.
-
----
-
-## Evidence Collection Guide
-
-- [`EVIDENCE_COLLECTION_GUIDE.md`](EVIDENCE_COLLECTION_GUIDE.md)
-
-Use this guide before changing provider parser, selector, endpoint, headers, extractor, or playback flow.
-
-Recommended for:
-
-- Source URL and HTML/API evidence collection.
-- HAR/logcat/screenshot evidence review.
-- Root cause comparison between old provider and active source.
-- Evidence boundaries and claim limits.
-- Stopping safely when evidence is insufficient.
-
----
-
-## Runtime Testing Guide
-
-- [`RUNTIME_TESTING_GUIDE.md`](RUNTIME_TESTING_GUIDE.md)
-
-Use this guide for app-level provider validation and runtime status reporting.
-
-Recommended for:
-
-- Homepage/category/detail runtime checks.
-- Playback callback validation.
-- Subtitle callback verification.
-- Runtime failure type reporting.
-- Evidence-based runtime status wording.
-
----
-
-## New Provider Guide
-
-- [`NEW_PROVIDER_GUIDE.md`](NEW_PROVIDER_GUIDE.md)
-
-Use this guide before adding a new CloudStream provider.
-
-Recommended for:
-
-- New provider planning.
-- Source evidence collection.
-- Homepage/search/load/loadLinks implementation checks.
-- Initial provider version and build metadata review.
-- Avoiding unfinished skeleton providers.
-
----
-
-## Pull Request Review Guide
-
-- [`PR_REVIEW_GUIDE.md`](PR_REVIEW_GUIDE.md)
-
-Use this guide when reviewing provider fixes, new providers, documentation changes, metadata changes, build changes, and workflow changes.
-
-Recommended for:
-
-- Scope review.
-- Evidence and root cause review.
-- Version bump checks.
-- Build, Actions, metadata, and runtime review.
-- Merge blocker decisions.
-
----
-
-## Validation Checklist
-
-- [`VALIDATION_CHECKLIST.md`](VALIDATION_CHECKLIST.md)
-
-Use this checklist before claiming that provider behavior, build status, repository metadata, or release readiness is fixed.
-
-Recommended for:
-
-- Homepage/mainPage validation.
-- Category, search, and detail validation.
-- Playback/loadLinks callback validation.
-- Provider version bump checks.
-- Final status reporting.
-
----
-
-## Build Guide
-
-- [`BUILD_GUIDE.md`](BUILD_GUIDE.md)
-
-Use this guide when running or reporting local Gradle builds on Linux, macOS, Termux, or Windows.
-
-Recommended for:
-
-- Local build setup.
-- Java and Gradle wrapper checks.
-- Common build failure triage.
-- Build status reporting.
-- Distinguishing local Gradle and GitHub Actions results.
-
----
-
-## GitHub Actions Guide
-
-- [`ACTIONS_GUIDE.md`](ACTIONS_GUIDE.md)
-
-Use this guide when reading workflow runs, job logs, artifacts, and remote build/publish status.
-
-Recommended for:
-
-- GitHub Actions status reporting.
-- Failed workflow triage.
-- Artifact validation.
-- `repo.json` and `plugins.json` workflow checks.
-- Avoiding false runtime claims from green workflows.
-
----
-
-## Repository Metadata Guide
-
-- [`REPO_METADATA_GUIDE.md`](REPO_METADATA_GUIDE.md)
-
-Use this guide when checking `repo.json`, `plugins.json`, provider metadata, generated artifacts, or install/publish metadata.
-
-Recommended for:
-
-- Repository install metadata review.
-- Plugin list validation.
-- Provider `build.gradle.kts` metadata checks.
-- Artifact and URL validation.
-- Avoiding unsupported metadata claims.
-
----
-
-## Commit Guide
-
-- [`COMMIT_GUIDE.md`](COMMIT_GUIDE.md)
-
-Use this guide before writing commit messages for provider fixes, new providers, documentation, build, metadata, or workflow changes.
-
-Recommended for:
-
-- Provider fix commit bodies.
-- Version bump wording.
-- Evidence-backed commit summaries.
-- Upstream/reference credit wording.
-- Avoiding build/playback/metadata overclaims.
-
----
-
-## Troubleshooting
-
-- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
-
-Use this guide when diagnosing build failures, GitHub Actions failures, repository metadata problems, provider homepage/detail/playback issues, domain changes, and network/region issues.
-
-Recommended for:
-
-- Debugging before patching.
-- Provider issue triage.
-- Build or workflow failure analysis.
-- Honest status reporting.
-
----
-
-## Compatibility
-
-- [`COMPATIBILITY.md`](COMPATIBILITY.md)
-
-Use this guide to understand CloudStream compatibility, stable vs prerelease behavior, Gradle/Java notes, repository metadata, GitHub Actions, and runtime validation boundaries.
-
-Recommended for:
-
-- Build issues.
-- CloudStream app compatibility questions.
-- Runtime/device behavior reports.
-- `repo.json` and `plugins.json` impact review.
-
----
-
-## Release Process
-
-- [`RELEASE_PROCESS.md`](RELEASE_PROCESS.md)
-
-Use this guide before publishing, announcing, or reviewing a release/build output.
-
-Recommended for:
-
-- Release readiness checks.
-- Local Gradle build notes.
-- `repo.json` and `plugins.json` validation notes.
-- GitHub Actions result reporting.
-- Provider version bump checks.
-- Documentation-only release wording.
-- Manual ZIP/no-commit task handling.
-
----
-
-## Domain Check Tool
-
-- [`DOMAIN_CHECK.md`](DOMAIN_CHECK.md)
-
-Use this guide before running or reviewing `DomainCheck.py`.
-
-Recommended for:
-
-- Source domain migration.
-- `mainUrl` redirect checks.
-- Reviewing automated domain update diffs.
-- Avoiding false claims that a domain update proves provider playback.
-
----
-
-## Health Check Guide
-
-- [`HEALTH_CHECK_GUIDE.md`](HEALTH_CHECK_GUIDE.md)
-
-Use this guide before running or reviewing provider domain health checks.
-
-Recommended for:
-
-- Read-only domain availability reports.
-- Detecting redirects, timeouts, and HTTP status changes.
-- Reviewing health-check workflow artifacts.
-- Avoiding false claims that domain health proves homepage, detail, or playback.
-
----
-
-## Smart Health Check Guide
-
-- [`SMART_HEALTH_CHECK_GUIDE.md`](SMART_HEALTH_CHECK_GUIDE.md)
-
-Use this guide before running or reviewing search/detail sample health checks.
-
-Recommended for:
-
-- Search sample availability reports.
-- Detail sample availability reports.
-- Provider `mainUrl` extraction review.
-- Detecting early parser-break signals without claiming runtime playback.
-
----
+## Core provider maintenance
+
+- [`PROVIDER_MAINTENANCE.md`](PROVIDER_MAINTENANCE.md) — provider fixes, new providers, version bumps, source evidence, and honest status reporting.
+- [`WORKFLOW_GUIDE.md`](WORKFLOW_GUIDE.md) — full maintenance flow from issue/report to evidence, patch, build, metadata checks, Actions, and final status.
+- [`EVIDENCE_COLLECTION_GUIDE.md`](EVIDENCE_COLLECTION_GUIDE.md) — source URL, HTML/API, HAR, logs, screenshots, and evidence limits.
+- [`RUNTIME_TESTING_GUIDE.md`](RUNTIME_TESTING_GUIDE.md) — app-level homepage, category, detail, subtitle, and callback validation rules.
+- [`NEW_PROVIDER_GUIDE.md`](NEW_PROVIDER_GUIDE.md) — new provider planning and implementation expectations.
+- [`PR_REVIEW_GUIDE.md`](PR_REVIEW_GUIDE.md) — scope, evidence, version bump, build, metadata, and review checks.
+- [`VALIDATION_CHECKLIST.md`](VALIDATION_CHECKLIST.md) — checklist before claiming build, metadata, provider, or runtime status.
+
+## Build, metadata, and release
+
+- [`BUILD_GUIDE.md`](BUILD_GUIDE.md) — local Gradle build setup and reporting.
+- [`ACTIONS_GUIDE.md`](ACTIONS_GUIDE.md) — GitHub Actions runs, logs, artifacts, and status reporting.
+- [`REPO_METADATA_GUIDE.md`](REPO_METADATA_GUIDE.md) — `repo.json`, `plugins.json`, provider metadata, and artifact URL review.
+- [`COMMIT_GUIDE.md`](COMMIT_GUIDE.md) — conventional commit wording and evidence-backed commit messages.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — build, workflow, metadata, provider, domain, and network triage.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md) — CloudStream compatibility and runtime validation boundaries.
+- [`RELEASE_PROCESS.md`](RELEASE_PROCESS.md) — release readiness and publish review.
+
+## Monitoring and health checks
+
+- [`DOMAIN_CHECK.md`](DOMAIN_CHECK.md) — reviewing `DomainCheck.py` and domain migration checks.
+- [`HEALTH_CHECK_GUIDE.md`](HEALTH_CHECK_GUIDE.md) — read-only provider domain health checks.
+- [`SMART_HEALTH_CHECK_GUIDE.md`](SMART_HEALTH_CHECK_GUIDE.md) — search/detail sample health checks.
+- [`RUNTIME_HEALTH_CHECK_GUIDE.md`](RUNTIME_HEALTH_CHECK_GUIDE.md) — runtime-oriented player page, media candidate, and request header checks.
+
+Health check reports are early-warning signals only. They do not replace app/runtime validation.
 
 ## FAQ
 
-- [`FAQ.md`](FAQ.md)
+- [`FAQ.md`](FAQ.md) — quick answers about builds, runtime proof, version bumps, issue reports, new providers, and docs-only changes.
 
-Use this page for quick answers about builds, runtime proof, provider version bumps, broken provider reports, new provider expectations, and docs-only changes.
-
-Recommended for:
-
-- New contributors.
-- Issue reporters.
-- Quick policy lookup.
-- Avoiding repeated explanation in reviews.
-
----
-
-## Repository-Level Documents
-
-These files live in the repository root:
+## Repository-level documents
 
 - [`../README.md`](../README.md) — Indonesian main README.
 - [`../README_EN.md`](../README_EN.md) — English README.
@@ -303,31 +48,15 @@ These files live in the repository root:
 - [`../CHANGELOG.md`](../CHANGELOG.md) — changelog.
 - [`../CREDITS.md`](../CREDITS.md) — credits and attribution guide.
 
----
-
-## GitHub Templates
-
-These files live under `.github/`:
+## GitHub templates
 
 - [`../.github/pull_request_template.md`](../.github/pull_request_template.md) — Pull Request checklist.
 - [`../.github/ISSUE_TEMPLATE/provider_broken.yml`](../.github/ISSUE_TEMPLATE/provider_broken.yml) — broken provider report.
 - [`../.github/ISSUE_TEMPLATE/provider_request.yml`](../.github/ISSUE_TEMPLATE/provider_request.yml) — new provider request.
 - [`../.github/ISSUE_TEMPLATE/bug_report.yml`](../.github/ISSUE_TEMPLATE/bug_report.yml) — repository/build/workflow bug report.
 
----
-
-## Maintainer Rule
+## Maintainer rule
 
 For provider work, prioritize evidence and CloudStream app behavior over theory.
-
-A good provider fix should clearly state:
-
-```text
-Homepage category cards: proven / not proven
-Load detail/episode: proven / not proven
-Playback callback link > 0: proven / not proven
-Gradle build: SUCCESS / failed / not run
-File scope: related files only / unrelated files touched
-```
 
 Do not claim a status that was not actually verified.
