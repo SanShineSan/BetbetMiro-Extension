@@ -34,10 +34,10 @@ class FilmAnime : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Update Terbaru",
-        "$mainUrl/anime/?status=&type=&order=update" to "Daftar Anime",
-        "$mainUrl/anime/?status=ongoing&type=&order=update" to "Ongoing",
-        "$mainUrl/anime/?status=completed&type=&order=update" to "Completed",
-        "$mainUrl/anime/?status=&type=movie&order=update" to "Movie",
+        "$mainUrl/anime/" to "Daftar Anime",
+        "$mainUrl/anime/?status=ongoing&order=update" to "Ongoing",
+        "$mainUrl/anime/?status=completed&order=update" to "Completed",
+        "$mainUrl/anime/?type=movie&order=update" to "Movie",
         "$mainUrl/genres/action/" to "Action",
         "$mainUrl/genres/comedy/" to "Comedy",
         "$mainUrl/genres/fantasy/" to "Fantasy"
@@ -233,29 +233,67 @@ class FilmAnime : MainAPI() {
     }
 
     private fun buildPageCandidates(data: String, page: Int): List<String> {
-        if (page <= 1) return listOf(data)
-        val clean = data.trimEnd('/')
-        if (clean.contains("?")) {
-            val base = clean.substringBefore("?").trimEnd('/') + "/"
-            val query = clean.substringAfter("?", "")
-            return listOf(
-                "$base?page=$page&$query",
-                "$clean&page=$page",
-                "$clean&paged=$page"
-            )
+        val candidates = linkedSetOf<String>()
+
+        fun addPaged(raw: String) {
+            val clean = raw.trimEnd('/')
+            if (page <= 1) {
+                candidates.add(raw)
+                return
+            }
+
+            if (clean.contains("?")) {
+                val base = clean.substringBefore("?").trimEnd('/')
+                val query = clean.substringAfter("?", "")
+                candidates.add("$base/?page=$page&$query")
+                candidates.add("$base/page/$page/?$query")
+                candidates.add("$clean&page=$page")
+                candidates.add("$clean&paged=$page")
+            } else {
+                candidates.add("$clean/page/$page/")
+                candidates.add("$clean?page=$page")
+                candidates.add("$clean?paged=$page")
+            }
         }
-        return listOf(
-            "$clean/page/$page/",
-            "$clean?page=$page",
-            "$clean?paged=$page"
-        )
+
+        addPaged(data)
+
+        val lower = data.lowercase()
+        when {
+            lower.trimEnd('/') == "$mainUrl/anime" -> {
+                addPaged("$mainUrl/anime/?status=&type=&order=update")
+            }
+            lower.contains("status=ongoing") -> {
+                addPaged("$mainUrl/anime/?status=ongoing&type=&order=update")
+                addPaged("$mainUrl/ongoing/")
+            }
+            lower.contains("status=completed") -> {
+                addPaged("$mainUrl/anime/?status=completed&type=&order=update")
+                addPaged("$mainUrl/completed/")
+            }
+            lower.contains("type=movie") -> {
+                addPaged("$mainUrl/anime/?status=&type=movie&order=update")
+                addPaged("$mainUrl/movie/")
+            }
+        }
+
+        return candidates.toList()
     }
 
     private fun Document.parseItems(): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
+
+        // FilmAnime uses Animestream/Tsundere style cards: article.bs > .bsx > a.tip.
+        // Parse that exact structure first so View All/menu/footer anchors do not steal the card.
+        for (card in select(".listupd article.bs, article.bs, .bs .bsx, .bsx")) {
+            val response = card.toSearchResponse() ?: continue
+            results[response.url] = response
+        }
+        if (results.isNotEmpty()) return results.values.toList()
+
         val selectors = listOf(
-            ".listupd .bs", ".bs", ".bsx", ".utao", ".animepost", ".anime-item", ".series-item",
-            ".episode-item", ".post", ".post-item", ".item", ".card", "article"
+            ".utao", ".animepost", ".anime-item", ".series-item", ".episode-item",
+            ".post", ".post-item", ".item", ".card", "article"
         )
         for (selector in selectors) {
             for (card in select(selector)) {
@@ -283,9 +321,11 @@ class FilmAnime : MainAPI() {
         if (!href.startsWith(mainUrl, true) || href.isBlockedUrl()) return null
 
         val title = listOf(
-            card.selectFirst("h1, h2, h3, h4, h5, h6, .tt, .title, .judul, .entry-title, .limit")?.text(),
             anchor.attr("title"),
+            card.selectFirst("[itemprop=headline], .tt h2, h2, h3, .tt, .title, .judul, .entry-title")?.text(),
+            card.selectFirst("img[title]")?.attr("title"),
             card.selectFirst("img[alt]")?.attr("alt"),
+            anchor.ownText(),
             anchor.text(),
             card.text()
         ).firstCleanTitle() ?: return null
@@ -435,7 +475,10 @@ class FilmAnime : MainAPI() {
 
     private fun Document.hasNextPage(page: Int): Boolean {
         val next = page + 1
-        return selectFirst("a[rel=next], .pagination a[href*='page/$next'], .pagination a[href*='paged=$next'], a.next") != null
+        return selectFirst(
+            "a[rel=next], .pagination a[href*='page/$next'], .pagination a[href*='paged=$next'], " +
+                ".hpage a.r[href*='page=$next'], a.r[href*='page=$next'], a.next"
+        ) != null
     }
 
     private fun Document.bestLoadTitle(): String? {
@@ -534,7 +577,10 @@ class FilmAnime : MainAPI() {
 
     private fun String.cleanCardTitle(): String {
         return cleanLoadTitle()
-            .replace(Regex("(?i)\\s*episode\\s*\\d+.*$"), "")
+            .replace(Regex("""(?i)^(TV|Movie|OVA|ONA|Special|BD|Live Action)\s+"""), "")
+            .replace(Regex("""(?i)^Ep\s*\d+\s+"""), "")
+            .replace(Regex("""(?i)^(Completed|Ongoing|Upcoming|Hiatus)\s+"""), "")
+            .replace(Regex("""(?i)\s*episode\s*\d+.*$"""), "")
             .trim(' ', '-', '|', ':')
     }
 
@@ -550,7 +596,7 @@ class FilmAnime : MainAPI() {
         val normalized = lowercase().trim()
         return normalized in setOf(
             "home", "beranda", "anime", "daftar anime", "ongoing", "completed", "movie", "genre", "genres", "jadwal rilis",
-            "login", "register", "nonton", "previous", "next", "film anime", "filmanime", "filmanime.id", "privacy policy", "dmca"
+            "view all", "lihat semua", "login", "register", "nonton", "previous", "next", "film anime", "filmanime", "filmanime.id", "privacy policy", "dmca"
         )
     }
 
