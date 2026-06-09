@@ -1,5 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Diskusi umum
+  - name: General discussion
     url: https://github.com/sad25kag/BetbetMiro-Extension/discussions
-    about: Gunakan Discussions untuk obrolan umum, request santai, atau pertanyaan non-bug.
+    about: Use Discussions for general talk, casual requests, and non-bug questions.
+  - name: Support guide
+    url: https://github.com/sad25kag/BetbetMiro-Extension/blob/master/SUPPORT.md
+    about: Read this before asking for repository, provider, build, or workflow support.
+  - name: Contribution guide
+    url: https://github.com/sad25kag/BetbetMiro-Extension/blob/master/CONTRIBUTING.md
+    about: Read this before opening provider fixes, new provider changes, or documentation Pull Requests.
+  - name: Documentation index
+    url: https://github.com/sad25kag/BetbetMiro-Extension/blob/master/docs/README.md
+    about: Browse provider maintenance, compatibility, and DomainCheck documentation.
