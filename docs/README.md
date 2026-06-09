@@ -81,6 +81,7 @@ These files live in the repository root:
 - [`../SECURITY.md`](../SECURITY.md) — security policy.
 - [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) — community rules.
 - [`../CHANGELOG.md`](../CHANGELOG.md) — changelog.
+- [`../CREDITS.md`](../CREDITS.md) — credits and attribution guide.
 
 ---
 
