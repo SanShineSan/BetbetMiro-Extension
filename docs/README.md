@@ -37,6 +37,24 @@ Recommended for:
 
 ---
 
+## Release Process
+
+- [`RELEASE_PROCESS.md`](RELEASE_PROCESS.md)
+
+Use this guide before publishing, announcing, or reviewing a release/build output.
+
+Recommended for:
+
+- Release readiness checks.
+- Local Gradle build notes.
+- `repo.json` and `plugins.json` validation notes.
+- GitHub Actions result reporting.
+- Provider version bump checks.
+- Documentation-only release wording.
+- Manual ZIP/no-commit task handling.
+
+---
+
 ## Domain Check Tool
 
 - [`DOMAIN_CHECK.md`](DOMAIN_CHECK.md)
