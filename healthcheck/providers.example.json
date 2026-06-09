@@ -1,0 +1,11 @@
+{
+  "providers": [
+    {
+      "name": "ExampleProvider",
+      "mainUrl": "https://example.com",
+      "enabled": true,
+      "expectedStatus": [200, 301, 302, 403],
+      "notes": "Example entry only. Replace with a real provider before using this as production config."
+    }
+  ]
+}
