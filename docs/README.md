@@ -22,6 +22,22 @@ Recommended for:
 
 ---
 
+## Validation Checklist
+
+- [`VALIDATION_CHECKLIST.md`](VALIDATION_CHECKLIST.md)
+
+Use this checklist before claiming that provider behavior, build status, repository metadata, or release readiness is fixed.
+
+Recommended for:
+
+- Homepage/mainPage validation.
+- Category, search, and detail validation.
+- Playback/loadLinks callback validation.
+- Provider version bump checks.
+- Final status reporting.
+
+---
+
 ## Troubleshooting
 
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
