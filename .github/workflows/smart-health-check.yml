@@ -1,0 +1,71 @@
+name: Smart Provider Health Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "Smart health check config path"
+        required: false
+        default: "healthcheck/providers.sample.json"
+  schedule:
+    - cron: "30 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  smart-health:
+    name: Check provider samples
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Extract provider mainUrl candidates
+        run: |
+          python scripts/extract_provider_mainurls.py \
+            --json-output extracted-provider-mainurls.json \
+            --markdown-output extracted-provider-mainurls.md
+
+      - name: Run search health check
+        run: |
+          CONFIG_PATH="${{ github.event.inputs.config }}"
+          if [ -z "$CONFIG_PATH" ]; then
+            CONFIG_PATH="healthcheck/providers.sample.json"
+          fi
+
+          python scripts/health_check_search.py \
+            --config "$CONFIG_PATH" \
+            --json-output smart-search-report.json \
+            --markdown-output smart-search-report.md
+
+      - name: Run detail health check
+        run: |
+          CONFIG_PATH="${{ github.event.inputs.config }}"
+          if [ -z "$CONFIG_PATH" ]; then
+            CONFIG_PATH="healthcheck/providers.sample.json"
+          fi
+
+          python scripts/health_check_detail.py \
+            --config "$CONFIG_PATH" \
+            --json-output smart-detail-report.json \
+            --markdown-output smart-detail-report.md
+
+      - name: Upload smart health reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smart-provider-health-report
+          path: |
+            extracted-provider-mainurls.json
+            extracted-provider-mainurls.md
+            smart-search-report.json
+            smart-search-report.md
+            smart-detail-report.json
+            smart-detail-report.md
