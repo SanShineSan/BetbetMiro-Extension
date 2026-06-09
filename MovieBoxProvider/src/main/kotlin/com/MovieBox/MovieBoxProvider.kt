@@ -39,6 +39,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -50,6 +52,7 @@ class MovieBoxProvider : MainAPI() {
     companion object {
         var context: android.content.Context? = null
     }
+
     // User-facing site URL (moviebox.ph). Requests are made to `apiUrl`.
     override var mainUrl = "https://moviebox.ph"
     override var name = "Moviebox"
@@ -95,6 +98,13 @@ class MovieBoxProvider : MainAPI() {
         "referer" to referer,
     )
 
+    private fun htmlHeaders(referer: String = "$mainUrl/") = mapOf(
+        "accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "accept-language" to "en-US,en;q=0.5",
+        "user-agent" to userAgent,
+        "referer" to referer,
+    )
+
     private val downloadReferer = "https://videodownloader.site/"
 
     private fun downloadHeaders() = mapOf(
@@ -109,7 +119,7 @@ class MovieBoxProvider : MainAPI() {
     private val secretKeyDefault = base64Decode("NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw==")
     private val secretKeyAlt = base64Decode("WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ==")
 
-        private fun md5(input: ByteArray): String {
+    private fun md5(input: ByteArray): String {
         return MessageDigest.getInstance("MD5").digest(input)
             .joinToString("") { "%02x".format(it) }
     }
@@ -134,7 +144,7 @@ class MovieBoxProvider : MainAPI() {
     ): String {
         val parsed = Uri.parse(url)
         val path = parsed.path ?: ""
-        
+
         // Build query string with sorted parameters (if any)
         val query = if (parsed.queryParameterNames.isNotEmpty()) {
             parsed.queryParameterNames.sorted().joinToString("&") { key ->
@@ -143,7 +153,7 @@ class MovieBoxProvider : MainAPI() {
                 }
             }
         } else ""
-        
+
         val canonicalUrl = if (query.isNotEmpty()) "$path?$query" else path
 
         val bodyBytes = body?.toByteArray(Charsets.UTF_8)
@@ -283,34 +293,133 @@ class MovieBoxProvider : MainAPI() {
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$apiUrl/wefeed-h5api-bff/subject/search"
-        val jsonBody =
-            """{"keyword":"${query.replace("\"", "\\\"")}","page":1,"perPage":24,"subjectType":0}"""
-        val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
-        val response = app.post(url, headers = apiHeaders(), requestBody = requestBody)
+    private fun Element.firstTextOrTitle(vararg selectors: String): String? {
+        for (selector in selectors) {
+            val selected = selectFirst(selector) ?: continue
+            val title = selected.attr("title").takeIf { it.isNotBlank() }
+            if (title != null) return title
+            val text = selected.text().trim().takeIf { it.isNotBlank() }
+            if (text != null) return text
+        }
+        return null
+    }
 
-        val mapper = jacksonObjectMapper()
-        val root = mapper.readTree(response.text)
-        val items = root["data"]?.get("items") ?: return emptyList()
+    private fun Element.firstAttr(vararg selectorsAndAttrs: Pair<String, String>): String? {
+        for ((selector, attr) in selectorsAndAttrs) {
+            val value = selectFirst(selector)?.attr(attr)?.takeIf { it.isNotBlank() }
+            if (value != null) return value
+        }
+        return null
+    }
 
-        return items.mapNotNull { item ->
-            val subjectId = item["subjectId"]?.asText() ?: return@mapNotNull null
-            val detailPath = item["detailPath"]?.asText() ?: return@mapNotNull null
-            val title = item["title"]?.asText() ?: return@mapNotNull null
-            val posterUrl = item["cover"]?.get("url")?.asText()
-            val subjectType = item["subjectType"]?.asInt() ?: 1
-            val type = inferTvType(subjectType)
+    private fun slugToTitle(slug: String): String {
+        return slug.substringBeforeLast("-")
+            .replace('-', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank { slug }
+    }
+
+    private fun parseSearchResultDocument(document: Document): List<SearchResponse> {
+        val seen = mutableSetOf<String>()
+        return document.select("a[href*=/moviedetail/]").mapNotNull { card ->
+            val href = card.attr("href").takeIf { it.contains("/moviedetail/") } ?: return@mapNotNull null
+            val detailPath = href.substringAfter("/moviedetail/")
+                .substringBefore('?')
+                .substringBefore('#')
+                .trim('/')
+                .takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+
+            if (!seen.add(detailPath)) return@mapNotNull null
+
+            val title = card.firstTextOrTitle("h2[title]", ".card-title[title]", "h2", ".card-title")
+                ?: slugToTitle(detailPath)
+            val posterUrl = card.firstAttr(
+                "img[src]" to "src",
+                "img[data-src]" to "data-src",
+                "img[data-original]" to "data-original"
+            )
+            val rating = card.selectFirst(".rate")?.text()?.trim()?.takeIf { it.isNotBlank() }
 
             newMovieSearchResponse(
-                name = title.substringBefore("["),
-                url = "$mainUrl/detail/$detailPath?id=$subjectId",
-                type = type
+                name = title.substringBefore("[").trim().ifBlank { title.trim() },
+                url = "$mainUrl/moviedetail/$detailPath",
+                type = TvType.Movie
             ) {
                 this.posterUrl = posterUrl
-                this.score = Score.from10(item["imdbRatingValue"]?.asText())
+                this.score = Score.from10(rating)
             }
         }
+    }
+
+    private fun JsonNode.subjectNode(): JsonNode = this["subject"]?.takeIf { it.isObject } ?: this
+
+    private fun parseApiSearchItems(items: JsonNode): List<SearchResponse> {
+        return items.mapNotNull { rawItem ->
+            val item = rawItem.subjectNode()
+            val subjectId = item["subjectId"]?.asText()
+                ?: rawItem["subjectId"]?.asText()
+                ?: return@mapNotNull null
+            val detailPath = item["detailPath"]?.asText()
+                ?: rawItem["detailPath"]?.asText()
+                ?: return@mapNotNull null
+            val title = item["title"]?.asText()
+                ?: rawItem["title"]?.asText()
+                ?: return@mapNotNull null
+            val posterUrl = item["cover"]?.get("url")?.asText()
+                ?: rawItem["cover"]?.get("url")?.asText()
+                ?: rawItem["image"]?.get("url")?.asText()
+            val subjectType = item["subjectType"]?.asInt()
+                ?: rawItem["subjectType"]?.asInt()
+                ?: 1
+            val rating = item["imdbRatingValue"]?.asText()
+                ?: rawItem["imdbRatingValue"]?.asText()
+
+            newMovieSearchResponse(
+                name = title.substringBefore("[").trim().ifBlank { title },
+                url = "$mainUrl/detail/$detailPath?id=$subjectId",
+                type = inferTvType(subjectType)
+            ) {
+                this.posterUrl = posterUrl
+                this.score = Score.from10(rating)
+            }
+        }
+    }
+
+    private suspend fun searchViaApi(query: String): List<SearchResponse> {
+        return runCatching {
+            val url = "$apiUrl/wefeed-h5api-bff/subject/search"
+            val jsonBody = """{"keyword":"${query.replace("\\", "\\\\").replace("\"", "\\\"")}","page":1,"perPage":24,"subjectType":0}"""
+            val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
+            val response = app.post(
+                url,
+                headers = apiHeaders() + mapOf("origin" to mainUrl, "content-type" to "application/json"),
+                requestBody = requestBody
+            )
+
+            val root = jacksonObjectMapper().readTree(response.text)
+            val data = root["data"] ?: return@runCatching emptyList()
+            val items = data["items"]
+                ?: data["subjectList"]
+                ?: data["subjects"]
+                ?: return@runCatching emptyList()
+            parseApiSearchItems(items)
+        }.getOrDefault(emptyList())
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) return emptyList()
+
+        val searchUrl = "$mainUrl/web/searchResult?keyword=${URLEncoder.encode(cleanQuery, "UTF-8")}"
+        val htmlResults = runCatching {
+            val document = app.get(searchUrl, headers = htmlHeaders()).document
+            parseSearchResultDocument(document)
+        }.getOrDefault(emptyList())
+
+        if (htmlResults.isNotEmpty()) return htmlResults
+        return searchViaApi(cleanQuery)
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -435,7 +544,6 @@ class MovieBoxProvider : MainAPI() {
             this.duration = durationMinutes
         }
     }
-
 
     override suspend fun loadLinks(
         data: String,
@@ -809,3 +917,4 @@ suspend fun fetchTmdbLogoUrl(
 
     return logoUrlAt(0)
 }
+
