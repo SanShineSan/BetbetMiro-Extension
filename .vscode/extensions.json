@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "fwcd.kotlin",
+    "redhat.vscode-xml",
+    "vscjava.vscode-java-pack",
+    "naco-siren.gradle-language",
+    "ms-azuretools.vscode-docker"
+  ]
+}
