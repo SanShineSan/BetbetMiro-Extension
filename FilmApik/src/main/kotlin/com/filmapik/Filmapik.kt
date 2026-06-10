@@ -59,7 +59,11 @@ class Filmapik : MainAPI() {
 
         "tvshows-genre/k-drama/page/%d/" to "Drama Korea",
         "tvshows-genre/west-series/page/%d/" to "West Series",
+        "tvshows-genre/china-drama/page/%d/" to "Drama Mandarin",
         "tvshows-genre/drama-india/page/%d/" to "Drama India",
+        "tvshows-genre/drama-singapure/page/%d/" to "Drama Singapore",
+        "tvshows-genre/japan-drama/page/%d/" to "Drama Jepang",
+        "tvshows-genre/thailand-drama/page/%d/" to "Drama Thailand",
         "tvshows-genre/drama-lainnya/page/%d/" to "Drama Lainnya",
 
         "release-year/2026/page/%d/" to "Tahun 2026",
