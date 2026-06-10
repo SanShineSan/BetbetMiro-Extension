@@ -420,7 +420,7 @@ class GudangFilm : MainAPI() {
                 "iframe[src], iframe[data-src], iframe[data-litespeed-src], embed[src], video[src], video source[src], source[src], " +
                 "a[href*='embed'], a[href*='player'], a[href*='play/index'], a[href*='stream'], a[href*='drive'], a[href*='gofile'], a[href*='dood'], a[href*='streamtape'], " +
                 "a[href*='filemoon'], a[href*='vidhide'], a[href*='vidguard'], a[href*='voe'], a[href*='mp4upload'], a[href*='uqload'], a[href*='krakenfiles'], " +
-                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='upload18'], a[href*='sht'], a[href*='short'], a[href*='.mp4'], a[href*='.m3u8']"
+                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='upload18'], a[href*='workers.dev'], a[href*='sht'], a[href*='short'], a[href*='.mp4'], a[href*='.m3u8']"
         ).forEach { element ->
             val value = element.attr("src").ifBlank { element.attr("data-src").ifBlank { element.attr("data-litespeed-src").ifBlank { element.attr("href") } } }
             fixUrl(value, baseUrl)?.let { if (!it.isNoiseUrl()) links.add(it) }
@@ -461,6 +461,8 @@ class GudangFilm : MainAPI() {
             .mapNotNull { fixUrl(it.value, baseUrl) }.filter { it.isPlayableMedia() }.forEach { links.add(it) }
         Regex("""https?%3A%2F%2F[^\s'"<>]+""", RegexOption.IGNORE_CASE).findAll(html)
             .mapNotNull { fixUrl(urlDecode(it.value), baseUrl) }.filter { it.isPlayableMedia() }.forEach { links.add(it) }
+        Regex("""(?i)(?:https?:)?//[^\s'"<>\\]+?321watch\.workers\.dev/[^\s'"<>\\]+""").findAll(html)
+            .mapNotNull { fixUrl(it.value, baseUrl) }.filter { it.isPlayableMedia() }.forEach { links.add(it) }
         return links.toList()
     }
 
@@ -584,7 +586,7 @@ class GudangFilm : MainAPI() {
                 lower.contains("stream") || lower.contains("drive") || lower.contains("gofile") || lower.contains("dood") || lower.contains("filemoon") ||
                 lower.contains("vidhide") || lower.contains("vidguard") || lower.contains("voe") || lower.contains("mp4upload") || lower.contains("uqload") ||
                 lower.contains("hubcloud") || lower.contains("gdplayer") || lower.contains("gdriveplayer") || lower.contains("krakenfiles") || lower.contains("filelions") ||
-                lower.contains("sf21.vidplayer.live") || lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org") || lower.contains("upload18.cc")
+                lower.contains("sf21.vidplayer.live") || lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org") || lower.contains("upload18.cc") || lower.contains("321watch.workers.dev")
             )
     }
 
@@ -600,6 +602,7 @@ class GudangFilm : MainAPI() {
         val mediaHost = runCatching { URI(url).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
         return when {
             mediaHost.contains("upload18.org") || mediaHost.contains("upload18.cc") -> "${origin(url)}/"
+            mediaHost.contains("321watch.workers.dev") -> upload18Origin(referer)
             else -> referer
         }
     }
@@ -611,10 +614,19 @@ class GudangFilm : MainAPI() {
             "Accept" to "*/*",
             "Referer" to mediaReferer
         )
-        return if (mediaHost.contains("upload18.org") || mediaHost.contains("upload18.cc")) {
-            base
+        return if (mediaHost.contains("upload18.org") || mediaHost.contains("upload18.cc") || mediaHost.contains("321watch.workers.dev")) {
+            base + mapOf("Origin" to origin(mediaReferer))
         } else {
             base
+        }
+    }
+
+    private fun upload18Origin(referer: String): String {
+        val refererOrigin = origin(referer)
+        return if (refererOrigin.contains("upload18.org", true) || refererOrigin.contains("upload18.cc", true)) {
+            "$refererOrigin/"
+        } else {
+            "https://upload18.org/"
         }
     }
 
@@ -750,7 +762,7 @@ class GudangFilm : MainAPI() {
     private fun String.isPlayableMedia(): Boolean {
         val lower = lowercase(Locale.ROOT)
         if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".php") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.contains("mime=image") || lower.contains("=image/")) return false
-        return lower.isM3u8Like() || lower.contains(".mp4") || lower.contains(".webm") || lower.contains("videoplayback") || lower.contains("mime=video") || (lower.contains("googlevideo.com") && lower.contains("videoplayback"))
+        return lower.isM3u8Like() || lower.contains(".mp4") || lower.contains(".webm") || lower.contains("videoplayback") || lower.contains("mime=video") || (lower.contains("googlevideo.com") && lower.contains("videoplayback")) || lower.contains("321watch.workers.dev")
     }
 
     private fun String.isM3u8Like(): Boolean {
