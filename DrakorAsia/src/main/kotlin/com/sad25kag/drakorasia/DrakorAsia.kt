@@ -652,17 +652,11 @@ class DrakorAsia : MainAPI() {
 
         sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
             if (!source.bool("status", true)) return@forEach
-            val videoUrl = listOf(
-                source.string("url"),
-                source.string("file"),
-                source.string("src"),
-                source.string("link")
-            ).firstOrNull { !it.isNullOrBlank() }?.replace("\\/", "/") ?: return@forEach
-            if (!videoUrl.startsWith("http", true) && !videoUrl.startsWith("//")) return@forEach
-            val label = source.string("label") ?: source.string("quality") ?: source.string("name") ?: "Auto"
+            val videoUrl = source.toAbyssSourceUrl() ?: return@forEach
+            if (!videoUrl.isAbyssPlayableCandidate()) return@forEach
+            val label = source.string("label") ?: source.string("quality") ?: source.string("name") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
             runCatching {
-                emitAbyssLink(videoUrl, label, callback)
-                emitted = true
+                if (emitAbyssLink(videoUrl, label, callback)) emitted = true
             }
         }
 
@@ -678,25 +672,21 @@ class DrakorAsia : MainAPI() {
 
         sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
             if (!source.bool("status", true)) return@forEach
-            val host = source.string("url")?.trimEnd('/').orEmpty()
-            val path = source.string("path")?.trimStart('/').orEmpty()
-            if (host.isBlank() || path.isBlank()) return@forEach
-            val videoUrl = "$host/$path"
+            val videoUrl = source.toAbyssSourceUrl() ?: return@forEach
             val label = source.string("label") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
-            // Avoid known Abyss firstData/chunk objects; emit only candidates that look like
-            // normal video containers or manifests from local fallback.
-            if (!videoUrl.isSupportedContainerCandidate()) return@forEach
+            // Avoid known Abyss firstData/chunk objects; emit only final source paths or normal containers.
+            if (!videoUrl.isAbyssPlayableCandidate()) return@forEach
             runCatching {
-                emitAbyssLink(videoUrl, label, callback)
-                emitted = true
+                if (emitAbyssLink(videoUrl, label, callback)) emitted = true
             }
         }
 
         return emitted
     }
 
-    private suspend fun emitAbyssLink(videoUrl: String, label: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun emitAbyssLink(videoUrl: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
         val fixed = videoUrl.replace("\\/", "/").let { if (it.startsWith("//")) "https:$it" else it }
+        if (!fixed.isAbyssPlayableCandidate()) return false
         val type = when {
             fixed.contains(".m3u8", true) -> ExtractorLinkType.M3U8
             fixed.contains(".mpd", true) -> ExtractorLinkType.DASH
@@ -711,14 +701,35 @@ class DrakorAsia : MainAPI() {
                 type = type
             ) {
                 this.quality = quality
-                this.referer = ABYSS_SERVICE_REFERER
+                this.referer = ABYSS_REFERER
                 this.headers = mapOf(
-                    "Referer" to ABYSS_SERVICE_REFERER,
-                    "Origin" to ABYSS_SERVICE_ORIGIN,
+                    "Referer" to ABYSS_REFERER,
+                    "Origin" to ABYSS_ORIGIN,
                     "User-Agent" to USER_AGENT
                 )
             }
         )
+        return true
+    }
+
+    private fun JsonObject.toAbyssSourceUrl(): String? {
+        val base = listOf(
+            string("file"),
+            string("src"),
+            string("link"),
+            string("url")
+        ).firstOrNull { !it.isNullOrBlank() }
+            ?.replace("\\/", "/")
+            ?.let { if (it.startsWith("//")) "https:$it" else it }
+            ?.trim()
+            ?: return null
+        val path = string("path")?.replace("\\/", "/")?.trim('/')
+        val combined = if (!path.isNullOrBlank() && (base.startsWith("http", true) || base.startsWith("//"))) {
+            base.trimEnd('/') + "/" + path
+        } else {
+            base
+        }
+        return combined.takeIf { it.startsWith("http", true) || it.startsWith("//") }
     }
 
     private fun extractAbyssDatas(html: String): String? {
@@ -817,6 +828,19 @@ class DrakorAsia : MainAPI() {
     private fun String.isSupportedContainerCandidate(): Boolean {
         val value = lowercase().substringBefore("#").substringBefore("?")
         return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains(".mpd") || value.contains("videoplayback")
+    }
+
+    private fun String.isAbyssPlayableCandidate(): Boolean {
+        return isSupportedContainerCandidate() || isAbyssStreamPathCandidate()
+    }
+
+    private fun String.isAbyssStreamPathCandidate(): Boolean {
+        val value = replace("\\/", "/").lowercase().substringBefore("#").substringBefore("?")
+        if (!value.contains(".sssrr.org/")) return false
+        if (value.contains(".fd") || value.contains("/sora/")) return false
+        val path = runCatching { URI(value).path.orEmpty() }.getOrDefault("")
+        if (path.isBlank() || path == "/") return false
+        return Regex("""/[0-9a-f]/[0-9a-f]/[0-9a-f]/[0-9a-f]{16,}\.\d{6,}\.\d+(?:$|/)""").containsMatchIn(path)
     }
 
     private fun String.escapeJson(): String {
@@ -1015,6 +1039,7 @@ class DrakorAsia : MainAPI() {
         private const val SEARCH_SERIES_LIMIT = 150
         private const val EPISODE_LIMIT = 150
         private const val ABYSS_REFERER = "https://abyssplayer.com/"
+        private const val ABYSS_ORIGIN = "https://abyssplayer.com"
         private const val ABYSS_SERVICE_ORIGIN = "https://playhydrax.com"
         private const val ABYSS_SERVICE_REFERER = "https://playhydrax.com/"
         private const val ABYSS_DECODER_API = "https://enc-dec.app/api/dec-abyss"
