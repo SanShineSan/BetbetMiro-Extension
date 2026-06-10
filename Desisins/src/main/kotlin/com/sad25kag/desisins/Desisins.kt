@@ -26,85 +26,14 @@ class Desisins : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
-        "$mainUrl/category/reloaded/" to "Reloaded",
-        "$shortsUrl/" to "Shorts",
-
-        "$mainUrl/category/role-play/" to "Role Play",
-        "$mainUrl/category/mms/" to "MMS",
+        "$shortsUrl/" to "Short",
         "$mainUrl/category/desi-phoren/" to "NRI",
-
-        "$mainUrl/category/genre/anal/" to "Anal",
         "$mainUrl/category/genre/bdsm/" to "BDSM",
-        "$mainUrl/category/genre/blowjob/" to "Blowjob",
         "$mainUrl/category/genre/creampie/" to "Creampie",
         "$mainUrl/category/genre/dirty-talk/" to "Dirty Talk",
         "$mainUrl/category/genre/foursome/" to "Foursome",
-        "$mainUrl/category/genre/horny/" to "Horny",
-        "$mainUrl/category/genre/lesbian/" to "Lesbian",
         "$mainUrl/category/genre/tease/" to "Tease",
-        "$mainUrl/category/genre/threesome/" to "Threesome",
-
-        "$mainUrl/tag/hardcore/" to "Hardcore",
-        "$mainUrl/tag/premium/" to "Premium",
-        "$mainUrl/tag/scandals/" to "Scandals",
-        "$mainUrl/tag/ticket-shows/" to "Ticket Shows",
-
-        "$mainUrl/tag/i-likes/" to "I Likes",
-        "$mainUrl/tag/videos/" to "Videos",
-        "$mainUrl/tag/shows/" to "Shows",
-        "$mainUrl/tag/stars/" to "Stars",
-
-        "$mainUrl/category/livex/" to "LiveX",
-        "$mainUrl/category/live-shows/" to "Live Shows",
-        "$mainUrl/category/solo/" to "Solo",
-
-        "$mainUrl/category/powershot/" to "PowerShot",
-        "$mainUrl/category/models/" to "Models",
-        "$mainUrl/category/viral-stars/" to "Viral Stars",
-
-        "$mainUrl/category/chit-chat/" to "Chit Chat",
-        "$mainUrl/category/vidmag/" to "VidMag",
-        "$mainUrl/category/teaser/" to "Teaser",
-        "$mainUrl/category/wksh/" to "WKSH",
-
-        "$shortsUrl/category/channel/big-shots/" to "Shorts: Big Shots",
-        "$shortsUrl/category/channel/bull/" to "Shorts: Bull",
-        "$shortsUrl/category/channel/ullu/" to "Shorts: Ullu",
-        "$shortsUrl/category/channel/prime-play/" to "Shorts: Prime Play",
-        "$shortsUrl/category/channel/hunters/" to "Shorts: Hunters",
-        "$shortsUrl/category/channel/voovi/" to "Shorts: Voovi",
-        "$shortsUrl/category/channel/fliz/" to "Shorts: Fliz",
-        "$shortsUrl/category/channel/digiflix/" to "Shorts: DigiFlix",
-        "$shortsUrl/category/channel/hot-shots/" to "Shorts: Hot Shots",
-        "$shortsUrl/category/channel/prime-shots/" to "Shorts: Prime Shots",
-        "$shortsUrl/category/channel/balloons/" to "Shorts: Balloons",
-        "$shortsUrl/category/channel/besharms/" to "Shorts: Besharms",
-        "$shortsUrl/category/channel/kooku/" to "Shorts: Kooku",
-        "$shortsUrl/category/channel/moodx/" to "Shorts: MoodX",
-        "$shortsUrl/category/channel/rabbit/" to "Shorts: Rabbit",
-
-        "$shortsUrl/category/channel/bindass/" to "Shorts: Bindass",
-        "$shortsUrl/category/channel/up11/" to "Shorts: UP11",
-        "$shortsUrl/category/channel/tadka/" to "Shorts: Tadka",
-        "$shortsUrl/category/channel/bmz/" to "Shorts: BMZ",
-        "$shortsUrl/category/channel/hotty-notty/" to "Shorts: Hotty Notty",
-        "$shortsUrl/category/channel/mixedbag/" to "Shorts: MixedBag",
-        "$shortsUrl/category/channel/movies-web-series/" to "Shorts: Movies/Web Series",
-        "$shortsUrl/category/channel/uncut/" to "Shorts: Uncut",
-
-        "$shortsUrl/category/genre/3some/" to "Shorts: 3Some",
-        "$shortsUrl/category/genre/amateur/" to "Shorts: Amateur",
-        "$shortsUrl/category/genre/bhabhi/" to "Shorts: Bhabhi",
-        "$shortsUrl/category/genre/cheating/" to "Shorts: Cheating",
-        "$shortsUrl/category/genre/couple/" to "Shorts: Couple",
-        "$shortsUrl/category/genre/milf/" to "Shorts: MILF",
-        "$shortsUrl/category/genre/orgasm/" to "Shorts: Orgasm",
-        "$shortsUrl/category/genre/passionate/" to "Shorts: Passionate",
-        "$shortsUrl/category/genre/tharki/" to "Shorts: Tharki",
-
-        "$shortsUrl/category/shows/" to "Shorts: Shows",
-        "$shortsUrl/category/top-stars/" to "Shorts: Top Stars",
-        "$shortsUrl/category/trending/" to "Shorts: Trending"
+        "$mainUrl/tag/premium/" to "Premium"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
