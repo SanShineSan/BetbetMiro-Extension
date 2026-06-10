@@ -30,7 +30,7 @@ Use this page as a quick map for repository contributors, issue reporters, and m
 - [`HEALTH_CHECK_GUIDE.md`](HEALTH_CHECK_GUIDE.md) — read-only provider domain health checks.
 - [`SMART_HEALTH_CHECK_GUIDE.md`](SMART_HEALTH_CHECK_GUIDE.md) — search/detail sample health checks.
 - [`RUNTIME_HEALTH_CHECK_GUIDE.md`](RUNTIME_HEALTH_CHECK_GUIDE.md) — runtime-oriented player page, media candidate, and request header checks.
-- `provider-health-summary.yml` — provider inventory and health summary workflow artifact.
+- [`provider-health-summary.yml`](../.github/workflows/provider-health-summary.yml) — provider inventory and health summary workflow artifact.
 
 Health check reports are early-warning signals only. They do not replace app/runtime validation.
 
@@ -54,7 +54,7 @@ Health check reports are early-warning signals only. They do not replace app/run
 - [`../.github/pull_request_template.md`](../.github/pull_request_template.md) — Pull Request checklist.
 - [`../.github/ISSUE_TEMPLATE/provider_broken.yml`](../.github/ISSUE_TEMPLATE/provider_broken.yml) — broken provider report.
 - [`../.github/ISSUE_TEMPLATE/provider_request.yml`](../.github/ISSUE_TEMPLATE/provider_request.yml) — new provider request.
-- [`../.github/ISSUE_TEMPLATE/bug_report.yml`](../.github/ISSUE_TEMPLATE/bug report.
+- [`../.github/ISSUE_TEMPLATE/bug_report.yml`](../.github/ISSUE_TEMPLATE/bug_report.yml) — repository/build/workflow bug report.
 
 ## Maintainer rule
 
