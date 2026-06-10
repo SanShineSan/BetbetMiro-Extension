@@ -356,7 +356,7 @@ object GomunimeExtractor {
         return emitted || extracted
     }
 
-    private fun emitDirect(
+    private suspend fun emitDirect(
         sourceName: String,
         linkName: String,
         url: String,
