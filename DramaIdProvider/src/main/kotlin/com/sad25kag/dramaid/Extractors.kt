@@ -120,7 +120,7 @@ class DramaIdHalahgan : ExtractorApi() {
         return resolveApi(api, streamingUrl)
     }
 
-    private fun emit(
+    private suspend fun emit(
         url: String,
         label: String,
         refererUrl: String,
@@ -166,7 +166,7 @@ class DramaIdBerkasDrive : ExtractorApi() {
 
         val emitted = linkedSetOf<String>()
 
-        fun addDirect(sourceUrl: String, label: String) {
+        suspend fun addDirect(sourceUrl: String, label: String) {
             if (!emitted.add(sourceUrl)) return
             emitDirect(sourceUrl, label, fixedUrl, callback)
         }
@@ -205,7 +205,7 @@ class DramaIdBerkasDrive : ExtractorApi() {
         }
     }
 
-    private fun emitDirect(
+    private suspend fun emitDirect(
         url: String,
         label: String,
         refererUrl: String,
