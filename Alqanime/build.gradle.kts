@@ -7,7 +7,7 @@ version = 18
 cloudstream {
     language = "id"
     description = "Nonton & Download Anime Subtitle Indonesia"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf(
         "AnimeMovie",

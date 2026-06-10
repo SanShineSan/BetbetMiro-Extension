@@ -3,7 +3,7 @@ version = 4
 
 cloudstream {
     description = "AnimeIsMe - Nonton anime subtitle Indonesia"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

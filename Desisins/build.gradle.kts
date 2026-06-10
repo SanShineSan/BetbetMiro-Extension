@@ -1,7 +1,7 @@
 version = 8
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "18+ webseries clips from Desisins."
 

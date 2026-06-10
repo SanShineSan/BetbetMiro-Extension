@@ -26,7 +26,7 @@ android {
 cloudstream {
     description = "Drakor.id - drama Asia subtitle Indonesia."
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     status = 1
     tvTypes = listOf(

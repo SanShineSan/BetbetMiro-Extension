@@ -11,7 +11,7 @@ cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
     description = "Bilibili TV - Anime, film, serial, dan konten Asia dari bilibili.tv"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     /**
      * Status int as the following:
      * 0: Down

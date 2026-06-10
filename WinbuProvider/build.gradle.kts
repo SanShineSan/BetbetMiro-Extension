@@ -3,7 +3,7 @@ version = 4
 cloudstream {
     language = "id"
     description = "Winbu — Streaming Anime, Movie and TV Series"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf(
         "Movie",

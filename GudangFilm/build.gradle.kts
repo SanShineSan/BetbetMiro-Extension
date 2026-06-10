@@ -1,7 +1,7 @@
 version = 15
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "GudangFilm provider untuk domain aktif huazai6.com dengan detail movie/series valid dan resolver playback/download dari player sumber."
     status = 1

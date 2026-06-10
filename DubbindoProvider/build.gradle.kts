@@ -3,7 +3,7 @@ version = 6
 cloudstream {
     language = "id"
     description = "Dubbindo — status terbatas: provider masih dapat memuat sebagian link, tetapi banyak konten di website sumber sedang processing/mati, poster kosong, atau media tidak dapat diputar."
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int:

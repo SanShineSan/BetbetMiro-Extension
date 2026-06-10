@@ -1,7 +1,7 @@
 version = 8
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Provider CloudStream untuk Gerakin21."
     status      = 1

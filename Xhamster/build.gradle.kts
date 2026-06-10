@@ -1,7 +1,7 @@
 version = 9
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Awas Jangan Coli Kawan"
 

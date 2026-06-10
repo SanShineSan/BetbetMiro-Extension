@@ -3,7 +3,7 @@ version = 5
 cloudstream {
     description = "PusatFilm - Streaming Movie and TV Series"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     isCrossPlatform = false
     status = 1
     tvTypes = listOf(

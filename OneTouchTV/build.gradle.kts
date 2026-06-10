@@ -7,7 +7,7 @@ cloudstream {
     // All of these properties are optional, you can safely remove them
 
      description = "Asian Dramas"
-     authors = emptyList()
+     authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

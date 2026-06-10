@@ -1,7 +1,7 @@
 version = 3
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "Provider NSFW untuk konten live cam dewasa dari CAM4."
 

@@ -6,7 +6,7 @@ cloudstream {
     // All of these properties are optional, you can safely remove them
 
     description = "type .nofap in discord - Full Length"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

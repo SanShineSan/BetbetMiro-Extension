@@ -7,7 +7,7 @@ version = 1
 cloudstream {
     language = "id"
     description = "KanatAnime - Anime, donghua, dan mirror streaming subtitle Indonesia"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf(
         "Anime",

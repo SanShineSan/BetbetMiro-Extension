@@ -3,7 +3,7 @@ version = 2
 cloudstream {
     description = "Terbit21 - source movie dan tv series Indonesia berbasis evidence HAR"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

@@ -3,7 +3,7 @@ version = 8
 cloudstream {
     description = "Gojodesu - Anime Streaming Site"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     status = 1
 

@@ -5,7 +5,7 @@ android {
 version = 1
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "Provider CloudStream untuk JagoanHentai"
     status = 1

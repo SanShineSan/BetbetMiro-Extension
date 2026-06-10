@@ -1,7 +1,7 @@
 version = 1
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Free Porn & HD Porno Videos in full length! Every minute new porn video for download and streaming. Tons of the Best XXX Movies daily from top porno tube PornOne."
 

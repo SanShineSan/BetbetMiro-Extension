@@ -5,7 +5,7 @@ cloudstream {
     description = "MyNimeku — Portal Anime Indonesia (Stable HAR-backed category fix)"
     language = "id"
 
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

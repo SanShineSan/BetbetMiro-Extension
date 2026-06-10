@@ -2,7 +2,7 @@ version = 6
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "Vidlix - Streaming film dan series subtitle Indonesia"
     status = 1
     tvTypes = listOf(

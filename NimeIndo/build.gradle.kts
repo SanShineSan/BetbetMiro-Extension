@@ -3,7 +3,7 @@ version = 1
 
 cloudstream {
     description = "NimeIndo - Nonton streaming anime dan donghua subtitle Indonesia"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

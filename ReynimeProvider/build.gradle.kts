@@ -2,7 +2,7 @@ version = 22
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "Reynime provider split into plugin, provider, models, seeds, parser, extractor and utils with seed-first catalog, backend episode probing, and resilient playback extraction."
 
     status = 1

@@ -3,7 +3,7 @@ version = 12
 cloudstream {
     language = "id"
     description = "Gomunime anime sub Indo dengan loadLinks aktif untuk server BTUBE, XTWAP, Blogger, dan direct media."
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")
 }

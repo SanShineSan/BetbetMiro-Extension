@@ -2,7 +2,7 @@
 version = 1
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Watch millions of top and fresh porn videos for free, stream the hottest HD porn videos for free on PornSlash, full-length porn videos"
     status  = 1 // will be 3 if unspecified

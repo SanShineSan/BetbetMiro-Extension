@@ -1,7 +1,7 @@
 version = 7
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "Watch more than 60,000 Full HD JAV Online For Free at Javtiful"
     status = 1

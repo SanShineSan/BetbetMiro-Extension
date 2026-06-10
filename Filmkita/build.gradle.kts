@@ -3,7 +3,7 @@ version = 5
 cloudstream {
     description = "Filmkita"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

@@ -1,7 +1,7 @@
 version = 11
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "Provider NSFW untuk konten video dewasa dari CamWH."
 

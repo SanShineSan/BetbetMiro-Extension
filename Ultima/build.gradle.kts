@@ -16,7 +16,7 @@ cloudstream {
     // All of these properties are optional, you can safely remove them
 
     description = "The ultimate All-in-One home screen to access all of your extensions at one place (You need to select/deselect sections in Ultima's settings to load other extensions on home screen)"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
     * Status int as the following:

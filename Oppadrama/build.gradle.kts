@@ -3,7 +3,7 @@ version = 18
 cloudstream {
     description = "Oppadrama"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:

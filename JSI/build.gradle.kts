@@ -3,7 +3,7 @@ version = 3
 
 cloudstream {
     description = "JSI provider for JavSubIndo with HAR-backed Retrotube parser and Streamvid playback resolver."
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
     * Status int as the following:

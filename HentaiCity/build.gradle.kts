@@ -2,7 +2,7 @@ version = 3
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "Provider CloudStream untuk HentaiCity"
 
     /**

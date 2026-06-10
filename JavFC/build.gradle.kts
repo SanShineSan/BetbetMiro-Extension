@@ -2,7 +2,7 @@ version = 7
 
 cloudstream {
     language = "en"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "JavFC provider with refreshed categories, tolerant parsing, keyed episode playback, classic player src recovery, URL-decoded media candidates, and hardened extractor handling."
 
     /**

@@ -5,7 +5,7 @@ cloudstream {
 
     language = "id"
 
-    authors = emptyList() // Ganti dengan username GitHub-mu
+    authors = listOf("sad25kag") // Ganti dengan username GitHub-mu
 
     status = 1
 

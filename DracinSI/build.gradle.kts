@@ -1,7 +1,7 @@
 version = 2
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language = "id"
     description = "Provider CloudStream untuk Dracin Sub Indo - drama China subtitle Indonesia."
     status = 1

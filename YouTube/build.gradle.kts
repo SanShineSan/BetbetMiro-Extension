@@ -2,7 +2,7 @@ version = 5
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "YouTube provider with NewPipe-backed Indonesian channels, direct NewPipe stream links, and category rows."
 
     /**

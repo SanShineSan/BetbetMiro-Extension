@@ -2,7 +2,7 @@
 version = 6
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Looking for the hottest content on the internet? PimpBunny brings you the hottest porn videos and lets you chat with the content creators."
 

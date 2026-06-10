@@ -4,7 +4,7 @@ version = 6
 cloudstream {
     description = "AnimeChina - Nonton Anime China, Donghua Subtitle Indonesia"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")
     iconUrl = "https://www.google.com/s2/favicons?domain=animechina.my.id&sz=256"

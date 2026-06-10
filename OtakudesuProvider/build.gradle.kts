@@ -2,7 +2,7 @@ version = 14
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "Otakudesu provider with source-backed homepage categories and genre rows from the current Otakudesu site."
 
     status = 1

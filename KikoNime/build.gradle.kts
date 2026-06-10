@@ -7,7 +7,7 @@ version = 2
 cloudstream {
     language = "id"
     description = "Nonton donghua dan anime subtitle Indonesia dari KikoNime"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf(
         "Anime",

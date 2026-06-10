@@ -4,7 +4,7 @@ version = 18
 cloudstream {
     description = "AniZone.to - anime subtitle dan multi-dubbing"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie")
 

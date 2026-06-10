@@ -2,7 +2,7 @@ version = 16
 
 cloudstream {
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
     description = "PutarFlix provider with active source-backed categories, stronger Server 1/2/3 playback discovery, robust iframe/AJAX decoding, and hardened direct stream extraction."
 
     status = 1

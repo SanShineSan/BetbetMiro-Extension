@@ -3,7 +3,7 @@ version = 4
 
 cloudstream {
     description = "JAVX provider by sad25kag with source-backed categories and stable playback handling."
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
     * Status int as the following:

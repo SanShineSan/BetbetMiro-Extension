@@ -106,7 +106,7 @@ subprojects {
                 ?: "https://github.com/duro92/ExtCloud"
         )
 
-        authors = emptyList()
+        authors = listOf("sad25kag")
     }
 
     android {

@@ -2,7 +2,7 @@ version = 11
 
 cloudstream {
     description = "Dailymotion public video catalog with source-backed homepage, search, detail, and internal HLS playback resolver."
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int:

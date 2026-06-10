@@ -3,7 +3,7 @@ version = 5
 
 cloudstream {
     description = "Watch movies, classic TV, animation, and public-domain video from the Internet Archive"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as one of the following:

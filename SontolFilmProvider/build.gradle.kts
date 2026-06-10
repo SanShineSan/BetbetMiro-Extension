@@ -3,7 +3,7 @@ version = 2
 cloudstream {
     description = "SontolFilm"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     status = 1
     tvTypes = listOf(

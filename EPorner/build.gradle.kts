@@ -1,7 +1,7 @@
 version = 8
 
 cloudstream {
-    authors = emptyList()
+    authors = listOf("sad25kag")
     language    = "id"
     description = "Nonton video film dewasa kualitas Full HD secara gratis. Koleksi lebih dari 4,9 juta film hardcore kualitas HD, 1080p, dan 4K yang bisa ditonton langsung atau diunduh."
     status      = 1

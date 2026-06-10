@@ -3,7 +3,7 @@ version = 8
 cloudstream {
     description = "HidoriStream — Streaming Anime Subtitle Indonesia"
     language = "id"
-    authors = emptyList()
+    authors = listOf("sad25kag")
 
     /**
      * Status int as the following:
