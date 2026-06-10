@@ -33,8 +33,20 @@ class DramaIdHalahgan : ExtractorApi() {
 
         val pageReferer = "$mainUrl/"
         val quality = qualityFromUrl(fixedUrl)
-        val stream = resolveApi("$mainUrl/streaming//$id?action=stream-url&id=$id", pageReferer)
-            ?: resolveFromStreamingPage("$mainUrl/streaming/$id")
+
+        val streamApis = listOf(
+            "$mainUrl/streaming/$id?action=stream-url&id=$id",
+            "$mainUrl/streaming//$id?action=stream-url&id=$id"
+        )
+        var stream: String? = null
+        for (api in streamApis) {
+            stream = resolveApi(api, pageReferer)
+            if (stream != null) break
+        }
+        if (stream == null) {
+            stream = resolveFromStreamingPage("$mainUrl/streaming/$id")
+                ?: resolveFromStreamingPage("$mainUrl/streaming//$id")
+        }
         if (stream != null) {
             emit(stream, "Stream", pageReferer, quality, callback)
         }
@@ -44,13 +56,22 @@ class DramaIdHalahgan : ExtractorApi() {
             .firstOrNull { it.substringBefore("=") == "name" }
             ?.substringAfter("=")
             ?.takeIf { it.isNotBlank() }
-        val fileApi = buildString {
-            append("$mainUrl/$id?action=file-url&id=$id")
-            if (nameParam != null) append("&name=").append(nameParam)
-        }
-        val download = resolveApi(fileApi, fixedUrl)
-        if (download != null && download != stream) {
-            emit(download, "Download", pageReferer, quality, callback)
+        val fileApis = listOf(
+            buildString {
+                append("$mainUrl/streaming/$id?action=file-url&id=$id")
+                if (nameParam != null) append("&name=").append(nameParam)
+            },
+            buildString {
+                append("$mainUrl/$id?action=file-url&id=$id")
+                if (nameParam != null) append("&name=").append(nameParam)
+            }
+        )
+        for (api in fileApis) {
+            val download = resolveApi(api, fixedUrl)
+            if (download != null && download != stream) {
+                emit(download, "Download", fixedUrl, quality, callback)
+                break
+            }
         }
     }
 
@@ -66,11 +87,7 @@ class DramaIdHalahgan : ExtractorApi() {
             ).text
         }.getOrNull() ?: return null
 
-        return (runCatching { JSONObject(response).optString("url").takeIf { it.isNotBlank() } }.getOrNull()
-            ?: Regex(""""url"\s*:\s*"([^"]+)"""")
-                .find(response)
-                ?.groupValues
-                ?.getOrNull(1))
+        return parseCandidateUrls(response).firstOrNull()
             ?.jsonUrlDecode()
             ?.takeIf { it.isNotBlank() }
     }
@@ -84,6 +101,8 @@ class DramaIdHalahgan : ExtractorApi() {
             val sourceUrl = source.attr("abs:src").ifBlank { source.attr("src") }
             if (sourceUrl.isNotBlank()) return sourceUrl
         }
+
+        parseCandidateUrls(document.html()).firstOrNull()?.let { return it }
 
         val api = Regex("""STREAM_URL_API\s*=\s*["']([^"']+)["']""")
             .find(document.html())
@@ -140,17 +159,37 @@ class DramaIdBerkasDrive : ExtractorApi() {
         ).document
 
         val emitted = linkedSetOf<String>()
-        document.select("video source[src], video[src], .daftar_server li[data-url]")
+        fun addDirect(sourceUrl: String, label: String) {
+            if (!emitted.add(sourceUrl)) return
+            emitDirect(sourceUrl, label, fixedUrl, callback)
+        }
+
+        document.select("video source[src], video[src], .daftar_server li[data-url], [data-url], [data-src], source[src]")
             .forEach { element ->
-                val sourceUrl = element.attr("abs:src")
-                    .ifBlank { element.attr("src") }
-                    .ifBlank { element.attr("data-url") }
-                    .takeIf { it.isNotBlank() }
+                val sourceUrl = listOf(
+                    element.attr("abs:src"),
+                    element.attr("src"),
+                    element.attr("data-url"),
+                    element.attr("data-src"),
+                ).firstOrNull { it.isNotBlank() }
                     ?.let { normalizeUrl(it, fixedUrl) }
                     ?: return@forEach
-                if (!emitted.add(sourceUrl)) return@forEach
-                emitDirect(sourceUrl, element.text().ifBlank { "Server" }, fixedUrl, callback)
+
+                if (sourceUrl.isMediaUrl()) {
+                    addDirect(sourceUrl, element.text().ifBlank { "Server" })
+                } else {
+                    loadExtractor(sourceUrl, fixedUrl, subtitleCallback, callback)
+                }
             }
+
+        parseCandidateUrls(document.html()).forEach { sourceUrl ->
+            val normalized = normalizeUrl(sourceUrl, fixedUrl) ?: return@forEach
+            if (normalized.isMediaUrl()) {
+                addDirect(normalized, normalized.substringAfterLast("/").substringBefore("?").ifBlank { "Server" })
+            } else {
+                loadExtractor(normalized, fixedUrl, subtitleCallback, callback)
+            }
+        }
 
         decodeBerkasDriveId(fixedUrl)?.let { resolverUrl ->
             loadExtractor(resolverUrl, fixedUrl, subtitleCallback, callback)
@@ -219,8 +258,73 @@ private fun String.jsonUrlDecode(): String {
     return replace("\\/", "/")
         .replace("\\u0026", "&")
         .replace("\\u003d", "=")
+        .replace("\\u003D", "=")
         .replace("\\u003f", "?")
+        .replace("\\u003F", "?")
         .replace("\\u002F", "/")
+}
+
+private fun parseCandidateUrls(text: String): List<String> {
+    val output = linkedSetOf<String>()
+    val clean = text.jsonUrlDecode().replace("&amp;", "&")
+    val jsonKeys = "url|file|src|source|video|videoUrl|streamUrl|stream_url|downloadUrl|download_url|hls|hlsUrl|hls_url"
+
+    runCatching {
+        val obj = JSONObject(clean)
+        jsonKeys.split("|").forEach { key ->
+            obj.optString(key).trim().takeIf { it.isNotBlank() }?.let { output.add(it) }
+        }
+    }
+
+    Regex("""["'](?:$jsonKeys)["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .findAll(clean)
+        .mapNotNull { it.groupValues.getOrNull(1) }
+        .forEach { output.add(it) }
+
+    Regex("""https?://[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+        .findAll(clean)
+        .map { it.value }
+        .filter { it.isMediaUrl() || it.isKnownResolverCandidate() }
+        .forEach { output.add(it) }
+
+    Regex("""https?%3A%2F%2F[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+        .findAll(clean)
+        .map { runCatching { URLDecoder.decode(it.value, "UTF-8") }.getOrDefault(it.value) }
+        .filter { it.isMediaUrl() || it.isKnownResolverCandidate() }
+        .forEach { output.add(it) }
+
+    return output.map { it.jsonUrlDecode() }.filter { it.isNotBlank() }
+}
+
+private fun String.isMediaUrl(): Boolean {
+    return Regex("""(?i)\.(mp4|m3u8)(?:$|[?#&])""").containsMatchIn(this)
+}
+
+private fun String.isKnownResolverCandidate(): Boolean {
+    val value = lowercase()
+    return value.contains("stordl.halahgan.com") ||
+        value.contains("dl.berkasdrive.com") ||
+        value.contains("berkasdrive.com") ||
+        value.contains("halahgan.com") ||
+        value.contains("/streaming") ||
+        value.contains("/embed/") ||
+        value.contains("/player/") ||
+        value.contains("filemoon") ||
+        value.contains("streamwish") ||
+        value.contains("wishfast") ||
+        value.contains("dood") ||
+        value.contains("streamtape") ||
+        value.contains("vidhide") ||
+        value.contains("vidguard") ||
+        value.contains("voe.") ||
+        value.contains("mixdrop") ||
+        value.contains("mp4upload") ||
+        value.contains("lulustream") ||
+        value.contains("lulu") ||
+        value.contains("krakenfiles") ||
+        value.contains("acefile") ||
+        value.contains("drive.google") ||
+        value.contains("ok.ru")
 }
 
 private fun qualityFromUrl(value: String): Int {
