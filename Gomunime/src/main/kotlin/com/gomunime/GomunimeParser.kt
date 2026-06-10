@@ -212,7 +212,6 @@ object GomunimeParser {
             val text = cleanText(a.text())
             val epNum = episodeNumber(text) ?: episodeNumber(href)
 
-            // Only keep links that look like episode pages, not generic anime detail links.
             val lower = "$href $text".lowercase()
             if (epNum == null && !lower.contains("episode") && !lower.contains("eps")) return@mapNotNull null
 
@@ -270,7 +269,7 @@ object GomunimeParser {
         if (!fromImg.isNullOrBlank()) return fromImg
 
         val style = container.attr("style") + " " + container.select("[style]").joinToString(" ") { it.attr("style") }
-        return Regex("""url\((['\"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
+        return Regex("""url\((['"]?)(.*?)\1\)""", RegexOption.IGNORE_CASE)
             .find(style)
             ?.groupValues
             ?.getOrNull(2)
