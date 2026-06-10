@@ -26,10 +26,10 @@ import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -59,7 +59,6 @@ class GudangFilm : MainAPI() {
 
     override val mainPage = mainPageOf(
         "/" to "Update Terbaru",
-        "/tv/" to "TV Series",
         "/genre/action/" to "Action",
         "/genre/horror/" to "Horror",
         "/genre/adventure/" to "Adventure",
@@ -417,9 +416,9 @@ class GudangFilm : MainAPI() {
         document.select(
             "#player iframe[src], #player iframe[data-src], .player iframe[src], .player iframe[data-src], [id*=player] iframe[src], [class*=player] iframe[src], " +
                 "iframe[src], iframe[data-src], iframe[data-litespeed-src], embed[src], video[src], video source[src], source[src], " +
-                "a[href*='embed'], a[href*='player'], a[href*='stream'], a[href*='drive'], a[href*='gofile'], a[href*='dood'], a[href*='streamtape'], " +
+                "a[href*='embed'], a[href*='player'], a[href*='play/index'], a[href*='stream'], a[href*='drive'], a[href*='gofile'], a[href*='dood'], a[href*='streamtape'], " +
                 "a[href*='filemoon'], a[href*='vidhide'], a[href*='vidguard'], a[href*='voe'], a[href*='mp4upload'], a[href*='uqload'], a[href*='krakenfiles'], " +
-                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='sht'], a[href*='short'], a[href*='.mp4'], a[href*='.m3u8']"
+                "a[href*='filelions'], a[href*='hubcloud'], a[href*='gdplayer'], a[href*='gdriveplayer'], a[href*='upload18'], a[href*='sht'], a[href*='short'], a[href*='.mp4'], a[href*='.m3u8']"
         ).forEach { element ->
             val value = element.attr("src").ifBlank { element.attr("data-src").ifBlank { element.attr("data-litespeed-src").ifBlank { element.attr("href") } } }
             fixUrl(value, baseUrl)?.let { if (!it.isNoiseUrl()) links.add(it) }
@@ -440,7 +439,7 @@ class GudangFilm : MainAPI() {
 
     private fun embeddedLinks(html: String, baseUrl: String): List<String> {
         val links = linkedSetOf<String>()
-        Regex("""(?i)['"]((?:https?:)?//[^'"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|gdplayer|gdriveplayer|hubcloud|short|sht|/e/|/v/|/d/)[^'"]*)['"]""")
+        Regex("""(?i)['"]((?:https?:)?//[^'"]+(?:embed|player|stream|drive|gofile|dood|streamtape|filemoon|vidhide|vidguard|voe|mp4upload|uqload|krakenfiles|filelions|gdplayer|gdriveplayer|hubcloud|short|sht|/play/|/e/|/v/|/d/)[^'"]*)['"]""")
             .findAll(html).mapNotNull { fixUrl(it.groupValues[1], baseUrl) }.forEach { links.add(it) }
         return links.toList()
     }
@@ -475,7 +474,6 @@ class GudangFilm : MainAPI() {
         return null
     }
 
-
     private data class ResolvedPlayerLink(val url: String, val referer: String, val source: String)
 
     private suspend fun resolvePlayerLinks(url: String, referer: String): List<ResolvedPlayerLink> {
@@ -483,6 +481,7 @@ class GudangFilm : MainAPI() {
         val host = try { URI(fixed).host.orEmpty().lowercase(Locale.ROOT) } catch (_: Throwable) { return emptyList() }
         return when {
             host.contains("sf21.vidplayer.live") -> resolveSf21Player(fixed, referer)
+            host.contains("upload18.org") || host.contains("upload18.cc") -> resolveUpload18Player(fixed, referer)
             else -> emptyList()
         }
     }
@@ -506,6 +505,41 @@ class GudangFilm : MainAPI() {
         obj.optString("hlsVideoTiktok").takeIf { it.isNotBlank() }?.let { fixUrl(it, playerOrigin)?.let(links::add) }
         obj.optString("source").takeIf { it.isNotBlank() }?.let { fixUrl(it, playerOrigin)?.let(links::add) }
         return links.filter { it.isPlayableMedia() }.map { ResolvedPlayerLink(it, "$playerOrigin/", "$name Sf21") }
+    }
+
+    private suspend fun resolveUpload18Player(url: String, referer: String): List<ResolvedPlayerLink> {
+        val fixed = fixUrl(url, referer) ?: return emptyList()
+        val playerOrigin = origin(fixed)
+        if (fixed.isPlayableMedia()) {
+            return listOf(ResolvedPlayerLink(fixed, "$playerOrigin/", "$name Upload18"))
+        }
+        val html = try {
+            val response = app.get(
+                fixed,
+                headers = headers + mapOf(
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer" to referer
+                ),
+                referer = referer
+            )
+            normalize(response.text.ifBlank { response.document.html() })
+        } catch (_: Throwable) {
+            return emptyList()
+        }
+        val links = linkedSetOf<String>()
+        collectLinksFromHtml(html, fixed).filter { it.isPlayableMedia() }.forEach { links.add(it) }
+        Regex("""(?i)(?:m3u8|file|source)\s*[:=]\s*['"]([^'"]+)['"]""")
+            .findAll(html)
+            .mapNotNull { decodePossibleUrl(it.groupValues[1], fixed) }
+            .filter { it.isPlayableMedia() }
+            .forEach { links.add(it) }
+        Regex("""(?i)PLAYER_CONFIG[\s\S]{0,3000}?/play/token_hash\?[^'"]+""")
+            .findAll(html)
+            .mapNotNull { Regex("""/play/token_hash\?[^'"]+""").find(it.value)?.value }
+            .mapNotNull { fixUrl(it, fixed) }
+            .filter { it.isPlayableMedia() }
+            .forEach { links.add(it) }
+        return links.map { ResolvedPlayerLink(it, "$playerOrigin/", "$name Upload18") }
     }
 
     private fun decryptSf21Payload(value: String): String? = runCatching {
@@ -544,11 +578,11 @@ class GudangFilm : MainAPI() {
     private fun shouldFollow(url: String): Boolean {
         val lower = url.lowercase(Locale.ROOT)
         return !lower.isNoiseUrl() && (
-            lower.contains("huazai6.com") || lower.contains("sht") || lower.contains("short") || lower.contains("embed") || lower.contains("player") ||
+            lower.contains("huazai6.com") || lower.contains("sht") || lower.contains("short") || lower.contains("embed") || lower.contains("player") || lower.contains("/play/") ||
                 lower.contains("stream") || lower.contains("drive") || lower.contains("gofile") || lower.contains("dood") || lower.contains("filemoon") ||
                 lower.contains("vidhide") || lower.contains("vidguard") || lower.contains("voe") || lower.contains("mp4upload") || lower.contains("uqload") ||
                 lower.contains("hubcloud") || lower.contains("gdplayer") || lower.contains("gdriveplayer") || lower.contains("krakenfiles") || lower.contains("filelions") ||
-                lower.contains("sf21.vidplayer.live") || lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org")
+                lower.contains("sf21.vidplayer.live") || lower.contains("minochinos.com") || lower.contains("earnvidjav.online") || lower.contains("upload18.org") || lower.contains("upload18.cc")
             )
     }
 
