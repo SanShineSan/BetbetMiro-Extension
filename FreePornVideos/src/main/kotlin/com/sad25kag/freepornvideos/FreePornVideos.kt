@@ -290,6 +290,7 @@ class FreePornVideos : MainAPI() {
         }?.cleanTitle() ?: return null
 
         val href = fixUrlNull(anchor.attr("href")) ?: return null
+        if (isJunkCategoryCard(title, href)) return null
 
         val posterUrl = fixUrlNull(
             selectFirst("a img, img")?.getImageAttr()
@@ -298,6 +299,21 @@ class FreePornVideos : MainAPI() {
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
         }
+    }
+
+    private fun isJunkCategoryCard(title: String, href: String): Boolean {
+        val normalizedTitle = title.lowercase()
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val normalizedHref = href.trimEnd('/').lowercase()
+        val normalizedMainUrl = mainUrl.trimEnd('/').lowercase()
+
+        return normalizedTitle == "go to home page" ||
+            normalizedHref == normalizedMainUrl ||
+            normalizedTitle.contains("your ai cum slut") ||
+            (normalizedTitle.contains("create") &&
+                normalizedTitle.contains("ai") &&
+                normalizedTitle.contains("cum slut"))
     }
 
     private fun String?.createSlug(): String? {
