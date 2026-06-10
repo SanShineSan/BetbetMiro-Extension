@@ -33,7 +33,7 @@ open class Dailymotion : ExtractorApi() {
 
         Regex(""""url"\s*:\s*"([^"]+)"""")
             .findAll(response)
-            .map { it.groupValues[1].replace("\\/", "/") }
+            .map { it.groupValues[1].replace("\/", "/") }
             .filter { it.contains(".m3u8", true) }
             .distinct()
             .forEach { videoUrl ->
@@ -48,7 +48,7 @@ open class Dailymotion : ExtractorApi() {
                 subtitleCallback(
                     SubtitleFile(
                         match.groupValues[1],
-                        match.groupValues[2].replace("\\/", "/")
+                        match.groupValues[2].replace("\/", "/")
                     )
                 )
             }

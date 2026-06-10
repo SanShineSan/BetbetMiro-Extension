@@ -25,14 +25,11 @@ class Donghub : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/anime/?order=update&page={page}" to "Rilisan Terbaru",
-        "$mainUrl/anime/?status=ongoing&order=update&page={page}" to "Series Ongoing",
         "$mainUrl/anime/?status=completed&order=update&page={page}" to "Series Completed",
         "$mainUrl/anime/?type=movie&order=update&page={page}" to "Movie",
         "$mainUrl/anime/?type=ona&order=update&page={page}" to "ONA",
-        "$mainUrl/anime/?type=special&order=update&page={page}" to "Special",
         "$mainUrl/genres/action/page/{page}/" to "Action",
         "$mainUrl/genres/adventure/page/{page}/" to "Adventure",
-        "$mainUrl/genres/fantasy/page/{page}/" to "Fantasy",
         "$mainUrl/genres/romance/page/{page}/" to "Romance"
     )
 
