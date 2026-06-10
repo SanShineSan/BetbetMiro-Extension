@@ -38,15 +38,18 @@ class DramaIdHalahgan : ExtractorApi() {
             "$mainUrl/streaming/$id?action=stream-url&id=$id",
             "$mainUrl/streaming//$id?action=stream-url&id=$id"
         )
+
         var stream: String? = null
         for (api in streamApis) {
             stream = resolveApi(api, pageReferer)
             if (stream != null) break
         }
+
         if (stream == null) {
             stream = resolveFromStreamingPage("$mainUrl/streaming/$id")
                 ?: resolveFromStreamingPage("$mainUrl/streaming//$id")
         }
+
         if (stream != null) {
             emit(stream, "Stream", pageReferer, quality, callback)
         }
@@ -56,6 +59,7 @@ class DramaIdHalahgan : ExtractorApi() {
             .firstOrNull { it.substringBefore("=") == "name" }
             ?.substringAfter("=")
             ?.takeIf { it.isNotBlank() }
+
         val fileApis = listOf(
             buildString {
                 append("$mainUrl/streaming/$id?action=file-url&id=$id")
@@ -66,6 +70,7 @@ class DramaIdHalahgan : ExtractorApi() {
                 if (nameParam != null) append("&name=").append(nameParam)
             }
         )
+
         for (api in fileApis) {
             val download = resolveApi(api, fixedUrl)
             if (download != null && download != stream) {
@@ -87,7 +92,8 @@ class DramaIdHalahgan : ExtractorApi() {
             ).text
         }.getOrNull() ?: return null
 
-        return parseCandidateUrls(response).firstOrNull()
+        return parseCandidateUrls(response)
+            .firstOrNull()
             ?.jsonUrlDecode()
             ?.takeIf { it.isNotBlank() }
     }
@@ -110,10 +116,11 @@ class DramaIdHalahgan : ExtractorApi() {
             ?.getOrNull(1)
             ?.let { normalizeUrl(it, streamingUrl) }
             ?: return null
+
         return resolveApi(api, streamingUrl)
     }
 
-    private suspend fun emit(
+    private fun emit(
         url: String,
         label: String,
         refererUrl: String,
@@ -137,7 +144,6 @@ class DramaIdHalahgan : ExtractorApi() {
             }
         )
     }
-
 }
 
 class DramaIdBerkasDrive : ExtractorApi() {
@@ -159,33 +165,36 @@ class DramaIdBerkasDrive : ExtractorApi() {
         ).document
 
         val emitted = linkedSetOf<String>()
+
         fun addDirect(sourceUrl: String, label: String) {
             if (!emitted.add(sourceUrl)) return
             emitDirect(sourceUrl, label, fixedUrl, callback)
         }
 
-        document.select("video source[src], video[src], .daftar_server li[data-url], [data-url], [data-src], source[src]")
-            .forEach { element ->
-                val sourceUrl = listOf(
-                    element.attr("abs:src"),
-                    element.attr("src"),
-                    element.attr("data-url"),
-                    element.attr("data-src"),
-                ).firstOrNull { it.isNotBlank() }
-                    ?.let { normalizeUrl(it, fixedUrl) }
-                    ?: return@forEach
+        for (element in document.select("video source[src], video[src], .daftar_server li[data-url], [data-url], [data-src], source[src]")) {
+            val sourceUrl = listOf(
+                element.attr("abs:src"),
+                element.attr("src"),
+                element.attr("data-url"),
+                element.attr("data-src"),
+            ).firstOrNull { it.isNotBlank() }
+                ?.let { normalizeUrl(it, fixedUrl) }
+                ?: continue
 
-                if (sourceUrl.isMediaUrl()) {
-                    addDirect(sourceUrl, element.text().ifBlank { "Server" })
-                } else {
-                    loadExtractor(sourceUrl, fixedUrl, subtitleCallback, callback)
-                }
+            if (sourceUrl.isMediaUrl()) {
+                addDirect(sourceUrl, element.text().ifBlank { "Server" })
+            } else {
+                loadExtractor(sourceUrl, fixedUrl, subtitleCallback, callback)
             }
+        }
 
-        parseCandidateUrls(document.html()).forEach { sourceUrl ->
-            val normalized = normalizeUrl(sourceUrl, fixedUrl) ?: return@forEach
+        for (sourceUrl in parseCandidateUrls(document.html())) {
+            val normalized = normalizeUrl(sourceUrl, fixedUrl) ?: continue
             if (normalized.isMediaUrl()) {
-                addDirect(normalized, normalized.substringAfterLast("/").substringBefore("?").ifBlank { "Server" })
+                addDirect(
+                    normalized,
+                    normalized.substringAfterLast("/").substringBefore("?").ifBlank { "Server" }
+                )
             } else {
                 loadExtractor(normalized, fixedUrl, subtitleCallback, callback)
             }
@@ -196,7 +205,7 @@ class DramaIdBerkasDrive : ExtractorApi() {
         }
     }
 
-    private suspend fun emitDirect(
+    private fun emitDirect(
         url: String,
         label: String,
         refererUrl: String,
@@ -267,16 +276,31 @@ private fun String.jsonUrlDecode(): String {
 private fun parseCandidateUrls(text: String): List<String> {
     val output = linkedSetOf<String>()
     val clean = text.jsonUrlDecode().replace("&amp;", "&")
-    val jsonKeys = "url|file|src|source|video|videoUrl|streamUrl|stream_url|downloadUrl|download_url|hls|hlsUrl|hls_url"
+    val jsonKeys = listOf(
+        "url",
+        "file",
+        "src",
+        "source",
+        "video",
+        "videoUrl",
+        "streamUrl",
+        "stream_url",
+        "downloadUrl",
+        "download_url",
+        "hls",
+        "hlsUrl",
+        "hls_url"
+    )
+    val keyPattern = jsonKeys.joinToString("|")
 
     runCatching {
         val obj = JSONObject(clean)
-        jsonKeys.split("|").forEach { key ->
+        for (key in jsonKeys) {
             obj.optString(key).trim().takeIf { it.isNotBlank() }?.let { output.add(it) }
         }
     }
 
-    Regex("""["'](?:$jsonKeys)["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+    Regex("""["'](?:$keyPattern)["']\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         .findAll(clean)
         .mapNotNull { it.groupValues.getOrNull(1) }
         .forEach { output.add(it) }
