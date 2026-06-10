@@ -1,8 +1,8 @@
 // use an integer for version numbers
-version = 3
+version = 4
 
 cloudstream {
-    description = "Astronime - anime subtitle Indonesia, HAR-backed player_ajax and Turbovid HLS flow"
+    description = "Astronime - anime subtitle Indonesia, runtime-clean parser, player_ajax, Turbovid HLS, and Hydrax/Abyss resolver flow"
     authors = listOf("sad25kag")
 
     /**
