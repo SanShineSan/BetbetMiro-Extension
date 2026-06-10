@@ -34,7 +34,6 @@ object GomunimeSeeds {
     }
 
     fun mainPageRows(): Array<Pair<String, String>> = arrayOf(
-        Path.HOME to "Episode Terbaru",
         Path.ONGOING to "Anime Ongoing",
         Path.COMPLETED to "Anime Tamat",
         Path.MOVIES to "Anime Movies",
