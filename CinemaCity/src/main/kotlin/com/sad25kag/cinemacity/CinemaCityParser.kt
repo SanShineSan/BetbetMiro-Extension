@@ -51,14 +51,14 @@ class CinemaCityParser(private val provider: CinemaCityProvider) {
         val isTv = CinemaCityUtils.isTvSeries(href, text())
 
         return if (isTv) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            provider.newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 posterUrl = poster
                 posterHeaders = mapOf("Referer" to "${provider.mainUrl}/")
                 this.year = year
                 this.score = com.lagradost.cloudstream3.Score.from(score, 10)
             }
         } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
+            provider.newMovieSearchResponse(title, href, TvType.Movie) {
                 posterUrl = poster
                 posterHeaders = mapOf("Referer" to "${provider.mainUrl}/")
                 this.year = year
@@ -106,12 +106,12 @@ class CinemaCityParser(private val provider: CinemaCityProvider) {
 
     fun parseEpisodes(document: Document, poster: String?): List<Episode> {
         return parseEpisodeSources(document.html(), poster).map { source ->
-            newEpisode(source.data) {
+            provider.newEpisode(source.data, initializer = {
                 name = source.title
                 season = source.season
                 episode = source.episode
                 posterUrl = source.poster ?: poster
-            }
+            })
         }.distinctBy { it.data }
     }
 

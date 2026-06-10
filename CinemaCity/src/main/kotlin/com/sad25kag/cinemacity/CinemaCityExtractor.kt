@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.newSubtitleFile
 
 class CinemaCityExtractor(private val parser: CinemaCityParser) {
 
@@ -65,7 +64,7 @@ class CinemaCityExtractor(private val parser: CinemaCityParser) {
                 }
                 val url = if (entry.contains("]")) entry.substringAfter("]").trim() else entry
                 CinemaCityUtils.absoluteUrl(url)?.takeIf { it.startsWith("http", true) }?.let {
-                    subtitleCallback.invoke(newSubtitleFile(language, it))
+                    subtitleCallback.invoke(SubtitleFile(language, it))
                 }
             }
     }
