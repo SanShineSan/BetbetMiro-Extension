@@ -31,17 +31,10 @@ class KikoNime : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "home:popular" to "Popular Today",
-        "home:donghua" to "Update Terbaru Donghua",
-        "home:movie" to "Update Movie Terbaru",
-        "$mainUrl/donghua/page/%d/" to "Donghua List",
-        "$mainUrl/perpustakaan/page/%d/" to "Perpustakaan",
-        "$mainUrl/genres/action/page/%d/" to "Action",
-        "$mainUrl/genres/adventure/page/%d/" to "Adventure",
-        "$mainUrl/genres/fantasy/page/%d/" to "Fantasy",
-        "$mainUrl/genres/martial-arts/page/%d/" to "Martial Arts",
-        "$mainUrl/genres/romance/page/%d/" to "Romance",
-        "$mainUrl/genres/sci-fi/page/%d/" to "Sci-Fi",
+        "$mainUrl/perpustakaan/page/%d/?type=donghua" to "Donghua",
+        "$mainUrl/perpustakaan/page/%d/?type=movie" to "Movie",
+        "$mainUrl/perpustakaan/page/%d/?genre%5B%5D=adventure" to "Adventure",
+        "$mainUrl/perpustakaan/page/%d/?genre%5B%5D=fantasy" to "Fantasy",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
