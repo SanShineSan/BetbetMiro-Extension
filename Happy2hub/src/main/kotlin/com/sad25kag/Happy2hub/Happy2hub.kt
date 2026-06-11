@@ -42,7 +42,6 @@ class Happy2hub : MainAPI() {
     override val mainPage = mainPageOf(
         "" to "Terbaru",
 
-        "ullu-a" to "Ullu",
         "tag/primeplay-watch-online" to "Primeplay",
         "tag/altt-watch-online" to "Altt",
         "tag/bigshots-ott-watch-online" to "Bigshots",
@@ -59,11 +58,7 @@ class Happy2hub : MainAPI() {
         "tag/porn" to "All Porn",
         "tag/18" to "All Videos",
 
-        "category/web-series" to "Web Series",
-        "category/movies" to "Movies",
-        "category/hindi" to "Hindi",
-        "category/uncut" to "Uncut",
-        "category/short-film" to "Short Film"
+        "category/web-series" to "Web Series"
     )
 
     private val headers = mapOf(
