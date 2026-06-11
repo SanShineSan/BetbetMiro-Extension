@@ -75,7 +75,7 @@ class Jeniusplay : ExtractorApi() {
 
 class Majorplay : ExtractorApi() {
     override var name = "Majorplay"
-    override var mainUrl = "https://e2e.majorplay.net"
+    override var mainUrl = "https://*.majorplay.net"
     override val requiresReferer = true
 
     override suspend fun getUrl(

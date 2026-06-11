@@ -174,7 +174,7 @@ class IdlixProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val contentUrl = url.toProviderUrl()
+        val contentUrl = url.toApiDetailUrl()
         val data = runCatching {
             app.get(contentUrl, headers = apiHeaders, referer = "$mainUrl/", timeout = 10000L)
                 .parsedSafe<DetailResponse>()
@@ -344,7 +344,6 @@ class IdlixProvider : MainAPI() {
             app.get(
                 "$mainUrl/api/watch/play-info/${parsed.type}/${parsed.id}",
                 headers = apiHeaders,
-                cookies = playbackCookies,
                 referer = "$mainUrl/",
                 timeout = 10000L,
             )
@@ -354,7 +353,7 @@ class IdlixProvider : MainAPI() {
         val sessionResult = resolveWatchSession(
             initial = playInfo,
             contentReferer = contentReferer,
-            cookies = playbackCookies + playResponse.cookies,
+            cookies = playResponse.cookies,
         ) ?: return false
 
         val claimSession = sessionResult.first
@@ -457,7 +456,7 @@ class IdlixProvider : MainAPI() {
 
         if (remaining > 25L) {
             Log.d(name, "Waiting IDLIX gate: ${remaining}ms")
-            delay((remaining + 125L).coerceAtMost(16000L))
+            delay(remaining + 125L)
         }
     }
 
@@ -566,8 +565,34 @@ class IdlixProvider : MainAPI() {
         }
 
         if (!delivered) {
-            delivered = loadExtractor(normalized, contentReferer, subtitleCallback, callback) ||
-                loadExtractor(normalized, streamReferer, subtitleCallback, callback)
+            delivered = runDirectEmbedExtractor(normalized, contentReferer, subtitleCallback, callback) ||
+                loadExtractor(normalized, contentReferer, subtitleCallback, callback) ||
+                loadExtractor(normalized, streamReferer, subtitleCallback, callback) ||
+                loadExtractor(normalized, "$mainUrl/", subtitleCallback, callback)
+        }
+
+        return delivered
+    }
+
+    private suspend fun runDirectEmbedExtractor(
+        streamUrl: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        var delivered = false
+        val countingCallback: (ExtractorLink) -> Unit = { link ->
+            delivered = true
+            callback(link)
+        }
+
+        runCatching {
+            when {
+                streamUrl.contains("majorplay", true) -> Majorplay().getUrl(streamUrl, referer, subtitleCallback, countingCallback)
+                streamUrl.contains("jeniusplay", true) -> Jeniusplay().getUrl(streamUrl, referer, subtitleCallback, countingCallback)
+            }
+        }.onFailure { error ->
+            Log.d(name, "Direct embed extractor failed for $streamUrl: ${error.message}")
         }
 
         return delivered
@@ -631,6 +656,31 @@ class IdlixProvider : MainAPI() {
 
     private fun String.tmdbPoster(size: String): String {
         return if (startsWith("http", true)) this else "https://image.tmdb.org/t/p/$size$this"
+    }
+
+    private fun String.toApiDetailUrl(): String {
+        val canonical = toProviderUrl()
+        val path = runCatching { URI(canonical).path.orEmpty() }.getOrDefault("")
+        return when {
+            path.startsWith("/api/movies/", true) || path.startsWith("/api/series/", true) -> canonical
+            path.startsWith("/movie/", true) -> {
+                val slug = path.removePrefix("/movie/").substringBefore('/').takeIf { it.isNotBlank() }
+                if (slug != null) "$mainUrl/api/movies/$slug" else canonical
+            }
+            path.startsWith("/series/", true) -> {
+                val slug = path.removePrefix("/series/").substringBefore('/').takeIf { it.isNotBlank() }
+                if (slug != null) "$mainUrl/api/series/$slug" else canonical
+            }
+            canonical.startsWith("/movie/", true) -> {
+                val slug = canonical.removePrefix("/movie/").substringBefore('/').takeIf { it.isNotBlank() }
+                if (slug != null) "$mainUrl/api/movies/$slug" else canonical
+            }
+            canonical.startsWith("/series/", true) -> {
+                val slug = canonical.removePrefix("/series/").substringBefore('/').takeIf { it.isNotBlank() }
+                if (slug != null) "$mainUrl/api/series/$slug" else canonical
+            }
+            else -> canonical
+        }
     }
 
     private fun String.toProviderUrl(): String {

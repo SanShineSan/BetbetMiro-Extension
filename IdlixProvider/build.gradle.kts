@@ -1,9 +1,9 @@
-version = 45
+version = 46
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "Idlix provider playback fix aligned with active source session claim/redeem flow and reference behavior."
+    description = "Idlix provider detail URL normalization and playback session redeem flow aligned with active source reference behavior."
 
     /**
      * Status int as the following:
