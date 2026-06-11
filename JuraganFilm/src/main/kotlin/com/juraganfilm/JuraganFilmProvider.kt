@@ -1,5 +1,9 @@
 package com.juraganfilm
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
@@ -24,11 +28,6 @@ import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.toNewSearchResponseList
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.databind.DeserializationFeature
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -199,7 +198,7 @@ class JuraganFilmProvider : MainAPI() {
             callback(
                 newExtractorLink(
                     source = name,
-                    name = name,
+                    name = if (isScrollOriginalMp4(fixed)) "$name MP4" else name,
                     url = fixed,
                     type = if (isHls(fixed)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 ) {
@@ -225,7 +224,7 @@ class JuraganFilmProvider : MainAPI() {
             runCatching {
                 loadExtractor(fixed, referer, subtitleCallback) { extractorLink ->
                     val key = canonicalUrl(extractorLink.url)
-                    if (emitted.add(key)) {
+                    if (!isBadUrl(extractorLink.url) && emitted.add(key)) {
                         localFound = true
                         callback(extractorLink)
                     }
@@ -236,7 +235,7 @@ class JuraganFilmProvider : MainAPI() {
 
         suspend fun collectFromPage(url: String, referer: String): List<String> {
             val fixed = fixUrl(url, referer) ?: return emptyList()
-            if (!visited.add(canonicalUrl(fixed))) return emptyList()
+            if (!visited.add(visitKey(fixed))) return emptyList()
 
             val response = runCatching {
                 app.get(fixed, headers = headers, referer = referer, timeout = 20000L)
@@ -254,7 +253,9 @@ class JuraganFilmProvider : MainAPI() {
             extractMp4ShortcodeLinks(html, fixed, subtitleCallback).forEach(links::add)
             extractPlayableUrls(html, fixed).forEach(links::add)
             extractEncodedUrls(html, fixed).forEach(links::add)
+            extractJuraganFileIds(html, fixed).forEach(links::add)
             extractDownloadLinks(document, fixed).forEach { download ->
+                toJuraganIframeUrl(download)?.let(links::add)
                 links.add(download)
                 links.add(download.substringBefore("&force=1") + "&force=1")
             }
@@ -279,7 +280,7 @@ class JuraganFilmProvider : MainAPI() {
 
         candidates
             .filter { !isDirectMedia(it) && !isBadUrl(it) }
-            .take(12)
+            .take(20)
             .forEach { page ->
                 collectFromPage(page, startUrl).forEach { nested ->
                     when {
@@ -311,7 +312,7 @@ class JuraganFilmProvider : MainAPI() {
     private fun parseCards(document: Document): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
 
-        document.select("article:has(a[href]), .post:has(a[href]), .item:has(a[href]), .ml-item:has(a[href]), .movie:has(a[href]), .result:has(a[href]), .latestpost:has(a[href])")
+        document.select("article.item:has(a[href]), article.has-post-thumbnail:has(a[href]), .gmr-box-content:has(a[href]), .post:has(a[href]), .ml-item:has(a[href]), .movie:has(a[href]), .result:has(a[href]), .latestpost:has(a[href])")
             .forEach { element ->
                 element.toSearchResponse()?.let { results[canonicalUrl(it.url)] = it }
             }
@@ -319,7 +320,7 @@ class JuraganFilmProvider : MainAPI() {
         document.select("a[href]").forEach { anchor ->
             val href = fixUrl(anchor.attr("href"), mainUrl) ?: return@forEach
             if (!isDetailUrl(href) || isBadUrl(href)) return@forEach
-            val card = anchor.closest("article, .post, .item, .ml-item, .movie, .result, .latestpost") ?: anchor.parent() ?: anchor
+            val card = anchor.closest("article.item, article.has-post-thumbnail, .gmr-box-content, .post, .ml-item, .movie, .result, .latestpost") ?: anchor.parent() ?: anchor
             val item = card.toSearchResponse(anchor) ?: anchor.toSearchResponse(anchor) ?: return@forEach
             val key = canonicalUrl(item.url)
             val old = results[key]
@@ -333,7 +334,7 @@ class JuraganFilmProvider : MainAPI() {
 
     private fun Element.toSearchResponse(preferredAnchor: Element? = null): SearchResponse? {
         val anchor = preferredAnchor
-            ?: selectFirst("a[href*='/nonton-'], a[href*='/film-seri/'], h2 a[href], h3 a[href], a[href]")
+            ?: selectFirst("a[href*='/nonton-'], a[href*='/film-seri/'], h2 a[href], h3 a[href], .entry-title a[href], a[href]")
             ?: return null
 
         val href = fixUrl(anchor.attr("href"), mainUrl) ?: return null
@@ -347,7 +348,9 @@ class JuraganFilmProvider : MainAPI() {
             href.substringAfterLast('/').replace("-", " ")
         ).firstOrNull { isUsableTitle(it) }?.cleanTitle() ?: return null
 
-        val poster = parseImage(this)
+        if (isBlockedCatalogTitle(title)) return null
+
+        val poster = parseImage(this) ?: return null
         val year = Regex("""\b(19|20)\d{2}\b""").find(text())?.value?.toIntOrNull()
         val quality = getSearchQuality(
             selectFirst(".quality, .mli-quality, .jtip-quality")?.text()
@@ -471,19 +474,35 @@ class JuraganFilmProvider : MainAPI() {
     }
 
     private fun parseTags(document: Document): List<String> {
-        return document.select("a[href*='/kategori-film/'], a[href*='/genre/'], a[href*='/tag/']")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() && !it.equals("Home", true) && !it.matches(Regex("""\d{4}""")) }
+        val allowed = setOf(
+            "Action", "Action & Adventure", "Adventure", "Animation", "Anime", "Biography", "box office",
+            "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Historical", "History", "Horror",
+            "Medical", "Music", "Mystery", "Political", "Romance", "Sci-Fi", "Science Fiction", "School",
+            "Sport", "sports", "Suspense", "Thriller", "Tokatsu", "variety show", "War", "Western", "wuxia"
+        )
+        return document.select(".gmr-movie-genre a[href*='/kategori-film/'], .cat-links a[href*='/kategori-film/']")
+            .map { it.text().trim().cleanSpaces() }
+            .filter { tag ->
+                tag.isNotBlank() &&
+                    tag in allowed &&
+                    !tag.equals("Home", true) &&
+                    !tag.matches(Regex("""\d{4}""")) &&
+                    !tag.startsWith("Film Seri", true) &&
+                    !tag.startsWith("Drama Serial", true) &&
+                    !tag.equals("Ongoing", true)
+            }
             .distinct()
-            .take(20)
+            .take(8)
     }
 
     private fun parsePlot(document: Document): String? {
-        val meta = document.selectFirst("meta[name=description], meta[property=og:description]")?.attr("content")
-        if (!meta.isNullOrBlank()) return meta.cleanSpaces()
-        return document.select("p")
+        val paragraphs = document.select(".entry-content p, .post-content p, article p, p")
             .map { it.text().cleanSpaces() }
-            .firstOrNull { it.length > 80 && !it.contains("Keywords:", true) && !it.contains("JuraganFilm", true) }
+            .filter { isUsablePlot(it) }
+        if (paragraphs.isNotEmpty()) return paragraphs.first()
+
+        val meta = document.selectFirst("meta[name=description], meta[property=og:description]")?.attr("content")?.cleanSpaces()
+        return meta?.takeIf { isUsablePlot(it) }
     }
 
     private fun parseYear(document: Document, title: String): Int? {
@@ -571,7 +590,7 @@ class JuraganFilmProvider : MainAPI() {
     }
 
     private fun extractDownloadLinks(document: Document, baseUrl: String): List<String> {
-        return document.select("a[href*='action=download'], a[href*='/file/']")
+        return document.select("a[href*='action=download'], a[href*='iframe=1'], a[href*='/file/']")
             .mapNotNull { fixUrl(it.attr("href"), baseUrl) }
             .filterNot { isBadUrl(it) }
             .distinct()
@@ -580,6 +599,16 @@ class JuraganFilmProvider : MainAPI() {
     private fun extractPlayableUrls(text: String, baseUrl: String): List<String> {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
+
+        Regex("""https?://cdn\.scroll\.web\.id/file/[^"'\\\s<>]+?/original/[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .mapNotNull { fixUrl(it.value, baseUrl) }
+            .forEach(urls::add)
+
+        Regex("""https?://scroll\.web\.id/file/[^"'\\\s<>]+?/auto(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .mapNotNull { fixUrl(it.value, baseUrl) }
+            .forEach(urls::add)
 
         Regex("""https?://[^"'\\\s<>]+?(?:/file/\?[^"'\\\s<>]+|scroll\.web\.id/?\?id=[^"'\\\s<>]+)""", RegexOption.IGNORE_CASE)
             .findAll(clean)
@@ -606,13 +635,27 @@ class JuraganFilmProvider : MainAPI() {
             .mapNotNull { fixUrl(it.value, baseUrl) }
             .forEach(urls::add)
 
-        Regex("""(?i)(?:src|href|data-src|data-url|data-file|file|url|source)\s*[:=]\s*["']([^"']+)["']""")
+        Regex("""(?i)(?:src|href|data-src|data-url|data-file|file|url|source|link)\s*[:=]\s*["']([^"']+)["']""")
             .findAll(clean)
             .mapNotNull { fixUrl(it.groupValues[1].replace(".txt", ".m3u8"), baseUrl) }
             .filter { isLikelyPlayable(it) }
             .forEach(urls::add)
 
         return urls.filterNot { isBadUrl(it) }.distinctBy { canonicalUrl(it) }
+    }
+
+    private fun extractJuraganFileIds(text: String, baseUrl: String): List<String> {
+        val links = linkedSetOf<String>()
+        val clean = text.cleanEscaped()
+        Regex("""(?i)[?&]id=([A-Za-z0-9+/_=-]{20,})""")
+            .findAll(clean)
+            .map { it.groupValues[1] }
+            .forEach { id -> links.add("$mainUrl/file/?id=$id&iframe=1") }
+        Regex("""(?i)\bid\s*[:=]\s*["']([A-Za-z0-9+/_=-]{20,})["']""")
+            .findAll(clean)
+            .map { it.groupValues[1] }
+            .forEach { id -> links.add("$mainUrl/file/?id=$id&iframe=1") }
+        return links.mapNotNull { fixUrl(it, baseUrl) }.distinctBy { canonicalUrl(it) }
     }
 
     private fun extractEncodedUrls(text: String, baseUrl: String): List<String> {
@@ -677,16 +720,46 @@ class JuraganFilmProvider : MainAPI() {
             path.startsWith("blog/") || path == "film-seri" || path.startsWith("film-seri/page/") ||
             path == "dmca" || path == "disclaimer" || path == "privacy-policy"
         ) return false
-        return path.startsWith("nonton-") || path.startsWith("film-seri/nonton-")
+        return path.startsWith("nonton-") || path.startsWith("film-seri/")
     }
 
     private fun isUsableTitle(value: String?): Boolean {
         val text = value?.trim().orEmpty()
         if (text.length < 2) return false
+        if (isBlockedCatalogTitle(text)) return false
         return !listOf(
             "Watch", "Watch Movie", "Trailer", "Home", "More Movie", "Download", "Refresh Link",
             "JuraganFilm", "JURAGANFILM", "Latest Movie", "Nonton Film Sub Indo"
         ).any { text.equals(it, true) }
+    }
+
+    private fun isBlockedCatalogTitle(value: String): Boolean {
+        val text = value.cleanSpaces()
+        return listOf(
+            "Situs Nonton Movie",
+            "Nonton Movie Sub Indo Terbaik",
+            "Situs Nonton Film",
+            "Bioskop Online",
+            "Pilihan Kita Semua",
+            "Hanya JuraganFilm",
+            "Tempat Nonton",
+            "Download Film Terbaik"
+        ).any { text.contains(it, true) }
+    }
+
+    private fun isUsablePlot(value: String?): Boolean {
+        val text = value?.cleanSpaces().orEmpty()
+        if (text.length < 40) return false
+        if (text.contains("Keywords:", true)) return false
+        return !listOf(
+            "Situs Nonton",
+            "Bioskop Online",
+            "Pilihan Kita Semua",
+            "Hanya JuraganFilm",
+            "JuraganFilm",
+            "Nonton Film Bioskop",
+            "Nonton Movie Sub Indo"
+        ).any { text.contains(it, true) }
     }
 
     private fun getSearchQuality(check: String?): SearchQuality? {
@@ -711,9 +784,33 @@ class JuraganFilmProvider : MainAPI() {
         return runCatching { jsonMapper.readValue<LoadData>(clean) }.getOrNull()
     }
 
+    private fun visitKey(url: String): String {
+        val value = url.trim()
+        if (value.contains("/file/?", true)) {
+            return value.substringBefore("#")
+                .substringBefore("&force=1")
+                .replace(Regex("""[?&]_cb=[^&]+"""), "")
+                .lowercase()
+        }
+        return canonicalUrl(value)
+    }
+
+    private fun toJuraganIframeUrl(url: String): String? {
+        val fixed = fixUrl(url, mainUrl) ?: return null
+        if (!fixed.contains("/file/?", true)) return null
+        val id = Regex("""[?&]id=([^&#]+)""", RegexOption.IGNORE_CASE)
+            .find(fixed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return "$mainUrl/file/?id=$id&iframe=1"
+    }
+
     private fun isJuraganFilePlayer(url: String): Boolean {
         val value = url.lowercase()
-        return value.startsWith(mainUrl.lowercase()) && value.contains("/file/?id=")
+        return value.startsWith(mainUrl.lowercase()) && value.contains("/file/?") &&
+            (value.contains("id=") || value.contains("action=download") || value.contains("iframe=1"))
     }
 
     private fun fixUrl(url: String?, baseUrl: String): String? {
@@ -735,30 +832,44 @@ class JuraganFilmProvider : MainAPI() {
     private fun canonicalUrl(url: String): String = url.substringBefore("#").substringBefore("?").trimEnd('/').lowercase()
 
     private fun isDirectMedia(url: String): Boolean {
-        return url.contains(".m3u8", true) || url.contains(".mp4", true) || url.contains(".webm", true)
+        return url.contains(".m3u8", true) ||
+            url.contains(".mp4", true) ||
+            url.contains(".webm", true) ||
+            isScrollOriginalMp4(url)
+    }
+
+    private fun isScrollOriginalMp4(url: String): Boolean {
+        val value = url.lowercase()
+        return value.startsWith("https://cdn.scroll.web.id/file/") && value.contains("/original/")
     }
 
     private fun isSubtitleMedia(url: String): Boolean {
         return url.contains(".srt", true) || url.contains(".vtt", true) || url.contains(".ass", true)
     }
 
-    private fun isHls(url: String): Boolean = url.contains(".m3u8", true)
+    private fun isHls(url: String): Boolean = url.contains(".m3u8", true) ||
+        (url.contains("scroll.web.id/file/", true) && url.contains("/auto", true))
 
     private fun isLikelyPlayable(url: String): Boolean {
         val value = url.lowercase()
         return isDirectMedia(value) || listOf(
             "embed", "player", "stream", "majorplay", "jeniusplay", "filemoon", "streamwish", "wishfast",
             "vidhide", "vidguard", "voe.", "mixdrop", "mp4upload", "streamtape", "dood", "lulu",
-            "scroll.web.id", "/file/?id=", "action=download", "fallback_json"
+            "scroll.web.id", "/file/?id=", "action=download", "iframe=1", "fallback_json"
         ).any { value.contains(it) }
     }
 
     private fun isBadUrl(url: String): Boolean {
         val value = url.lowercase()
+        if (listOf(
+                "/file/vast/", "vast/index", "imasdk.googleapis", "googlesyndication", "doubleclick",
+                "google-analytics", "csi.gstatic", "2mdn", "omsdk", "pagead", "adservice",
+                "luxury111qz", "neoparty", "klik4.me", "pasang-iklan", "banner"
+            ).any { value.contains(it) }
+        ) return true
         if (isDirectMedia(value) || isSubtitleMedia(value)) return false
         return listOf(
             "facebook.com", "twitter.com", "api.whatsapp.com", "telegram", "instagram.com", "youtube.com",
-            "googlesyndication", "doubleclick", "ads", "banner", "neoparty", "klik4.me", "pasang-iklan",
             "dmca", "privacy", "disclaimer", "wp-json", "wp-admin", "xmlrpc.php"
         ).any { value.contains(it) }
     }
@@ -812,8 +923,11 @@ class JuraganFilmProvider : MainAPI() {
     private fun String.cleanTitle(): String {
         return cleanSpaces()
             .replace(Regex("""(?i)\s*[-–|]\s*JuraganFIlm.*$"""), "")
-            .replace(Regex("""(?i)^Nonton\s+Film\s+"""), "Nonton ")
-            .replace(Regex("""(?i)\s+Sub\s+Indo\s+Sub\s+Ind.*$"""), " Sub Indo")
+            .replace(Regex("""(?i)^Nonton\s+Film\s+"""), "")
+            .replace(Regex("""(?i)^Nonton\s+"""), "")
+            .replace(Regex("""(?i)</?a>"""), "")
+            .replace(Regex("""(?i)\s+Sub\s+Indo(?:nesia)?(?:\s+Sub\s+Ind.*)?(?:\s+jf)?$"""), "")
+            .replace(Regex("""(?i)\s+Subtitle\s+Indonesia$"""), "")
             .replace(Regex("""\s+"""), " ")
             .trim()
     }
