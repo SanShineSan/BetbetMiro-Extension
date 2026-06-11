@@ -11,6 +11,7 @@ import com.kingbokep.KingBokepUtils.cleanText
 import com.kingbokep.KingBokepUtils.durationMinutes
 import com.kingbokep.KingBokepUtils.encodeLoadData
 import com.kingbokep.KingBokepUtils.isVideoUrl
+import com.kingbokep.KingBokepUtils.withPosterData
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
@@ -49,19 +50,19 @@ object KingBokepParser {
             ?: extractPoster(api.mainUrl, link, document = null)
         if (requirePoster && poster.isNullOrBlank()) return null
 
-        return api.newMovieSearchResponse(title, href, TvType.NSFW, false) {
+        return api.newMovieSearchResponse(title, withPosterData(href, poster), TvType.NSFW, false) {
             this.posterUrl = poster
         }
     }
 
-    suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
+    suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document, posterOverride: String? = null): LoadResponse? {
         val title = cleanText(
             document.selectFirst("h1")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
                 ?: document.title()
         ).removePrefix("Video ").ifBlank { return null }
 
-        val poster = extractPoster(api.mainUrl, document.body(), document)
+        val poster = posterOverride?.takeIf { it.isNotBlank() } ?: extractPoster(api.mainUrl, document.body(), document)
         val plot = cleanText(
             document.selectFirst("meta[name=description]")?.attr("content")
                 ?: document.selectFirst("meta[property=og:description]")?.attr("content")
@@ -84,7 +85,7 @@ object KingBokepParser {
             ?.toIntOrNull()
 
         val recommendations = parseListing(api, document)
-            .filterNot { it.url.trimEnd('/') == url.trimEnd('/') }
+            .filterNot { it.url.substringBefore("#").trimEnd('/') == url.trimEnd('/') }
             .take(12)
 
         val data = encodeLoadData(

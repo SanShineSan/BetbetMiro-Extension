@@ -12,7 +12,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.kingbokep.KingBokepUtils.cleanLoadUrl
 import com.kingbokep.KingBokepUtils.pageUrl
+import com.kingbokep.KingBokepUtils.posterFromLoadUrl
 import com.kingbokep.KingBokepUtils.searchUrl
 
 class KingBokepProvider : MainAPI() {
@@ -39,8 +41,9 @@ class KingBokepProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = KingBokepUtils.siteHeaders, referer = mainUrl).document
-        return KingBokepParser.parseLoadResponse(this, url, document)
+        val cleanUrl = cleanLoadUrl(url)
+        val document = app.get(cleanUrl, headers = KingBokepUtils.siteHeaders, referer = mainUrl).document
+        return KingBokepParser.parseLoadResponse(this, cleanUrl, document, posterFromLoadUrl(url))
     }
 
     override suspend fun loadLinks(

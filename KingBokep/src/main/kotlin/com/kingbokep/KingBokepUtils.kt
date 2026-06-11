@@ -5,6 +5,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 object KingBokepUtils {
+    private const val POSTER_FRAGMENT_KEY = "cs_poster="
     const val USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 
     val siteHeaders = mapOf(
@@ -74,6 +75,26 @@ object KingBokepUtils {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    fun cleanLoadUrl(url: String): String {
+        return url.substringBefore("#").ifBlank { url }
+    }
+
+    fun withPosterData(url: String, poster: String?): String {
+        val cleanUrl = cleanLoadUrl(url)
+        val cleanPoster = poster?.takeIf { it.isNotBlank() } ?: return cleanUrl
+        return "$cleanUrl#$POSTER_FRAGMENT_KEY${cleanPoster.urlEncoded()}"
+    }
+
+    fun posterFromLoadUrl(url: String): String? {
+        val fragment = url.substringAfter("#", "")
+        if (fragment.isBlank()) return null
+        return fragment.split("&")
+            .firstOrNull { it.startsWith(POSTER_FRAGMENT_KEY) }
+            ?.substringAfter(POSTER_FRAGMENT_KEY)
+            ?.let { decodeUrl(it) }
+            ?.takeIf { it.startsWith("http") }
     }
 
     fun pageUrl(mainUrl: String, data: String, page: Int): String {

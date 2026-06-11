@@ -16,9 +16,7 @@ object KingBokepSeeds {
      * Search-only rows are intentionally not mixed here so pageUrl() has one job.
      */
     fun mainPageRows(): Array<Pair<String, String>> = arrayOf(
-        Path.LATEST to "Terbaru",
         Path.INDONESIA to "Bokep Indo",
-        Path.VIRAL to "Indo Viral",
         Path.JAPAN to "Bokep Jepang",
         Path.WESTERN to "Bokep Barat"
     )
