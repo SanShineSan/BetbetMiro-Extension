@@ -1,9 +1,9 @@
-version = 46
+version = 48
 
 cloudstream {
     language = "id"
-    authors = listOf("sad25kag")
-    description = "Idlix provider detail URL normalization and playback session redeem flow aligned with active source reference behavior."
+    authors = listOf("BetbetMiro")
+    description = "Idlix provider with active-domain API routing, detail URL normalization, provider session lifecycle, and session redeem playback flow."
 
     /**
      * Status int as the following:

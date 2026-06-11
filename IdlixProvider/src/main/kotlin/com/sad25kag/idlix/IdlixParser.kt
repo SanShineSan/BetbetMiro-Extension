@@ -1,47 +1,59 @@
 package com.sad25kag.idlix
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
 data class ApiResponse(
     val data: List<ApiItem> = emptyList(),
     val pagination: Pagination? = null,
-    val meta: Meta? = null,
+    val meta: Meta? = null
 )
 
 data class ApiItem(
     val id: String? = null,
     val title: String? = null,
     val slug: String? = null,
+
     val posterPath: String? = null,
     val backdropPath: String? = null,
+
     val releaseDate: String? = null,
     val firstAirDate: String? = null,
-    val voteAverage: Any? = null,
+
+    val voteAverage: String? = null,
     val viewCount: Any? = null,
+
     val quality: String? = null,
     val country: String? = null,
     val runtime: Int? = null,
+
     val createdAt: String? = null,
     val numberOfSeasons: Int? = null,
     val numberOfEpisodes: Int? = null,
+
     val contentType: String? = null,
+
     val commentCount: Int? = null,
+
+    // optional extras (safe ignore)
     val originalLanguage: String? = null,
     val popularity: Any? = null,
     val genres: List<APIGenre>? = null,
     val hasVideo: Boolean? = null,
-    val isPublished: Boolean? = null,
+    val isPublished: Boolean? = null
 )
 
 data class APIGenre(
     val id: String? = null,
     val name: String? = null,
-    val slug: String? = null,
+    val slug: String? = null
 )
 
 data class Pagination(
     val page: Int? = null,
     val limit: Int? = null,
     val total: Int? = null,
-    val totalPages: Int? = null,
+    val totalPages: Int? = null
 )
 
 data class Meta(
@@ -49,51 +61,65 @@ data class Meta(
     val country: String? = null,
     val year: String? = null,
     val network: String? = null,
-    val sort: String? = null,
+    val sort: String? = null
 )
 
+@Serializable
 data class DetailResponse(
     val id: String? = null,
     val title: String? = null,
     val slug: String? = null,
+    @SerialName("imdb_id")
     val imdbId: String? = null,
+    @SerialName("tmdb_id")
     val tmdbId: String? = null,
     val overview: String? = null,
     val tagline: String? = null,
+    @SerialName("poster_path")
     val posterPath: String? = null,
+    @SerialName("backdrop_path")
     val backdropPath: String? = null,
+    @SerialName("logo_path")
     val logoPath: String? = null,
     val backdrops: List<String>? = null,
+    @SerialName("release_date")
     val releaseDate: String? = null,
+    @SerialName("first_air_date")
     val firstAirDate: String? = null,
     val runtime: Int? = null,
+    @SerialName("vote_average")
     val voteAverage: Any? = null,
     val popularity: Any? = null,
+    @SerialName("original_language")
     val originalLanguage: String? = null,
     val country: String? = null,
     val status: String? = null,
+    @SerialName("trailer_url")
     val trailerUrl: String? = null,
     val quality: String? = null,
     val director: String? = null,
     val genres: List<Genre>? = null,
     val cast: List<Cast>? = null,
     val seasons: List<Season>? = null,
+    @SerialName("first_season")
     val firstSeason: Season? = null,
+    @SerialName("view_count")
     val viewCount: Any? = null,
-    val isPublished: Boolean? = null,
+    @SerialName("is_published")
+    val isPublished: Boolean? = null
 )
 
 data class Genre(
     val id: String? = null,
     val name: String? = null,
-    val slug: String? = null,
+    val slug: String? = null
 )
 
 data class Cast(
     val id: String? = null,
     val name: String? = null,
     val character: String? = null,
-    val profilePath: String? = null,
+    val profilePath: String? = null
 )
 
 data class Season(
@@ -101,7 +127,7 @@ data class Season(
     val seasonNumber: Int? = null,
     val name: String? = null,
     val posterPath: String? = null,
-    val episodes: List<Episode>? = null,
+    val episodes: List<Episode>? = null
 )
 
 data class Episode(
@@ -112,69 +138,39 @@ data class Episode(
     val stillPath: String? = null,
     val airDate: String? = null,
     val runtime: Int? = null,
-    val voteAverage: Any? = null,
+    val voteAverage: Any? = null
 )
 
 data class SeasonWrapper(
-    val season: Season? = null,
+    val season: Season? = null
 )
 
 data class SearchApiResponse(
-    val results: List<SearchApiResult> = emptyList(),
-    val total: Long = 0,
+    val results: List<SearchApiResult>,
+    val total: Long,
 )
 
 data class SearchApiResult(
-    val id: String? = null,
-    val contentType: String? = null,
-    val title: String? = null,
-    val originalTitle: String? = null,
-    val overview: String? = null,
-    val genres: List<String>? = null,
-    val originalLanguage: String? = null,
-    val voteAverage: Any? = null,
-    val viewCount: Any? = null,
-    val popularity: Any? = null,
-    val posterPath: String? = null,
-    val backdropPath: String? = null,
-    val slug: String? = null,
-    val firstAirDate: String? = null,
-    val numberOfSeasons: Long? = null,
-    val releaseDate: String? = null,
-    val quality: String? = null,
+    val id: String,
+    val contentType: String,
+    val title: String,
+    val originalTitle: String,
+    val overview: String,
+    val genres: List<String>,
+    val originalLanguage: String,
+    val voteAverage: Double,
+    val viewCount: Long,
+    val popularity: Double,
+    val posterPath: String,
+    val backdropPath: String,
+    val slug: String,
+    val firstAirDate: String?,
+    val numberOfSeasons: Long?,
+    val releaseDate: String?,
+    val quality: String?,
 )
 
 data class LoadData(
     val id: String,
-    val type: String,
-    val refererUrl: String? = null,
-)
-
-data class WatchSessionResponse(
-    val kind: String? = null,
-    val gateToken: String? = null,
-    val serverNow: Long? = null,
-    val unlockAt: Long? = null,
-    val remainingMs: Long? = null,
-    val claim: String? = null,
-    val redeemUrl: String? = null,
-    val videoId: String? = null,
-    val title: String? = null,
-    val durationSec: Long? = null,
-    val viewerTier: String? = null,
-    val maxHeight: Long? = null,
-)
-
-data class Iframe(
-    val code: String? = null,
-    val url: String? = null,
-    val expiresAt: Long? = null,
-    val subtitles: List<Subtitle>? = emptyList(),
-    val videoId: String? = null,
-)
-
-data class Subtitle(
-    val lang: String? = null,
-    val label: String? = null,
-    val path: String? = null,
+    val type: String // "movie" or "episode"
 )
