@@ -66,7 +66,7 @@ class IndoDrama21 : MainAPI() {
     override val mainPage = mainPageOf(
         "" to "Terbaru",
         "movie" to "Movie",
-        "tv" to "TV Series",
+        "series-update" to "Series Update",
         "drama-korea" to "Drama Korea",
         "drama-china" to "Drama China",
         "film-action-terbaru" to "Action",
@@ -74,10 +74,14 @@ class IndoDrama21 : MainAPI() {
         "comedy" to "Comedy",
         "romance" to "Romance",
         "anime" to "Anime",
+        "semi" to "Semi",
+        "jav-update" to "JAV Update",
+        "bokep-indo-update" to "Indo Update",
         "country/indonesia" to "Indonesia",
         "country/korea" to "Korea",
         "country/china" to "China",
-        "country/japan" to "Japan"
+        "country/japan" to "Japan",
+        "country/usa" to "USA"
     )
 
     private val headers = mapOf(
@@ -358,7 +362,7 @@ class IndoDrama21 : MainAPI() {
             val response = runCatching {
                 app.get(
                     fixedUrl,
-                    headers = headers + mapOf("Origin" to getBaseUrl(referer)),
+                    headers = headers,
                     referer = referer,
                     timeout = 25L
                 )
@@ -461,14 +465,14 @@ class IndoDrama21 : MainAPI() {
     private fun extractAsiastreamMaster(text: String, baseUrl: String): String? {
         val clean = text.cleanEscaped()
         val sniff = Regex(
-            """sniff\(\s*[\"']([^\"']+)[\"']\s*,\s*[\"']([^\"']+)[\"']\s*,\s*[\"']([^\"']+)[\"']\s*,.*?,\s*(\d+)\s*,""",
+            """sniff\s*\(\s*[\"']([^\"']+)[\"']\s*,\s*[\"']([^\"']+)[\"']\s*,\s*[\"']([^\"']+)[\"'][\s\S]*?,\s*(\d+)\s*,""",
             RegexOption.IGNORE_CASE
         ).find(clean) ?: return null
         val uid = sniff.groupValues.getOrNull(2).orEmpty()
         val md5 = sniff.groupValues.getOrNull(3).orEmpty()
-        val cache = sniff.groupValues.getOrNull(4).orEmpty().ifBlank { "1" }
+        val streamFlag = sniff.groupValues.getOrNull(4).orEmpty().ifBlank { "1" }
         if (uid.isBlank() || md5.isBlank()) return null
-        return "${getBaseUrl(baseUrl)}/m3u8/$uid/$md5/master.txt?s=1&cache=$cache"
+        return "${getBaseUrl(baseUrl)}/m3u8/$uid/$md5/master.txt?s=$streamFlag&cache=1"
     }
 
     private fun addCandidate(
@@ -492,18 +496,34 @@ class IndoDrama21 : MainAPI() {
     private suspend fun emitDirectLink(link: String, referer: String, callback: (ExtractorLink) -> Unit) {
         if (isAdUrl(link) || shouldSkipUrl(link)) return
         val fixedReferer = referer.ifBlank { mainUrl }
-        val linkHeaders = mediaHeaders + mapOf(
-            "Referer" to fixedReferer,
-            "Origin" to getBaseUrl(fixedReferer)
-        )
+        val linkHeaders = mediaHeadersFor(link, fixedReferer)
 
         if (isHlsLike(link)) {
-            generateM3u8(
-                source = name,
-                streamUrl = link,
-                referer = fixedReferer,
-                headers = linkHeaders
-            ).forEach(callback)
+            val generated = runCatching {
+                generateM3u8(
+                    source = name,
+                    streamUrl = link,
+                    referer = fixedReferer,
+                    headers = linkHeaders
+                )
+            }.getOrDefault(emptyList())
+
+            if (generated.isNotEmpty()) {
+                generated.forEach(callback)
+            } else {
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = link,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = fixedReferer
+                        this.quality = Qualities.Unknown.value
+                        this.headers = linkHeaders
+                    }
+                )
+            }
             return
         }
 
@@ -519,6 +539,15 @@ class IndoDrama21 : MainAPI() {
                 this.headers = linkHeaders
             }
         )
+    }
+
+    private fun mediaHeadersFor(link: String, referer: String): Map<String, String> {
+        val base = mediaHeaders + mapOf("Referer" to referer)
+        return if (link.contains("watch.asiastream.cc", true)) {
+            base
+        } else {
+            base + mapOf("Origin" to getBaseUrl(referer))
+        }
     }
 
     private fun extractPlayableUrls(text: String): List<String> {
