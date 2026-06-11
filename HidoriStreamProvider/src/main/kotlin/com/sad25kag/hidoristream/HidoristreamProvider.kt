@@ -96,10 +96,6 @@ class HidoristreamProvider : MainAPI() {
         "anime/?status=ongoing" to "Ongoing",
         "anime/?status=completed" to "Completed",
         "anime/?order=popular" to "Popular",
-        "anime/?order=rating" to "Top Rating",
-
-        "anime/?type=movie" to "Movie",
-        "anime/?type=bd" to "BD / Batch",
     )
 
     private val headers = mapOf(
