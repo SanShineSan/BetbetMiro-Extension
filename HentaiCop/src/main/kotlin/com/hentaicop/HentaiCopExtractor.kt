@@ -25,7 +25,7 @@ object HentaiCopExtractor {
     private const val MAX_SERVER_HOPS = 8
 
     private val keyValueMediaRegex = Regex(
-        """(?i)(?:file|src|source|url|hls|playlist|video|videoUrl|hlsUrl|embed_url)\s*[=:]\s*['\"]([^'\"]+)['\"]"""
+        """(?i)[\"']?(?:file|src|source|url|hls|playlist|video|videoUrl|hlsUrl|embed_url)[\"']?\s*[=:]\s*['\"]([^'\"]+)['\"]"""
     )
     private val iframeRegex = Regex("""(?i)<iframe[^>]+src=['\"]([^'\"]+)['\"]""")
     private val quotedMediaRegex = Regex(
@@ -78,7 +78,7 @@ object HentaiCopExtractor {
         collectSubtitles(normalizedPage, document, subtitleCallback)
 
         extractMedia(normalizedPage, normalizedPage, document).forEach { media ->
-            if (emitMedia(providerName, media.name, media.url, media.referer, seenLinks, emitLink)) found = true
+            if (emitMedia(providerName, mainUrl, media.name, media.url, media.referer, seenLinks, emitLink)) found = true
         }
 
         extractAjaxServers(mainUrl, normalizedPage, document).forEach { server ->
@@ -128,7 +128,7 @@ object HentaiCopExtractor {
         if (isPseudoUrl(normalizedServer)) return false
 
         if (isDirectMedia(normalizedServer) || isLikelyHlsCandidate(normalizedServer)) {
-            val emitted = emitMedia(providerName, server.name, normalizedServer, server.referer, seenLinks, callback)
+            val emitted = emitMedia(providerName, HentaiCopSeeds.MAIN_URL, server.name, normalizedServer, server.referer, seenLinks, callback)
             if (emitted) return true
         }
 
@@ -150,12 +150,12 @@ object HentaiCopExtractor {
 
             collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
             extractMedia(normalizedServer, normalizedServer, embedDocument).forEach { item ->
-                val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
+                val emitted = emitMedia(providerName, HentaiCopSeeds.MAIN_URL, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
                 if (emitted) serverFound = true
             }
 
             extractMediaFromText(normalizedServer, normalizedServer, unpackedText).forEach { item ->
-                val emitted = emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
+                val emitted = emitMedia(providerName, HentaiCopSeeds.MAIN_URL, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)
                 if (emitted) serverFound = true
             }
 
@@ -179,6 +179,7 @@ object HentaiCopExtractor {
 
     private suspend fun emitMedia(
         providerName: String,
+        mainUrl: String,
         name: String,
         url: String,
         referer: String,
@@ -187,15 +188,16 @@ object HentaiCopExtractor {
     ): Boolean {
         if (isPseudoUrl(url)) return false
         var emitted = false
-        val headers = videoHeaders(referer)
+        val mediaHeaders = hlsHeaders(mainUrl)
+        val directHeaders = videoHeaders(referer)
 
         if (url.contains(".m3u8", true) || isLikelyHlsCandidate(url)) {
             val links = runCatching {
                 generateM3u8(
                     source = providerName,
                     streamUrl = url,
-                    referer = referer,
-                    headers = headers
+                    referer = "",
+                    headers = mediaHeaders
                 )
             }.getOrDefault(emptyList())
             links.forEach { link ->
@@ -205,6 +207,22 @@ object HentaiCopExtractor {
                 }
             }
             if (emitted) return true
+
+            if (seenLinks.add(url)) {
+                callback(
+                    newExtractorLink(
+                        providerName,
+                        name.ifBlank { "$providerName HLS" },
+                        url,
+                        ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = ""
+                        this.quality = qualityFromText(url).let { if (it == Qualities.Unknown.value) Qualities.Unknown.value else it }
+                        this.headers = mediaHeaders
+                    }
+                )
+                return true
+            }
         }
 
         if (url.contains(".mp4", true) || url.contains("googlevideo", true) || url.contains("videoplayback", true)) {
@@ -218,7 +236,7 @@ object HentaiCopExtractor {
                     ) {
                         this.referer = referer
                         this.quality = qualityFromText(url).let { if (it == Qualities.Unknown.value) Qualities.Unknown.value else it }
-                        this.headers = headers
+                        this.headers = directHeaders
                     }
                 )
                 return true
@@ -226,6 +244,15 @@ object HentaiCopExtractor {
         }
 
         return false
+    }
+
+    private fun hlsHeaders(mainUrl: String): Map<String, String> {
+        val origin = HentaiCopUtils.originOf(mainUrl).orEmpty()
+        return mapOf(
+            "User-Agent" to HentaiCopUtils.USER_AGENT,
+            "Accept" to "*/*",
+            "Origin" to origin
+        ).filterValues { it.isNotBlank() }
     }
 
     private suspend fun collectSubtitles(
