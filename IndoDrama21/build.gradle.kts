@@ -1,9 +1,9 @@
-version = 4
+version = 5
 
 cloudstream {
     language = "id"
-    authors = listOf("sad25kag")
-    description = "IndoDrama21 active IP build with compact website-backed categories, stable episode mapping, and hardened playback extraction."
+    authors = listOf("BetbetMiro")
+    description = "IndoDrama21 HAR-backed active domain build with Muvipro card/detail parsing and Asiastream HLS playback resolver."
 
     /**
      * Status int as the following:
@@ -21,5 +21,5 @@ cloudstream {
     )
 
     isCrossPlatform = false
-    iconUrl = "https://www.google.com/s2/favicons?domain=89.124.111.64&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=indodrama21.online&sz=%size%"
 }
