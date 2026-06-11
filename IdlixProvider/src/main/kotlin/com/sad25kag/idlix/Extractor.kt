@@ -29,29 +29,21 @@ class Jeniusplay : ExtractorApi() {
         val document = app.get(url, referer = referer).document
         val hash = url.split("/").last().substringAfter("data=")
 
-        val m3uLink =
-            app
-                .post(
-                    url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
-                    data = mapOf("hash" to hash, "r" to "$referer"),
-                    referer = referer,
-                    headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
-                ).parsed<ResponseSource>()
-                .videoSource
-                .replace(".txt", ".m3u8")
+        val m3uLink = app.post(
+            url = "$mainUrl/player/index.php?data=$hash&do=getVideo",
+            data = mapOf("hash" to hash, "r" to "${referer.orEmpty()}"),
+            referer = referer,
+            headers = mapOf("X-Requested-With" to "XMLHttpRequest"),
+        ).parsed<ResponseSource>().videoSource.replace(".txt", ".m3u8")
 
-        generateM3u8(
-            name,
-            m3uLink,
-            mainUrl,
-        ).forEach(callback)
+        generateM3u8(name, m3uLink, mainUrl).forEach(callback)
 
         document.select("script").forEach { script ->
             if (script.data().contains("eval(function(p,a,c,k,e,d)")) {
-                val subData =
-                    getAndUnpack(script.data()).substringAfter("\"tracks\": [").substringBefore("],")
-                        .ifBlank { getAndUnpack(script.data()).substringAfter("\"tracks\":[").substringBefore("],") }
-                AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.map { subtitle ->
+                val unpacked = getAndUnpack(script.data())
+                val subData = unpacked.substringAfter("\"tracks\": [").substringBefore("],")
+                    .ifBlank { unpacked.substringAfter("\"tracks\":[").substringBefore("],") }
+                AppUtils.tryParseJson<List<Tracks>>("[$subData]")?.forEach { subtitle ->
                     subtitleCallback.invoke(
                         newSubtitleFile(
                             getLanguage(subtitle.label ?: ""),
@@ -76,9 +68,7 @@ class Jeniusplay : ExtractorApi() {
     )
 
     private fun getLanguage(str: String): String = when {
-        str.contains("indonesia", true) ||
-            str
-                .contains("bahasa", true) -> "Indonesian"
+        str.contains("indonesia", true) || str.contains("bahasa", true) -> "Indonesian"
         else -> str
     }
 }
@@ -94,13 +84,13 @@ class Majorplay : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ) {
-        val streamReferer = referer ?: mainUrl
+        val streamReferer = referer ?: url.originOfUrl()
         val response = app.get(
             url,
             referer = streamReferer,
             headers = mapOf(
                 "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "User-Agent" to IdlixUserAgent,
+                "User-Agent" to IDLIX_USER_AGENT,
             ),
         )
         val document = response.document
@@ -129,9 +119,7 @@ class Majorplay : ExtractorApi() {
                 .fixAgainst(url)
                 ?: continue
 
-            subtitleCallback.invoke(
-                newSubtitleFile(label, vttUrl),
-            )
+            subtitleCallback.invoke(newSubtitleFile(label, vttUrl))
         }
     }
 
@@ -156,7 +144,7 @@ class Majorplay : ExtractorApi() {
                         headers = mapOf(
                             "Referer" to iframeUrl,
                             "Origin" to iframeUrl.originOfUrl(),
-                            "User-Agent" to IdlixUserAgent,
+                            "User-Agent" to IDLIX_USER_AGENT,
                             "Accept" to "*/*",
                         ),
                     ).text
@@ -215,8 +203,7 @@ class Majorplay : ExtractorApi() {
 
         patterns.forEach { regex ->
             regex.findAll(normalized).forEach { match ->
-                val candidate = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
-                    ?: match.value
+                val candidate = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
                 candidate
                     .unescapeMajorplayPayload()
                     .fixAgainst(baseUrl)
@@ -270,5 +257,5 @@ class Majorplay : ExtractorApi() {
     }
 }
 
-private const val IdlixUserAgent =
+internal const val IDLIX_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36"
