@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 7
+version = 9
 
 cloudstream {
     description = "Maonime - Streaming Anime Subtitle Indonesia"

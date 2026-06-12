@@ -18,6 +18,7 @@ class Maonime : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
     private val maodriveUrl = "https://maodrive.xyz"
+    private val maodriveUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
 
     private val browserHeaders = mapOf(
         "User-Agent" to USER_AGENT,
@@ -133,6 +134,12 @@ class Maonime : MainAPI() {
     ): Boolean {
         val document = app.get(data, headers = browserHeaders).document
         val emitted = linkedSetOf<String>()
+
+        // HAR-backed fast path: Maonime episode pages expose exactly one Maodrive iframe.
+        // Emit the verified /stream/360/{id}/__001 MP4 directly before generic extractor probing,
+        // so playback does not depend on CloudStream having a Maodrive extractor.
+        emitMaodriveFromPage(document.html(), data, emitted, callback)
+        if (emitted.isNotEmpty()) return true
 
         suspend fun emitDirect(rawUrl: String?, label: String? = null, referer: String = data): Boolean {
             val videoUrl = rawUrl?.decodeUrlText()?.toAbsoluteUrl(referer)?.takeIf { it.isDirectMediaLike() } ?: return false
@@ -347,29 +354,76 @@ class Maonime : MainAPI() {
         // HAR evidence: Maodrive playback succeeds through /stream/360/{id}/__001 with
         // Referer=https://maodrive.xyz/videos/{id}, Range=bytes=0-, and no Origin header.
         if (!videoId.isNullOrBlank()) {
-            addMedia("360p", "/stream/360/$videoId/__001")
+            val absoluteStreamUrl = "$maodriveUrl/stream/360/$videoId/__001"
+            addMedia("360p", absoluteStreamUrl)
         }
-
-        val videoHeaders = mapOf(
-            "User-Agent" to USER_AGENT,
-            "Accept" to "*/*",
-            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.7,en;q=0.5",
-            "Referer" to fixedPlayerUrl,
-            "Range" to "bytes=0-",
-        )
 
         for ((label, url) in sources) {
-            if (!emitted.add(url.substringBefore("#"))) continue
-            val type = if (url.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-            callback.invoke(
-                newExtractorLink(name, "$name - Maodrive $label", url, type) {
-                    this.referer = fixedPlayerUrl
-                    this.quality = getQualityFromName(label)
-                    this.headers = videoHeaders
-                },
-            )
+            emitMaodriveDirect(url, label, fixedPlayerUrl, emitted, callback)
         }
     }
+
+    private fun emitMaodriveFromPage(
+        html: String,
+        pageReferer: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val normalized = html.decodeHtmlSource()
+        val ids = linkedSetOf<String>()
+
+        Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+            .findAll(normalized)
+            .forEach { match -> ids.add(match.groupValues[1]) }
+        Regex("""(?:src|value|data-src|data-url|data-file|data-player|data-video|data-iframe|data-embed)\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            .findAll(normalized)
+            .forEach { match ->
+                val raw = match.groupValues[1].decodeUrlText()
+                Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+                    .find(raw)?.groupValues?.getOrNull(1)?.let { ids.add(it) }
+                runCatching { base64Decode(raw) }.getOrNull()?.decodeUrlText()?.let { decoded ->
+                    Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+                        .find(decoded)?.groupValues?.getOrNull(1)?.let { ids.add(it) }
+                }
+            }
+
+        ids.forEach { id ->
+            val playerUrl = "$maodriveUrl/videos/$id"
+            val streamUrl = "$maodriveUrl/stream/360/$id/__001"
+            emitMaodriveDirect(streamUrl, "360p", playerUrl, emitted, callback)
+        }
+    }
+
+    private fun emitMaodriveDirect(
+        url: String,
+        label: String,
+        playerUrl: String,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        if (!url.isDirectMediaLike()) return
+        if (!emitted.add(url.substringBefore("#"))) return
+        val type = if (url.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        callback.invoke(
+            newExtractorLink(name, "$name - Maodrive $label", url, type) {
+                this.referer = playerUrl
+                this.quality = getQualityFromName(label)
+                this.headers = maodriveVideoHeaders(playerUrl)
+            },
+        )
+    }
+
+    private fun maodriveVideoHeaders(playerUrl: String): Map<String, String> = mapOf(
+        "User-Agent" to maodriveUserAgent,
+        "Accept" to "*/*",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding" to "identity;q=1, *;q=0",
+        "Referer" to playerUrl,
+        "Range" to "bytes=0-",
+        "Sec-Fetch-Site" to "same-origin",
+        "Sec-Fetch-Mode" to "no-cors",
+        "Sec-Fetch-Dest" to "video",
+    )
 
     private fun collectUrlsFromText(text: String, base: String): List<String> {
         val normalized = text.decodeHtmlSource()
