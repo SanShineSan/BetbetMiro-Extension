@@ -1,8 +1,8 @@
 // use an integer for version numbers
-version = 6
+version = 7
 
 cloudstream {
-    description = "MyNimeku — Portal Anime Indonesia (Stable HAR-backed detail, episode, ad-guard, and playback fallback fix)"
+    description = "MyNimeku — Portal Anime Indonesia (Stable HAR-backed parser, poster headers, episode/movie player resolver)"
     language = "id"
 
     authors = listOf("sad25kag")

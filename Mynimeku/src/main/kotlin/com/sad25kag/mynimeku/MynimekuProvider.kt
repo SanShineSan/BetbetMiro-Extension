@@ -44,6 +44,12 @@ class MynimekuProvider : MainAPI() {
         val episode: Int?
     )
 
+    private data class PlayerCandidate(
+        val url: String,
+        val label: String? = null,
+        val type: String? = null
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val pageUrl = buildPageUrl(request.data, page)
         val document = app.get(pageUrl, headers = defaultHeaders()).document
@@ -139,6 +145,7 @@ class MynimekuProvider : MainAPI() {
                 newAnimeLoadResponse(title, fixedUrl, type) {
                     posterUrl = poster
                     backgroundPosterUrl = poster
+                    posterHeaders = imageHeaders(fixedUrl)
                     plot = description
                     this.tags = tags
                     this.year = year
@@ -149,10 +156,12 @@ class MynimekuProvider : MainAPI() {
             }
 
             else -> {
-                val movieData = collectPlayerCandidates(document).firstOrNull { isPlayerCandidate(it) } ?: fixedUrl
+                val movieCandidates = collectPlayerCandidatesDetailed(document)
+                val movieData = encodePlayerData(fixedUrl, movieCandidates).takeIf { movieCandidates.isNotEmpty() } ?: fixedUrl
                 newMovieLoadResponse(title, fixedUrl, TvType.AnimeMovie, movieData) {
                     posterUrl = poster
                     backgroundPosterUrl = poster
+                    posterHeaders = imageHeaders(fixedUrl)
                     plot = description
                     this.tags = tags
                     this.year = year
@@ -168,7 +177,8 @@ class MynimekuProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val requestData = normalizeUrl(data)
+        val decodedBundle = decodePlayerData(data)
+        val requestData = decodedBundle?.first ?: normalizeUrl(data)
         val emittedKeys = linkedSetOf<String>()
         var emitted = false
 
@@ -180,39 +190,39 @@ class MynimekuProvider : MainAPI() {
             }
         }
 
-        suspend fun processCandidate(
-            raw: String?,
-            baseUrl: String = requestData,
-            referer: String = requestData,
-            qualityHint: String = raw.orEmpty()
-        ) {
-            val url = resolveUrl(raw, baseUrl) ?: return
+        suspend fun processCandidate(candidate: PlayerCandidate, baseUrl: String = requestData, referer: String = requestData) {
+            val url = resolveUrl(candidate.url, baseUrl) ?: return
             if (!isPlayerCandidate(url)) return
+            val qualityHint = candidate.label ?: candidate.url
 
             when {
                 isMyPlayerku(url) -> resolveMyPlayerku(url, referer, subtitleCallback, ::callbackOnce)
                 isGoogleDriveMedia(url) -> emitGoogleDrive(url, qualityHint, ::callbackOnce)
-                isDirectMedia(url) -> emitDirect(url, referer, ::callbackOnce)
+                isDirectMedia(url) || isWorkersMedia(url) -> emitDirect(url, referer, qualityHint, ::callbackOnce)
                 else -> runCatching {
                     loadExtractor(url, referer, subtitleCallback, ::callbackOnce)
                 }
             }
         }
 
+        decodedBundle?.second?.forEach { processCandidate(it, requestData, requestData) }
+        if (emitted) return true
+
         val page = runCatching {
             app.get(
                 requestData,
                 referer = mainUrl,
-                headers = defaultHeaders(mainUrl),
-                timeout = 20L
+                headers = pageHeaders(mainUrl),
+                timeout = 25L
             ).document
         }.getOrNull()
 
         if (page != null) {
-            collectPlayerCandidates(page).forEach { processCandidate(it, requestData, requestData) }
+            val candidates = collectPlayerCandidatesDetailed(page)
+            candidates.forEach { processCandidate(it, requestData, requestData) }
         }
 
-        processCandidate(requestData, mainUrl, mainUrl)
+        processCandidate(PlayerCandidate(requestData, "Fallback"), mainUrl, mainUrl)
         return emitted
     }
 
@@ -249,7 +259,7 @@ class MynimekuProvider : MainAPI() {
                     emitted = true
                 }
                 isDirectMedia(resolved) || isWorkersMedia(resolved) -> {
-                    emitDirect(resolved, playerUrl, callback)
+                    emitDirect(resolved, playerUrl, playerTitle, callback)
                     emitted = true
                 }
                 isPlayerCandidate(resolved) && !canonicalLink(resolved).equals(canonicalLink(playerUrl), true) -> {
@@ -501,6 +511,7 @@ class MynimekuProvider : MainAPI() {
     private fun CardData.toSearchResponse(): SearchResponse {
         return newAnimeSearchResponse(title, url, type) {
             posterUrl = poster
+            posterHeaders = imageHeaders(url)
             episode?.let { addSub(it) }
         }
     }
@@ -680,22 +691,37 @@ class MynimekuProvider : MainAPI() {
     }
 
     private fun collectPlayerCandidates(document: Document): List<String> {
-        val candidates = linkedSetOf<String>()
+        return collectPlayerCandidatesDetailed(document).map { it.url }
+    }
+
+    private fun collectPlayerCandidatesDetailed(document: Document): List<PlayerCandidate> {
+        val candidates = arrayListOf<PlayerCandidate>()
+
+        document.select(".mynimeku-episode-server-btn[data-player-url], [data-player-url]").forEach { element ->
+            val url = element.attr("data-player-url").trim()
+            val label = element.attr("data-player-host").ifBlank { element.text() }.trim()
+            val type = element.attr("data-player-type").trim()
+            if (url.isNotBlank()) candidates.add(PlayerCandidate(url, label, type))
+        }
 
         document.select(
             "iframe[src], iframe[data-src], iframe[data-litespeed-src], iframe[data-lazy-src], " +
                 "video[src], video[data-src], source[src], embed[src], object[data]"
         ).forEach { element ->
-            candidates.add(element.iframeAttr().orEmpty())
-            candidates.add(element.attr("src"))
-            candidates.add(element.attr("data-src"))
-            candidates.add(element.attr("data-litespeed-src"))
-            candidates.add(element.attr("data-lazy-src"))
-            candidates.add(element.attr("data"))
+            listOf(
+                element.iframeAttr(),
+                element.attr("src"),
+                element.attr("data-src"),
+                element.attr("data-litespeed-src"),
+                element.attr("data-lazy-src"),
+                element.attr("data")
+            ).filter { !it.isNullOrBlank() }
+                .forEach { candidates.add(PlayerCandidate(it!!, element.attr("title").ifBlank { element.attr("aria-label") })) }
         }
 
         document.select(
-            "option[value], [data-video], [data-src], [data-url], [data-iframe], [data-player], [data-player-url], [data-link], [data-file]"
+            "option[value], [data-video], [data-src], [data-url], [data-iframe], " +
+                "[data-player], [data-link], [data-file]"
         ).forEach { element ->
             val values = listOf(
                 element.attr("value"),
@@ -704,66 +730,125 @@ class MynimekuProvider : MainAPI() {
                 element.attr("data-url"),
                 element.attr("data-iframe"),
                 element.attr("data-player"),
-                element.attr("data-player-url"),
                 element.attr("data-link"),
                 element.attr("data-file")
             )
 
-            for (value in values) {
-                if (value.isBlank()) continue
+            values.filter { it.isNotBlank() }.forEach { value ->
                 decodeServerValue(value)?.let { decoded ->
                     Jsoup.parse(decoded).select("iframe[src], video[src], source[src], embed[src], a[href]")
                         .forEach { embedded ->
-                            candidates.add(embedded.iframeAttr().orEmpty())
-                            candidates.add(embedded.attr("src"))
-                            candidates.add(embedded.attr("href"))
+                            listOf(embedded.iframeAttr(), embedded.attr("src"), embedded.attr("href"))
+                                .filter { !it.isNullOrBlank() }
+                                .forEach { candidates.add(PlayerCandidate(it!!, element.text())) }
                         }
-                    candidates.add(decoded)
-                } ?: candidates.add(value)
+                    candidates.add(PlayerCandidate(decoded, element.text()))
+                } ?: candidates.add(PlayerCandidate(value, element.text()))
             }
         }
 
         document.select("a[href]").forEach { element ->
             val href = element.attr("abs:href").ifBlank { element.attr("href") }
-            if (isLikelyPlayerValue(href)) candidates.add(href)
+            val label = element.text().trim()
+            if (isLikelyPlayerValue(href) || href.contains("file.mydriveku.my.id/api/v1", true)) {
+                candidates.add(PlayerCandidate(href, label))
+                toMyPlayerkuCandidate(href)?.let { converted -> candidates.add(PlayerCandidate(converted, label)) }
+            }
         }
 
         val html = document.html()
         Regex("""https?:\\?/\\?/[^"'<>\s]+""")
             .findAll(html)
-            .forEach { candidates.add(it.value) }
+            .forEach { candidates.add(PlayerCandidate(it.value)) }
 
         Regex("""(?i)(?:src|file|url|source)\s*[:=]\s*["']([^"']+)["']""")
             .findAll(html)
-            .forEach { candidates.add(it.groupValues[1]) }
+            .forEach { candidates.add(PlayerCandidate(it.groupValues[1])) }
 
         return candidates
-            .map { cleanCandidate(it) }
-            .filter { it.isNotBlank() }
-            .distinct()
+            .mapNotNull { candidate ->
+                val clean = cleanCandidate(candidate.url)
+                if (clean.isBlank()) null else candidate.copy(url = clean)
+            }
+            .filter { !isBadUrl(it.url) }
+            .distinctBy { canonicalLink(it.url) + "|" + (it.label ?: "") }
             .sortedWith(
-                compareByDescending<String> { playerCandidatePriority(it) }
-                    .thenBy { it.lowercase() }
+                compareByDescending<PlayerCandidate> { playerCandidatePriority(it.url) + qualityPriority(it.label.orEmpty()) }
+                    .thenBy { it.url.lowercase() }
             )
     }
 
-    private suspend fun emitDirect(link: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private fun qualityPriority(label: String): Int {
+        return when {
+            label.contains("1080", true) -> 30
+            label.contains("720", true) -> 20
+            label.contains("480", true) -> 10
+            label.contains("360", true) -> 5
+            else -> 0
+        }
+    }
+
+    private fun encodePlayerData(referer: String, candidates: List<PlayerCandidate>): String {
+        if (candidates.isEmpty()) return referer
+        val encoded = candidates
+            .take(24)
+            .joinToString("||") { candidate ->
+                listOf(candidate.url, candidate.label.orEmpty(), candidate.type.orEmpty())
+                    .joinToString("~~") { java.net.URLEncoder.encode(it, "UTF-8") }
+            }
+        return "mynimekuplayers::$referer:::$encoded"
+    }
+
+    private fun decodePlayerData(data: String): Pair<String, List<PlayerCandidate>>? {
+        val prefix = "mynimekuplayers::"
+        if (!data.startsWith(prefix)) return null
+        val parts = data.removePrefix(prefix).split(":::", limit = 2)
+        if (parts.size != 2) return null
+        val referer = normalizeUrl(parts[0])
+        val candidates = parts[1].split("||")
+            .mapNotNull { raw ->
+                val fields = raw.split("~~")
+                val url = fields.getOrNull(0)?.let { java.net.URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                if (url.isBlank()) return@mapNotNull null
+                PlayerCandidate(
+                    url = url,
+                    label = fields.getOrNull(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() },
+                    type = fields.getOrNull(2)?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() }
+                )
+            }
+        return referer to candidates
+    }
+
+    private fun toMyPlayerkuCandidate(url: String): String? {
+        val lower = url.lowercase()
+        val token = url.substringAfter("/api/v1/", "").trim('/')
+        if (token.isBlank()) return null
+        return when {
+            lower.contains("file.mydriveku.my.id/api/v1/drive/") -> "https://players.myplayerku.my.id/drive/${token.substringAfter("drive/")}"
+            lower.contains("file.mydriveku.my.id/api/v1/public/") -> "https://players.myplayerku.my.id/public/${token.substringAfter("public/")}"
+            lower.contains("file.mydriveku.my.id/api/v1/private/") -> "https://players.myplayerku.my.id/private/${token.substringAfter("private/")}"
+            else -> null
+        }
+    }
+
+    private suspend fun emitDirect(link: String, referer: String, qualityHint: String = link, callback: (ExtractorLink) -> Unit): Boolean {
         if (!(isDirectMedia(link) || isWorkersMedia(link)) || isBadUrl(link)) return false
 
         callback(
             newExtractorLink(
-                source = name,
-                name = name,
+                source = if (isWorkersMedia(link)) "MyPlayerku Workers" else name,
+                name = if (isWorkersMedia(link)) "MyPlayerku Workers" else name,
                 url = link,
                 type = if (isM3u8Media(link)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
                 this.referer = referer
-                this.quality = getQualityFromName(link).takeIf { it != Qualities.Unknown.value }
+                this.quality = getQualityFromName(qualityHint).takeIf { it != Qualities.Unknown.value }
+                    ?: getQualityFromName(link).takeIf { it != Qualities.Unknown.value }
                     ?: when {
-                        link.contains("1080", true) -> Qualities.P1080.value
-                        link.contains("720", true) -> Qualities.P720.value
-                        link.contains("480", true) -> Qualities.P480.value
-                        link.contains("360", true) -> Qualities.P360.value
+                        qualityHint.contains("1080", true) || link.contains("1080", true) -> Qualities.P1080.value
+                        qualityHint.contains("720", true) || link.contains("720", true) -> Qualities.P720.value
+                        qualityHint.contains("480", true) || link.contains("480", true) -> Qualities.P480.value
+                        qualityHint.contains("360", true) || link.contains("360", true) -> Qualities.P360.value
                         else -> Qualities.Unknown.value
                     }
                 this.headers = mapOf(
@@ -885,6 +970,7 @@ class MynimekuProvider : MainAPI() {
             lower.contains("stream") ||
             lower.contains("video") ||
             lower.contains("drive.google.com") ||
+            lower.contains("file.mydriveku.my.id/api/v1") ||
             lower.contains("mp4upload") ||
             lower.contains("filemoon") ||
             lower.contains("streamtape") ||
@@ -1133,13 +1219,24 @@ class MynimekuProvider : MainAPI() {
             lower.contains("admanager")
     }
 
-    private fun defaultHeaders(referer: String = mainUrl): Map<String, String> {
+    private fun imageHeaders(referer: String = mainUrl): Map<String, String> {
+        return mapOf(
+            "referer" to referer,
+            "User-Agent" to USER_AGENT,
+            "Accept" to "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        )
+    }
+
+    private fun pageHeaders(referer: String = mainUrl): Map<String, String> {
         return mapOf(
             "User-Agent" to USER_AGENT,
             "Referer" to referer,
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
         )
     }
+
+    private fun defaultHeaders(referer: String = mainUrl): Map<String, String> = pageHeaders(referer)
 
     private fun Element.imageAttr(): String? {
         val image = if (tagName().equals("img", true)) this else selectFirst("img")
