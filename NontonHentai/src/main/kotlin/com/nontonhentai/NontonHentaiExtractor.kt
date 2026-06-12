@@ -81,7 +81,7 @@ object NontonHentaiExtractor {
 
         // Direct media on the current page wins. Do not keep crawling ads/scripts after a video is emitted.
         for (media in extractMedia(normalizedPage, normalizedPage, document)) {
-            if (emitMedia(providerName, mainUrl, media.name, media.url, media.referer, seenLinks, emitLink)) return true
+            if (emitMedia(providerName, media.name, media.url, media.referer, seenLinks, emitLink)) return true
         }
 
         // Prefer source-backed player/ajax entries. Stop on first working HLS/MP4 callback.
@@ -121,7 +121,7 @@ object NontonHentaiExtractor {
         if (isPseudoUrl(normalizedServer)) return false
 
         if (isDirectMedia(normalizedServer) || isLikelyHlsCandidate(normalizedServer)) {
-            return emitMedia(providerName, NontonHentaiSeeds.MAIN_URL, server.name, normalizedServer, server.referer, seenLinks, callback)
+            return emitMedia(providerName, server.name, normalizedServer, server.referer, seenLinks, callback)
         }
 
         // Known CloudStream extractors first. If one emits a link, stop here.
@@ -145,13 +145,13 @@ object NontonHentaiExtractor {
             val embedDocument = Jsoup.parse(unpackedText, normalizedServer)
             collectSubtitles(normalizedServer, embedDocument, subtitleCallback)
 
-            // HAR-backed path: play.php -> var p -> kodeRHS -> JWPlayer sources[].file (.m3u8).
+            // HAR-backed path: episode iframe -> hentaicop.com/play.php -> var p -> kodeRHS -> JWPlayer sources[].file (.m3u8).
             for (item in extractMedia(normalizedServer, normalizedServer, embedDocument)) {
-                if (emitMedia(providerName, NontonHentaiSeeds.MAIN_URL, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)) return true
+                if (emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)) return true
             }
 
             for (item in extractMediaFromText(normalizedServer, normalizedServer, unpackedText)) {
-                if (emitMedia(providerName, NontonHentaiSeeds.MAIN_URL, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)) return true
+                if (emitMedia(providerName, item.name.ifBlank { server.name }, item.url, item.referer, seenLinks, callback)) return true
             }
         }
 
@@ -175,7 +175,6 @@ object NontonHentaiExtractor {
 
     private suspend fun emitMedia(
         providerName: String,
-        mainUrl: String,
         name: String,
         url: String,
         referer: String,
@@ -184,7 +183,7 @@ object NontonHentaiExtractor {
     ): Boolean {
         if (isPseudoUrl(url)) return false
         var emitted = false
-        val mediaHeaders = hlsHeaders(mainUrl)
+        val mediaHeaders = hlsHeaders(referer)
         val directHeaders = videoHeaders(referer)
 
         if (url.contains(".m3u8", true) || isLikelyHlsCandidate(url)) {
@@ -242,8 +241,8 @@ object NontonHentaiExtractor {
         return false
     }
 
-    private fun hlsHeaders(mainUrl: String): Map<String, String> {
-        val origin = NontonHentaiUtils.originOf(mainUrl).orEmpty()
+    private fun hlsHeaders(referer: String): Map<String, String> {
+        val origin = NontonHentaiUtils.originOf(referer).orEmpty()
         return mapOf(
             "User-Agent" to NontonHentaiUtils.USER_AGENT,
             "Accept" to "*/*",
@@ -304,7 +303,7 @@ object NontonHentaiExtractor {
         document.select("iframe[src], embed[src]").forEachIndexed { index, iframe ->
             val url = absoluteUrl(pageUrl, iframe.attr("src")) ?: return@forEachIndexed
             if (isPseudoUrl(url) || !isResolvablePlayerUrl(url)) return@forEachIndexed
-            val name = cleanText(iframe.attr("title")).ifBlank { "Server ${index + 1}" }
+            val name = cleanText(iframe.attr("title")).ifBlank { cleanText(iframe.parent()?.text()).ifBlank { "Server ${index + 1}" } }
             servers.add(NontonHentaiServer(name, url, pageUrl))
         }
 
@@ -459,7 +458,9 @@ object NontonHentaiExtractor {
         val lower = url.lowercase()
         if (isPseudoUrl(lower)) return false
         if (isDirectMedia(lower) || isLikelyHlsCandidate(lower)) return true
-        return lower.contains("nontonhentai.net/play.php") ||
+        return lower.contains("hentaicop.com/play.php") ||
+            lower.contains("/play.php") ||
+            lower.contains("nontonhentai.net/play.php") ||
             lower.contains("hepidrive") ||
             lower.contains("/embed") ||
             lower.contains("/player") ||
