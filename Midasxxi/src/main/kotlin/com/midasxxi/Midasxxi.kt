@@ -44,7 +44,6 @@ class Midasxxi : MainAPI() {
         "$mainUrl/genre/fantasy" to "Fantasy",
         "$mainUrl/genre/history" to "History",
         "$mainUrl/genre/horror" to "Horror",
-        "$mainUrl/genre/j-drama" to "J-Drama",
         "$mainUrl/genre/j-movie" to "J-Movie",
         "$mainUrl/genre/k-drama" to "K-Drama",
         "$mainUrl/genre/k-movie" to "K-Movie",
@@ -55,41 +54,20 @@ class Midasxxi : MainAPI() {
         "$mainUrl/genre/live-action" to "Live Action",
         "$mainUrl/genre/sci-fi-fantasy" to "Sci-Fi & Fantasy",
         "$mainUrl/genre/science-fiction" to "Science Fiction",
-        "$mainUrl/genre/thai-drama" to "Thai-Drama",
-        "$mainUrl/genre/thai-movie" to "Thai-Movie",
         "$mainUrl/genre/thriller" to "Thriller",
         "$mainUrl/genre/tv-movie" to "TV Movie",
         "$mainUrl/genre/war" to "War",
         "$mainUrl/genre/western" to "Western",
 
-        "$mainUrl/release-year/2025" to "2025",
-        "$mainUrl/release-year/2024" to "2024",
-        "$mainUrl/release-year/2023" to "2023",
-        "$mainUrl/release-year/2022" to "2022",
-
-        "$mainUrl/country/usa" to "USA",
-        "$mainUrl/country/united-kingdom" to "United Kingdom",
-        "$mainUrl/country/china" to "China",
-        "$mainUrl/country/philippines" to "Philippines",
-        "$mainUrl/country/india" to "India",
-        "$mainUrl/country/france" to "France",
-        "$mainUrl/country/japan" to "Japan",
-        "$mainUrl/country/mexico" to "Mexico",
-        "$mainUrl/country/south-korea" to "South Korea",
-
         "$mainUrl/network/apple-tv" to "Apple TV+",
-        "$mainUrl/network/amazon" to "Amazon",
         "$mainUrl/network/disney" to "Disney+",
         "$mainUrl/network/hbo" to "HBO",
         "$mainUrl/network/netflix" to "Netflix",
-        "$mainUrl/network/the-cw" to "The CW",
 
         "$mainUrl/tag/dc-movies" to "DCEU Movies",
         "$mainUrl/tag/marvel" to "MCU Movies",
         "$mainUrl/tag/disney" to "Disney+ Movie and Series",
-        "$mainUrl/tag/netflix" to "Netflix Movie and Series",
-        "$mainUrl/tag/marvel-studios-series" to "Marvel Studios Series",
-        "$mainUrl/tag/coming-soon-on-midasxxi" to "Coming Soon"
+        "$mainUrl/tag/netflix" to "Netflix Movie and Series"
     )
 
     private fun getBaseUrl(url: String): String {
@@ -486,5 +464,4 @@ class Midasxxi : MainAPI() {
     data class AesData(
         @JsonProperty("m") val m: String,
     )
-
 }
