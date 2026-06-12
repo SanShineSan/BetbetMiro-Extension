@@ -14,7 +14,6 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.USER_AGENT
-import com.lagradost.cloudstream3.addDate
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
@@ -32,7 +31,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.utils.getQualityFromName
-import com.lagradost.cloudstream3.utils.httpsify
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
@@ -62,9 +60,7 @@ class Melongmovie : MainAPI() {
 
     override val mainPage = mainPageOf(
         "latest-movies/page/%d/" to "Latest Movies",
-        "latest-episodes/page/%d/" to "Latest Episodes",
         "popular/page/%d/" to "Popular",
-        "series-list/page/%d/" to "Series List",
 
         "genre/action/page/%d/" to "Action",
         "genre/drama/page/%d/" to "Drama",
@@ -80,14 +76,12 @@ class Melongmovie : MainAPI() {
         "genre/family/page/%d/" to "Family",
         "genre/war/page/%d/" to "War",
         "genre/mystery/page/%d/" to "Mystery",
-        "genre/military/page/%d/" to "Military",
 
         "quality/bluray/page/%d/" to "Bluray",
         "quality/webdl/page/%d/" to "WebDL",
         "quality/hdrip/page/%d/" to "HDRip",
         "quality/webrip/page/%d/" to "WEBRip",
         "quality/dvdrip/page/%d/" to "DVDRip",
-        "quality/hc-hdrip/page/%d/" to "HC-HDRip",
 
         "country/usa/page/%d/" to "USA",
         "country/uk/page/%d/" to "UK",
@@ -123,8 +117,7 @@ class Melongmovie : MainAPI() {
             timeout = 25L
         ).document
 
-        val items = parseCards(document)
-            .distinctBy { it.url }
+        val items = parseCards(document).distinctBy { it.url }
 
         return newHomePageResponse(
             request.name,
@@ -133,9 +126,7 @@ class Melongmovie : MainAPI() {
         )
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse> {
-        return search(query)
-    }
+    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
         val keyword = query.trim()
@@ -159,7 +150,6 @@ class Melongmovie : MainAPI() {
             }.getOrNull() ?: continue
 
             val results = parseCards(document).distinctBy { it.url }
-
             if (results.isNotEmpty()) return results
         }
 
@@ -183,68 +173,19 @@ class Melongmovie : MainAPI() {
             ?: name
 
         val poster = getPoster(document)
-
-        val plot = document.selectFirst(
-            ".entry-content p, " +
-                ".wp-content p, " +
-                ".sinopsis p, " +
-                ".sinopsis, " +
-                ".description, " +
-                ".desc"
-        )?.text()
-            ?.trim()
-            ?.takeIf { it.length > 20 }
-
-        val pageText = document.text()
-        val type = guessType(url, pageText, title)
-
-        val tags = document.select("a[href*='/genre/']")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-
-        val actors = document.select(
-            "a[href*='/stars/'], " +
-                "a[href*='/star/'], " +
-                "a[href*='/cast/'], " +
-                "li:contains(Stars:) a"
-        ).map { it.text().trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .map { Actor(it) }
-
-        val rating = Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
-            .find(pageText)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: document.selectFirst(".rating, .imdb, [itemprop=ratingValue]")?.text()
-
-        val year = extractYear(pageText)
+        val plot = parsePlot(document)
+        val pageText = getDetailText(document)
+        val episodes = parseEpisodes(document, url, poster, plot)
+        val type = guessType(url, pageText, title, episodes)
+        val tags = parseTags(document)
+        val actors = parseActors(document)
+        val rating = parseRating(document, pageText)
+        val year = extractYear(title) ?: extractYear(pageText)
         val duration = parseDuration(pageText)
-
-        val trailer = document.selectFirst(
-            "a[href*='youtube.com'], " +
-                "a[href*='youtu.be'], " +
-                "iframe[src*='youtube.com'], " +
-                "iframe[src*='youtu.be']"
-        )?.let {
-            it.attr("href")
-                .ifBlank { it.attr("src") }
-        }?.takeIf { it.isNotBlank() }
-
-        val recommendations = document.select(
-            ".related article, " +
-                ".related-post article, " +
-                ".los article.box, " +
-                "article.box, " +
-                "article:has(a):has(img)"
-        ).mapNotNull { it.toSearchResult() }
-            .filter { it.url != url }
-            .distinctBy { it.url }
+        val trailer = parseTrailer(document)
+        val recommendations = parseRecommendations(document, url)
 
         return if (type == TvType.TvSeries || type == TvType.AsianDrama) {
-            val episodes = parseEpisodes(document, url, poster, plot)
-
             newTvSeriesLoadResponse(
                 title,
                 url,
@@ -297,7 +238,6 @@ class Melongmovie : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = normalizeUrl(data, mainUrl)
-
         val response = app.get(
             pageUrl,
             headers = headers,
@@ -308,7 +248,6 @@ class Melongmovie : MainAPI() {
 
         val document = response.document
         val html = response.text.cleanEscaped()
-
         val directLinks = linkedSetOf<String>()
         val embedLinks = linkedSetOf<String>()
 
@@ -316,9 +255,7 @@ class Melongmovie : MainAPI() {
         collectDooplayAjax(document, pageUrl, directLinks, embedLinks)
         collectMuviproAjax(document, pageUrl, directLinks, embedLinks)
 
-        extractPlayableUrls(html).forEach { raw ->
-            addCandidate(raw, pageUrl, directLinks, embedLinks)
-        }
+        extractPlayableUrls(html).forEach { raw -> addCandidate(raw, pageUrl, directLinks, embedLinks) }
 
         val unpacked = runCatching {
             if (!getPacked(html).isNullOrEmpty()) getAndUnpack(html) else null
@@ -331,7 +268,6 @@ class Melongmovie : MainAPI() {
         }
 
         var found = false
-
         directLinks
             .filterNot { isBadPlayableUrl(it) }
             .distinct()
@@ -343,56 +279,37 @@ class Melongmovie : MainAPI() {
 
         if (found) return true
 
-        prioritizeEmbeds(embedLinks)
-            .take(12)
-            .forEach { embed ->
-                val success = runCatching {
-                    loadExtractor(
-                        embed,
-                        pageUrl,
-                        subtitleCallback,
-                        callback
-                    )
-                }.getOrDefault(false)
+        prioritizeEmbeds(embedLinks).take(12).forEach { embed ->
+            val success = runCatching {
+                loadExtractor(embed, pageUrl, subtitleCallback, callback)
+            }.getOrDefault(false)
 
-                if (success) return true
+            if (success) return true
 
-                resolveNestedLinks(embed, pageUrl).forEach { nested ->
-                    val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
+            resolveNestedLinks(embed, pageUrl).forEach { nested ->
+                val fixed = normalizeUrl(nested, embed).replace(".txt", ".m3u8")
 
-                    when {
-                        isBadPlayableUrl(fixed) -> Unit
+                when {
+                    isBadPlayableUrl(fixed) -> Unit
+                    isHlsLike(fixed) || fixed.contains(".mp4", true) || fixed.contains(".webm", true) -> {
+                        emitDirectLink(fixed, embed, callback)
+                        return true
+                    }
+                    fixed.startsWith("http", true) -> {
+                        val nestedSuccess = runCatching {
+                            loadExtractor(fixed, embed, subtitleCallback, callback)
+                        }.getOrDefault(false)
 
-                        isHlsLike(fixed) ||
-                            fixed.contains(".mp4", true) ||
-                            fixed.contains(".webm", true) -> {
-                            emitDirectLink(fixed, embed, callback)
-                            return true
-                        }
-
-                        fixed.startsWith("http", true) -> {
-                            val nestedSuccess = runCatching {
-                                loadExtractor(
-                                    fixed,
-                                    embed,
-                                    subtitleCallback,
-                                    callback
-                                )
-                            }.getOrDefault(false)
-
-                            if (nestedSuccess) return true
-                        }
+                        if (nestedSuccess) return true
                     }
                 }
             }
+        }
 
         return false
     }
 
-    private fun buildMainPageUrl(
-        data: String,
-        page: Int
-    ): String {
+    private fun buildMainPageUrl(data: String, page: Int): String {
         val currentPage = page.coerceAtLeast(1)
         val path = if (currentPage == 1) {
             data
@@ -404,11 +321,7 @@ class Melongmovie : MainAPI() {
             data.format(currentPage)
         }.trimStart('/')
 
-        return if (path.startsWith("http", true)) {
-            path
-        } else {
-            "${mainUrl.trimEnd('/')}/$path"
-        }
+        return if (path.startsWith("http", true)) path else "${mainUrl.trimEnd('/')}/$path"
     }
 
     private fun parseCards(document: Document): List<SearchResponse> {
@@ -424,16 +337,12 @@ class Melongmovie : MainAPI() {
                 ".content article:has(a):has(img), " +
                 ".movie-item:has(a):has(img)"
         ).forEach { element ->
-            element.toSearchResult()?.let { item ->
-                results[item.url] = item
-            }
+            element.toSearchResult()?.let { item -> results[item.url] = item }
         }
 
         if (results.isEmpty()) {
             document.select("a[href]:has(img)").forEach { element ->
-                element.toSearchResult()?.let { item ->
-                    results[item.url] = item
-                }
+                element.toSearchResult()?.let { item -> results[item.url] = item }
             }
         }
 
@@ -453,7 +362,6 @@ class Melongmovie : MainAPI() {
         if (isNavigationUrl(href)) return null
 
         val image = selectFirst("img") ?: anchor.selectFirst("img")
-
         val title = listOf(
             selectFirst("h2")?.text(),
             selectFirst("h3")?.text(),
@@ -473,25 +381,16 @@ class Melongmovie : MainAPI() {
         if (title.length < 2) return null
 
         val poster = fixUrlNull(image?.getImageAttr())
-
-        val type = guessType(href, text(), title)
+        val type = guessType(href, text(), title, emptyList())
 
         return if (type == TvType.TvSeries || type == TvType.AsianDrama) {
-            newTvSeriesSearchResponse(
-                title,
-                href,
-                type
-            ) {
+            newTvSeriesSearchResponse(title, href, type) {
                 posterUrl = poster
                 year = extractYear(title) ?: extractYear(text())
                 score = parseScore(text())
             }
         } else {
-            newMovieSearchResponse(
-                title,
-                href,
-                TvType.Movie
-            ) {
+            newMovieSearchResponse(title, href, TvType.Movie) {
                 posterUrl = poster
                 year = extractYear(title) ?: extractYear(text())
                 score = parseScore(text())
@@ -499,27 +398,24 @@ class Melongmovie : MainAPI() {
         }
     }
 
-    private fun parseEpisodes(
-        document: Document,
-        currentUrl: String,
-        poster: String?,
-        plot: String?
-    ): List<Episode> {
+    private fun parseEpisodes(document: Document, currentUrl: String, poster: String?, plot: String?): List<Episode> {
         val episodes = linkedMapOf<String, Episode>()
 
         document.select(
-            "a[href*='episode'], " +
-                "a[href*='ep-'], " +
-                "a[href*='/season-'], " +
-                ".episode-list a[href], " +
+            ".episode-list a[href], " +
                 ".eplister a[href], " +
                 ".episodelist a[href], " +
                 ".les-content a[href], " +
-                ".season a[href], " +
-                ".series a[href]"
+                ".season a[href*='episode'], " +
+                ".series a[href*='episode'], " +
+                "a[href*='/episode-'], " +
+                "a[href*='-episode-'], " +
+                "a[href*='-ep-'], " +
+                "a[href*='/season-']"
         ).forEachIndexed { index, element ->
             val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
             if (!href.startsWith(mainUrl) || isNavigationUrl(href)) return@forEachIndexed
+            if (href == currentUrl) return@forEachIndexed
 
             val text = element.text().trim()
             val episodeNumber = extractEpisodeNumber("$text $href") ?: index + 1
@@ -534,8 +430,98 @@ class Melongmovie : MainAPI() {
             }
         }
 
-        return episodes.values
-            .sortedWith(compareBy<Episode> { it.season ?: 1 }.thenBy { it.episode ?: 1 })
+        return episodes.values.sortedWith(compareBy<Episode> { it.season ?: 1 }.thenBy { it.episode ?: 1 })
+    }
+
+    private fun getDetailText(document: Document): String {
+        return document.selectFirst(".entry-content, .wp-content, .single, .post, article, main")?.text()
+            ?: document.text()
+    }
+
+    private fun parsePlot(document: Document): String? {
+        val selectors = listOf(
+            ".entry-content p",
+            ".wp-content p",
+            ".sinopsis p",
+            ".sinopsis",
+            ".description",
+            ".desc",
+            "article p"
+        )
+
+        return selectors.asSequence()
+            .mapNotNull { document.selectFirst(it)?.text()?.trim() }
+            .map { it.cleanPlot() }
+            .firstOrNull { it.length > 20 && !isBadMetadataText(it) }
+    }
+
+    private fun parseTags(document: Document): List<String> {
+        val selectors = listOf(
+            "li:matchesOwn((?i)genre) a[href*='/genre/']",
+            ".genres a[href*='/genre/']",
+            ".genre a[href*='/genre/']",
+            ".meta a[href*='/genre/']",
+            ".entry-content a[href*='/genre/']",
+            ".wp-content a[href*='/genre/']",
+            "article a[href*='/genre/']"
+        )
+
+        return selectors.asSequence()
+            .flatMap { document.select(it).asSequence() }
+            .filterNot { it.hasNavigationParent() }
+            .map { it.text().trim() }
+            .filter { it.isNotBlank() && it.length <= 32 }
+            .distinct()
+            .take(6)
+            .toList()
+    }
+
+    private fun parseActors(document: Document): List<Actor> {
+        return document.select(
+            ".entry-content a[href*='/stars/'], " +
+                ".entry-content a[href*='/star/'], " +
+                ".entry-content a[href*='/cast/'], " +
+                ".wp-content a[href*='/stars/'], " +
+                ".wp-content a[href*='/star/'], " +
+                ".wp-content a[href*='/cast/'], " +
+                "article a[href*='/stars/'], " +
+                "article a[href*='/star/'], " +
+                "article a[href*='/cast/'], " +
+                "li:contains(Stars:) a"
+        ).filterNot { it.hasNavigationParent() }
+            .map { it.text().trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .map { Actor(it) }
+    }
+
+    private fun parseRating(document: Document, pageText: String): String? {
+        return document.selectFirst(".rating, .imdb, [itemprop=ratingValue]")?.text()
+            ?: Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
+                .find(pageText)
+                ?.groupValues
+                ?.getOrNull(1)
+    }
+
+    private fun parseTrailer(document: Document): String? {
+        return document.selectFirst(
+            "a[href*='youtube.com'], " +
+                "a[href*='youtu.be'], " +
+                "iframe[src*='youtube.com'], " +
+                "iframe[src*='youtu.be']"
+        )?.let { it.attr("href").ifBlank { it.attr("src") } }?.takeIf { it.isNotBlank() }
+    }
+
+    private fun parseRecommendations(document: Document, currentUrl: String): List<SearchResponse> {
+        return document.select(
+            ".related article, " +
+                ".related-post article, " +
+                ".los article.box, " +
+                "article.box, " +
+                "article:has(a):has(img)"
+        ).mapNotNull { it.toSearchResult() }
+            .filter { it.url != currentUrl }
+            .distinctBy { it.url }
     }
 
     private suspend fun collectDooplayAjax(
@@ -552,13 +538,10 @@ class Melongmovie : MainAPI() {
                 "div[data-post][data-nume][data-type]"
         )
 
-        if (options.isEmpty()) return
-
         options.forEach { option ->
             val post = option.attr("data-post").trim()
             val nume = option.attr("data-nume").trim()
             val type = option.attr("data-type").trim()
-
             if (post.isBlank() || nume.isBlank() || type.isBlank()) return@forEach
             if (nume.contains("trailer", true) || option.text().contains("trailer", true)) return@forEach
 
@@ -631,33 +614,12 @@ class Melongmovie : MainAPI() {
         embedLinks: MutableSet<String>
     ) {
         document.select(
-            "iframe[src], " +
-                "iframe[data-src], " +
-                "iframe[data-litespeed-src], " +
-                "iframe[data-lazy-src], " +
-                "embed[src], " +
-                "object[data], " +
-                "video[src], " +
-                "video[data-src], " +
-                "video source[src], " +
-                "source[src], " +
-                "a[href], " +
-                "[data-src], " +
-                "[data-file], " +
-                "[data-video], " +
-                "[data-url], " +
-                "[data-embed], " +
-                "[data-iframe]"
+            "iframe[src], iframe[data-src], iframe[data-litespeed-src], iframe[data-lazy-src], " +
+                "embed[src], object[data], video[src], video[data-src], video source[src], source[src], " +
+                "a[href], [data-src], [data-file], [data-video], [data-url], [data-embed], [data-iframe]"
         ).forEach { element ->
             val label = element.text().lowercase()
-
-            if (
-                label.contains("trailer") ||
-                label.contains("facebook") ||
-                label.contains("twitter") ||
-                label.contains("whatsapp") ||
-                label.contains("telegram")
-            ) {
+            if (label.contains("trailer") || label.contains("facebook") || label.contains("twitter") || label.contains("whatsapp") || label.contains("telegram")) {
                 return@forEach
             }
 
@@ -674,9 +636,7 @@ class Melongmovie : MainAPI() {
                 .ifBlank { element.attr("href") }
                 .trim()
 
-            if (raw.isNotBlank()) {
-                addCandidate(raw, baseUrl, directLinks, embedLinks)
-            }
+            if (raw.isNotBlank()) addCandidate(raw, baseUrl, directLinks, embedLinks)
         }
     }
 
@@ -688,18 +648,11 @@ class Melongmovie : MainAPI() {
     ) {
         if (text.isBlank()) return
 
-        extractPlayableUrls(text).forEach { raw ->
-            addCandidate(raw, baseUrl, directLinks, embedLinks)
-        }
+        extractPlayableUrls(text).forEach { raw -> addCandidate(raw, baseUrl, directLinks, embedLinks) }
 
-        val decoded = runCatching {
-            URLDecoder.decode(text, "UTF-8")
-        }.getOrDefault(text)
-
+        val decoded = runCatching { URLDecoder.decode(text, "UTF-8") }.getOrDefault(text)
         if (decoded != text) {
-            extractPlayableUrls(decoded).forEach { raw ->
-                addCandidate(raw, baseUrl, directLinks, embedLinks)
-            }
+            extractPlayableUrls(decoded).forEach { raw -> addCandidate(raw, baseUrl, directLinks, embedLinks) }
         }
 
         Jsoup.parse(text).select(
@@ -723,28 +676,14 @@ class Melongmovie : MainAPI() {
         }
     }
 
-    private suspend fun resolveNestedLinks(
-        url: String,
-        referer: String
-    ): List<String> {
+    private suspend fun resolveNestedLinks(url: String, referer: String): List<String> {
         if (isBadPlayableUrl(url)) return emptyList()
 
         val response = runCatching {
             if (url.startsWith(mainUrl, true)) {
-                app.get(
-                    url,
-                    headers = headers,
-                    referer = referer,
-                    interceptor = cfInterceptor,
-                    timeout = 18L
-                )
+                app.get(url, headers = headers, referer = referer, interceptor = cfInterceptor, timeout = 18L)
             } else {
-                app.get(
-                    url,
-                    headers = headers,
-                    referer = referer,
-                    timeout = 18L
-                )
+                app.get(url, headers = headers, referer = referer, timeout = 18L)
             }
         }.getOrNull() ?: return emptyList()
 
@@ -759,9 +698,7 @@ class Melongmovie : MainAPI() {
         }.getOrNull()
 
         if (!unpacked.isNullOrBlank()) {
-            extractPlayableUrls(unpacked.cleanEscaped()).forEach {
-                results.add(normalizeUrl(it, url))
-            }
+            extractPlayableUrls(unpacked.cleanEscaped()).forEach { results.add(normalizeUrl(it, url)) }
         }
 
         return results
@@ -786,39 +723,29 @@ class Melongmovie : MainAPI() {
         if (fixed.isBlank() || isBadPlayableUrl(fixed)) return
 
         when {
-            isHlsLike(fixed) ||
-                fixed.contains(".mp4", true) ||
-                fixed.contains(".webm", true) -> directLinks.add(fixed)
-
-            fixed.startsWith("http", true) &&
-                isKnownPlayableHost(fixed) -> embedLinks.add(fixed)
-
-            fixed.startsWith("http", true) &&
-                fixed.contains("embed", true) -> embedLinks.add(fixed)
-
-            fixed.startsWith("http", true) &&
-                fixed.contains("player", true) -> embedLinks.add(fixed)
+            isHlsLike(fixed) || fixed.contains(".mp4", true) || fixed.contains(".webm", true) -> directLinks.add(fixed)
+            fixed.startsWith("http", true) && isKnownPlayableHost(fixed) -> embedLinks.add(fixed)
+            fixed.startsWith("http", true) && fixed.contains("embed", true) -> embedLinks.add(fixed)
+            fixed.startsWith("http", true) && fixed.contains("player", true) -> embedLinks.add(fixed)
         }
     }
 
-    private suspend fun emitDirectLink(
-        link: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ) {
+    private suspend fun emitDirectLink(link: String, referer: String, callback: (ExtractorLink) -> Unit) {
         if (isBadPlayableUrl(link)) return
+
+        val linkHeaders = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to referer,
+            "Origin" to getBaseUrl(referer),
+            "Accept" to "*/*"
+        )
 
         if (isHlsLike(link)) {
             generateM3u8(
                 source = name,
                 streamUrl = link,
                 referer = referer,
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to referer,
-                    "Origin" to getBaseUrl(referer),
-                    "Accept" to "*/*"
-                )
+                headers = linkHeaders
             ).forEach(callback)
             return
         }
@@ -831,15 +758,8 @@ class Melongmovie : MainAPI() {
                 type = ExtractorLinkType.VIDEO
             ) {
                 this.referer = referer
-                this.quality = getQualityFromName(link).takeIf {
-                    it != Qualities.Unknown.value
-                } ?: qualityFromUrl(link)
-                this.headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to referer,
-                    "Origin" to getBaseUrl(referer),
-                    "Accept" to "*/*"
-                )
+                this.quality = getQualityFromName(link).takeIf { it != Qualities.Unknown.value } ?: qualityFromUrl(link)
+                this.headers = linkHeaders
             }
         )
     }
@@ -848,17 +768,13 @@ class Melongmovie : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
-        Regex(
-            """https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
-            RegexOption.IGNORE_CASE
-        ).findAll(clean)
+        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
             .forEach { urls.add(it) }
 
-        Regex(
-            """//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""",
-            RegexOption.IGNORE_CASE
-        ).findAll(clean)
+        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
             .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
             .forEach { urls.add(it) }
 
@@ -873,11 +789,7 @@ class Melongmovie : MainAPI() {
             """https?%3A%2F%2F[^"'\\\s<>]*?(?:\.m3u8|\.mp4|\.webm|\.txt|melongfilm|strp2p|4meplayer|minochinos|dingtezuni|dintezuvio|hglink|earnvids|streamwish|wishfast|filemoon|dood|streamtape|vidhide|vidguard|voe|mixdrop|mp4upload)[^"'\\\s<>]*""",
             RegexOption.IGNORE_CASE
         ).findAll(clean)
-            .map {
-                runCatching {
-                    URLDecoder.decode(it.value, "UTF-8")
-                }.getOrDefault(it.value)
-            }
+            .map { runCatching { URLDecoder.decode(it.value, "UTF-8") }.getOrDefault(it.value) }
             .map { it.cleanEscaped().replace(".txt", ".m3u8") }
             .forEach { urls.add(it) }
 
@@ -887,27 +799,18 @@ class Melongmovie : MainAPI() {
         ).findAll(clean)
             .mapNotNull { it.groupValues.getOrNull(1) }
             .map { it.cleanEscaped().replace(".txt", ".m3u8") }
-            .filter {
-                it.contains(".m3u8", true) ||
-                    it.contains(".mp4", true) ||
-                    it.contains(".webm", true) ||
-                    isKnownPlayableHost(it)
-            }
+            .filter { it.contains(".m3u8", true) || it.contains(".mp4", true) || it.contains(".webm", true) || isKnownPlayableHost(it) }
             .forEach { urls.add(it) }
 
         return urls.toList()
     }
 
     private fun prioritizeEmbeds(links: Collection<String>): List<String> {
-        return links
-            .filterNot { isBadPlayableUrl(it) }
-            .distinct()
-            .sortedWith(compareBy<String> { hostPriority(it) }.thenBy { it.length })
+        return links.filterNot { isBadPlayableUrl(it) }.distinct().sortedWith(compareBy<String> { hostPriority(it) }.thenBy { it.length })
     }
 
     private fun hostPriority(url: String): Int {
         val value = url.lowercase()
-
         return when {
             value.contains("melongfilm.upns.blog") -> 0
             value.contains("melongfilm.4meplayer.com") -> 0
@@ -936,7 +839,6 @@ class Melongmovie : MainAPI() {
 
     private fun isKnownPlayableHost(url: String): Boolean {
         val value = url.lowercase()
-
         return listOf(
             "melongfilm.upns.blog",
             "melongfilm.4meplayer.com",
@@ -963,7 +865,6 @@ class Melongmovie : MainAPI() {
 
     private fun isBadPlayableUrl(url: String): Boolean {
         val value = url.lowercase()
-
         return value.isBlank() ||
             value.startsWith("#") ||
             value.startsWith("javascript") ||
@@ -990,7 +891,6 @@ class Melongmovie : MainAPI() {
 
     private fun isNavigationUrl(url: String): Boolean {
         val path = url.substringAfter(mainUrl, "").trim('/').lowercase()
-
         if (path.isBlank()) return true
 
         val blocked = listOf(
@@ -1018,10 +918,7 @@ class Melongmovie : MainAPI() {
         return blocked.any { path == it.trimEnd('/') || path.startsWith(it) }
     }
 
-    private fun hasNextPage(
-        document: Document,
-        page: Int
-    ): Boolean {
+    private fun hasNextPage(document: Document, page: Int): Boolean {
         return document.selectFirst(
             "a.next, " +
                 "a[rel=next], " +
@@ -1033,32 +930,28 @@ class Melongmovie : MainAPI() {
     }
 
     private fun getPoster(document: Document): String? {
-        return fixUrlNull(
-            document.selectFirst(
-                "meta[property=og:image], " +
-                    "meta[name=twitter:image], " +
-                    "img.wp-post-image, " +
-                    ".poster img, " +
-                    ".thumb img, " +
-                    "article img, " +
-                    "img"
-            )?.let {
-                when {
-                    it.hasAttr("content") -> it.attr("content")
-                    else -> it.getImageAttr()
-                }
-            }
-        )
+        val candidates = mutableListOf<String?>()
+
+        document.selectFirst(".poster img, .thumb img, img.wp-post-image, article img")
+            ?.let { candidates.add(it.getImageAttr()) }
+
+        document.select("img").forEach { image ->
+            if (!image.isBadPosterCandidate()) candidates.add(image.getImageAttr())
+        }
+
+        document.selectFirst("meta[property=og:image], meta[name=twitter:image]")
+            ?.attr("content")
+            ?.let { candidates.add(it) }
+
+        return candidates.asSequence()
+            .mapNotNull { fixUrlNull(it) }
+            .firstOrNull { !isBadPosterUrl(it) }
     }
 
     private fun Element.getImageAttr(): String? {
         fun fromSrcSet(value: String?): String? {
             if (value.isNullOrBlank()) return null
-
-            return value
-                .split(",")
-                .map { it.trim().substringBefore(" ") }
-                .lastOrNull { it.isNotBlank() }
+            return value.split(",").map { it.trim().substringBefore(" ") }.lastOrNull { it.isNotBlank() }
         }
 
         return fromSrcSet(attr("data-srcset"))
@@ -1073,33 +966,20 @@ class Melongmovie : MainAPI() {
             ?: attr("src").takeIf { it.isNotBlank() }
     }
 
-    private fun guessType(
-        url: String,
-        body: String,
-        title: String
-    ): TvType {
+    private fun guessType(url: String, body: String, title: String, episodes: List<Episode>): TvType {
         val text = "$url $body $title"
-
         return when {
-            text.contains("season", true) ||
-                text.contains("episode", true) ||
-                Regex("""\bS\d+\s*EP\d+""", RegexOption.IGNORE_CASE).containsMatchIn(text) ||
-                text.contains(" TV ", true) ||
-                text.contains("/series/", true) -> TvType.TvSeries
-
-            text.contains("korea", true) ||
-                text.contains("china", true) ||
-                text.contains("thailand", true) -> TvType.AsianDrama
-
+            url.contains("/series/", true) -> TvType.TvSeries
+            Regex("""\bS\d+\s*EP\d+""", RegexOption.IGNORE_CASE).containsMatchIn(title) -> TvType.TvSeries
+            episodes.size > 1 -> TvType.TvSeries
+            episodes.isNotEmpty() && Regex("""(?:episode|eps?|ep)\s*[-:]?\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(text) -> TvType.TvSeries
+            text.contains("korea", true) || text.contains("china", true) || text.contains("thailand", true) -> TvType.AsianDrama
             else -> TvType.Movie
         }
     }
 
     private fun extractYear(text: String?): Int? {
-        return Regex("""\b(19|20)\d{2}\b""")
-            .find(text.orEmpty())
-            ?.value
-            ?.toIntOrNull()
+        return Regex("""\b(19|20)\d{2}\b""").find(text.orEmpty())?.value?.toIntOrNull()
     }
 
     private fun extractEpisodeNumber(text: String): Int? {
@@ -1139,7 +1019,6 @@ class Melongmovie : MainAPI() {
             ?: 0
 
         val total = h * 60 + m
-
         return total.takeIf { it > 0 }
     }
 
@@ -1163,31 +1042,49 @@ class Melongmovie : MainAPI() {
         }
     }
 
-    private fun normalizeUrl(
-        url: String,
-        baseUrl: String
-    ): String {
+    private fun normalizeUrl(url: String, baseUrl: String): String {
         val clean = url.cleanEscaped().trim()
-
         return when {
             clean.isBlank() -> ""
             clean.startsWith("http", true) -> clean
             clean.startsWith("//") -> "https:$clean"
             clean.startsWith("/") -> getBaseUrl(baseUrl).trimEnd('/') + clean
-            else -> runCatching {
-                URI(baseUrl).resolve(clean).toString()
-            }.getOrDefault(clean)
+            else -> runCatching { URI(baseUrl).resolve(clean).toString() }.getOrDefault(clean)
         }
     }
 
     private fun getBaseUrl(url: String): String {
-        return runCatching {
-            URI(url).let { "${it.scheme}://${it.host}" }
-        }.getOrDefault(mainUrl)
+        return runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(mainUrl)
     }
 
-    private fun isHlsLike(url: String): Boolean {
-        return url.contains(".m3u8", true)
+    private fun isHlsLike(url: String): Boolean = url.contains(".m3u8", true)
+
+    private fun Element.hasNavigationParent(): Boolean {
+        return parents().any {
+            val tag = it.tagName().lowercase()
+            val cls = it.className().lowercase()
+            val id = it.id().lowercase()
+            tag == "nav" || tag == "header" || tag == "footer" ||
+                cls.contains("menu") || cls.contains("navbar") || cls.contains("breadcrumb") ||
+                id.contains("menu") || id.contains("navbar")
+        }
+    }
+
+    private fun Element.isBadPosterCandidate(): Boolean {
+        val value = listOf(attr("src"), attr("data-src"), attr("alt"), attr("class"), attr("id"))
+            .joinToString(" ")
+            .lowercase()
+        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading")
+    }
+
+    private fun isBadPosterUrl(url: String): Boolean {
+        val value = url.lowercase()
+        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading") || value.contains("blank")
+    }
+
+    private fun isBadMetadataText(text: String): Boolean {
+        val value = text.lowercase()
+        return value.contains("bookmark") || value.contains("alamat melongmovie") || value.contains("silahkan") || value.contains("download")
     }
 
     private fun String.cleanEscaped(): String {
@@ -1205,6 +1102,12 @@ class Melongmovie : MainAPI() {
         return this
             .replace(Regex("""\s+Subtitle\s+Indonesia.*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+Melongmovie.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
+    private fun String.cleanPlot(): String {
+        return this
             .replace(Regex("""\s+"""), " ")
             .trim()
     }
