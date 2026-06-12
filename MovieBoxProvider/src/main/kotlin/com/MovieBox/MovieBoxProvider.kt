@@ -320,7 +320,70 @@ class MovieBoxProvider : MainAPI() {
             .ifBlank { slug }
     }
 
+    private fun nuxtNode(root: JsonNode, node: JsonNode?): JsonNode? {
+        val current = node ?: return null
+        if (!current.isInt) return current
+        val index = current.asInt()
+        return if (index >= 0 && index < root.size()) root[index] else current
+    }
+
+    private fun nuxtText(root: JsonNode, node: JsonNode?): String? {
+        val resolved = nuxtNode(root, node) ?: return null
+        return resolved.asText(null)?.takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    private fun nuxtInt(root: JsonNode, node: JsonNode?): Int? {
+        val resolved = nuxtNode(root, node) ?: return null
+        return resolved.takeIf { it.isNumber || it.isTextual }?.asInt()
+    }
+
+    private fun parseNuxtSearchResultDocument(document: Document): List<SearchResponse> {
+        val script = document.selectFirst("script#__NUXT_DATA__")?.data()?.takeIf { it.isNotBlank() }
+            ?: return emptyList()
+        val root = runCatching { jacksonObjectMapper().readTree(script) }.getOrNull()
+            ?: return emptyList()
+        if (!root.isArray) return emptyList()
+
+        val seen = mutableSetOf<String>()
+        val results = mutableListOf<SearchResponse>()
+
+        root.forEach { rawItem ->
+            if (!rawItem.isObject || !rawItem.has("detailPath") || !rawItem.has("title")) return@forEach
+
+            val detailPath = nuxtText(root, rawItem["detailPath"])?.trim('/') ?: return@forEach
+            if (detailPath.isBlank() || !seen.add(detailPath)) return@forEach
+
+            val title = nuxtText(root, rawItem["title"]) ?: slugToTitle(detailPath)
+            val coverNode = nuxtNode(root, rawItem["cover"])
+            val posterUrl = nuxtText(root, coverNode?.get("url"))
+            val subjectType = nuxtInt(root, rawItem["subjectType"]) ?: 1
+            val rating = nuxtText(root, rawItem["imdbRatingValue"])
+            val subjectId = nuxtText(root, rawItem["subjectId"])
+            val url = if (!subjectId.isNullOrBlank()) {
+                "$mainUrl/moviedetail/$detailPath?id=$subjectId"
+            } else {
+                "$mainUrl/moviedetail/$detailPath"
+            }
+
+            results.add(
+                newMovieSearchResponse(
+                    name = title.substringBefore("[").trim().ifBlank { title.trim() },
+                    url = url,
+                    type = inferTvType(subjectType)
+                ) {
+                    this.posterUrl = posterUrl
+                    this.score = Score.from10(rating)
+                }
+            )
+        }
+
+        return results
+    }
+
     private fun parseSearchResultDocument(document: Document): List<SearchResponse> {
+        val nuxtResults = parseNuxtSearchResultDocument(document)
+        if (nuxtResults.isNotEmpty()) return nuxtResults
+
         val seen = mutableSetOf<String>()
         return document.select("a[href*=/moviedetail/]").mapNotNull { card ->
             val href = card.attr("href").takeIf { it.contains("/moviedetail/") } ?: return@mapNotNull null
