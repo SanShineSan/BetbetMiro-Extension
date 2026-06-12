@@ -49,6 +49,8 @@ class MovieOn21 : MainAPI() {
         TvType.NSFW
     )
 
+    private val t21BaseUrl = "https://t21.press"
+
     private val defaultHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -59,8 +61,6 @@ class MovieOn21 : MainAPI() {
 
     override val mainPage = mainPageOf(
         "/" to "Featured & Upload Terbaru",
-        "/populer/" to "Terpopuler",
-        "/trending-minggu-ini/" to "Trending Minggu Ini",
         "/rating/" to "IMDb Rating",
         "/genre/action/" to "Action",
         "/genre/adventure/" to "Adventure",
@@ -136,7 +136,7 @@ class MovieOn21 : MainAPI() {
             return null
         }
         val document = response.document
-        val html = normalize(response.text.ifBlank { document.html() })
+        val text = cleanText(document.text())
 
         val rawTitle = document.selectFirst("h1.entry-title, h1[itemprop=name], h1, meta[property=og:title], title")
             ?.let { if (it.tagName().equals("meta", true)) it.attr("content") else it.text() }
@@ -144,7 +144,6 @@ class MovieOn21 : MainAPI() {
         if (title.isBlank()) return null
 
         val poster = findPoster(document, pageUrl)
-        val text = cleanText(document.text())
         val tags = document.select("a[href*='/genre/'], .genres a, .genre a")
             .map { cleanText(it.text()).substringBefore("(").trim() }
             .filter { it.length in 2..40 && !it.equals("Trailer", true) && !it.equals("Tonton", true) }
@@ -210,6 +209,10 @@ class MovieOn21 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val startUrl = fixUrl(data, mainUrl) ?: return false
+        if (startUrl.usesT21PlaybackFlow()) {
+            return resolveT21Playback(startUrl, subtitleCallback, callback)
+        }
+
         val emitted = linkedSetOf<String>()
         val visited = linkedSetOf<String>()
         val queue = ArrayDeque<Pair<String, String>>()
@@ -219,7 +222,7 @@ class MovieOn21 : MainAPI() {
 
         suspend fun emitDirect(rawUrl: String, referer: String, sourceName: String = name): Boolean {
             val fixed = fixUrl(rawUrl, referer)?.cleanupUrl() ?: return false
-            if (!fixed.isPlayableMedia()) return false
+            if (!fixed.isPlayableMedia() || fixed.isAdOrPlaceholderMedia()) return false
             val key = fixed.substringBefore("#")
             if (!emitted.add(key)) return false
             callback(
@@ -245,7 +248,7 @@ class MovieOn21 : MainAPI() {
             try {
                 loadExtractor(fixed, referer, subtitleCallback) { link ->
                     val key = link.url.substringBefore("#")
-                    if (emitted.add(key)) {
+                    if (!link.url.isAdOrPlaceholderMedia() && emitted.add(key)) {
                         localFound = true
                         callback(link)
                     }
@@ -293,6 +296,256 @@ class MovieOn21 : MainAPI() {
             }
         }
         return found
+    }
+
+    private suspend fun resolveT21Playback(
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val detailHtml = if (data.contains("movieon21.mov", true)) {
+            try {
+                app.get(data, headers = defaultHeaders, referer = "$mainUrl/").text
+            } catch (_: Throwable) {
+                ""
+            }
+        } else {
+            ""
+        }
+        val slug = movieSlugFromEvidence(data, detailHtml) ?: return false
+        val providersHtml = try {
+            app.post(
+                "$t21BaseUrl/data.php",
+                data = mapOf("movie" to slug),
+                headers = t21DataHeaders(),
+                referer = "$mainUrl/"
+            ).text
+        } catch (_: Throwable) {
+            ""
+        }
+
+        val providers = parseT21Providers(providersHtml).ifEmpty { parseT21Providers(detailHtml) }
+        val visitedProviders = linkedSetOf<String>()
+        var found = false
+
+        providers
+            .filter { provider -> provider.isUtama || provider.isHydra }
+            .forEach { provider ->
+                val providerKey = "${provider.kind}:${provider.url.substringBefore("#").lowercase(Locale.ROOT)}"
+                if (!visitedProviders.add(providerKey)) return@forEach
+                found = when {
+                    provider.isHydra ->
+                        resolveT21Hydra(slug, provider.url, subtitleCallback, callback) || found
+                    provider.isUtama ->
+                        resolveT21Utama(slug, provider.url, provider.displayName.ifBlank { "Utama" }, callback) || found
+                    else -> found
+                }
+            }
+
+        if (providers.isEmpty()) {
+            found = resolveT21Utama(slug, "$t21BaseUrl/play-ads.php?movie=$slug&iframe=p2p", "Utama", callback) || found
+            found = resolveT21Hydra(slug, "$t21BaseUrl/play-ads.php?movie=$slug&iframe=g-hydrax", subtitleCallback, callback) || found
+        }
+
+        return found
+    }
+
+    private suspend fun resolveT21Utama(
+        slug: String,
+        providerUrl: String,
+        sourceLabel: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val p2pUrl = "$t21BaseUrl/p2p.php?movie=$slug"
+        val response = try {
+            app.post(
+                "$t21BaseUrl/540.php?movie=$slug",
+                data = mapOf(
+                    "r" to providerUrl,
+                    "d" to "t21.press"
+                ),
+                headers = t21PlayerHeaders(p2pUrl),
+                referer = p2pUrl
+            ).text
+        } catch (_: Throwable) {
+            return false
+        }
+
+        var emitted = false
+        extractT21JsonFiles(response).forEach { rawFile ->
+            val file = fixUrl(rawFile, t21BaseUrl)?.cleanupUrl() ?: return@forEach
+            if (!file.isT21UtamaMedia()) return@forEach
+            callback(
+                newExtractorLink(
+                    name,
+                    "$name $sourceLabel",
+                    file,
+                    ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "$t21BaseUrl/"
+                    this.quality = file.qualityFromUrl().takeIf { it != Qualities.Unknown.value } ?: Qualities.P480.value
+                    this.headers = playbackHeaders(file, "$t21BaseUrl/")
+                }
+            )
+            emitted = true
+        }
+        return emitted
+    }
+
+    private suspend fun resolveT21Hydra(
+        slug: String,
+        providerUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val hydraPageUrl = "$t21BaseUrl/g-hydrax.php?movie=$slug"
+        val hydraPage = try {
+            app.get(
+                hydraPageUrl,
+                headers = t21PageHeaders(providerUrl),
+                referer = providerUrl
+            ).text
+        } catch (_: Throwable) {
+            ""
+        }
+
+        val hydraUrls = linkedSetOf<String>()
+        collectHydraUrls(hydraPage, hydraPageUrl).forEach(hydraUrls::add)
+
+        if (hydraUrls.isEmpty()) {
+            runCatching {
+                val playAdsPage = app.get(
+                    providerUrl,
+                    headers = t21PageHeaders("$mainUrl/"),
+                    referer = "$mainUrl/"
+                ).text
+                collectHydraUrls(playAdsPage, providerUrl).forEach(hydraUrls::add)
+            }
+        }
+
+        var found = false
+        hydraUrls.forEach { hydraUrl ->
+            try {
+                loadExtractor(hydraUrl, "$t21BaseUrl/", subtitleCallback) { link ->
+                    if (!link.url.isAdOrPlaceholderMedia()) {
+                        found = true
+                        callback(link)
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return found
+    }
+
+    private data class T21Provider(
+        val displayName: String,
+        val className: String,
+        val url: String
+    ) {
+        val normalized: String = "$className $displayName".uppercase(Locale.ROOT)
+        val iframe: String = queryValue(url, "iframe").orEmpty().lowercase(Locale.ROOT)
+        val isHydra: Boolean = iframe.contains("hydra") || normalized.contains("HYDRA")
+        val isUtama: Boolean = !isHydra && (
+            iframe == "p2p" ||
+                normalized.contains("P2P") ||
+                normalized.contains("UTAMA") ||
+                normalized.contains("DRIVE")
+            )
+        val kind: String = when {
+            isHydra -> "hydra"
+            isUtama -> "utama"
+            else -> "skip"
+        }
+
+        companion object {
+            private fun queryValue(url: String, key: String): String? = runCatching {
+                URI(url).rawQuery.orEmpty().split('&').firstNotNullOfOrNull { part ->
+                    val name = part.substringBefore('=')
+                    if (!name.equals(key, true)) null else URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
+                }
+            }.getOrNull()
+        }
+    }
+
+    private fun parseT21Providers(html: String): List<T21Provider> =
+        Jsoup.parse(html, t21BaseUrl)
+            .select("a[href]")
+            .mapNotNull { anchor ->
+                val href = fixUrl(anchor.attr("href"), t21BaseUrl) ?: return@mapNotNull null
+                if (!href.contains("play-ads.php", true)) return@mapNotNull null
+                val label = cleanText(anchor.text()).ifBlank { cleanText(anchor.attr("title")) }
+                val className = cleanText(anchor.attr("class"))
+                val provider = T21Provider(label, className, href)
+                if (provider.isUtama || provider.isHydra) provider else null
+            }
+
+    private fun movieSlugFromEvidence(url: String, html: String): String? {
+        queryValue(url, "movie")?.takeIf { it.isNotBlank() }?.let { return it }
+        val decodedHtml = normalize(html)
+        listOf(
+            Regex("""(?i)play-ads\.php\?movie=([^&'"<>\s]+)"""),
+            Regex("""(?i)movie['"]?\s*[:=]\s*['"]([^'"<>\s]+)['"]"""),
+            Regex("""(?i)/s/([^/'"<>\s]+)/"""),
+            Regex("""(?i)%2Fs%2F([^%&'"<>\s]+)%2F""")
+        ).forEach { regex ->
+            regex.find(decodedHtml)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault("")
+        val streamingSlug = Regex("""(?i)(?:^|/)streaming-film/([^/?#]+)""")
+            .find(path)
+            ?.groupValues
+            ?.getOrNull(1)
+        if (!streamingSlug.isNullOrBlank()) return streamingSlug
+        return path.substringAfterLast('/').takeIf { it.isNotBlank() && !it.endsWith(".php", true) }
+    }
+
+    private fun queryValue(url: String, key: String): String? = runCatching {
+        URI(url).rawQuery.orEmpty().split('&').firstNotNullOfOrNull { part ->
+            val name = part.substringBefore('=')
+            if (!name.equals(key, true)) null else urlDecode(part.substringAfter('=', ""))
+        }
+    }.getOrNull()
+
+    private fun extractT21JsonFiles(json: String): List<String> =
+        Regex("""(?i)\"file\"\s*:\s*\"([^\"]+)\"""")
+            .findAll(json)
+            .map { normalize(it.groupValues[1]) }
+            .filter { it.isNotBlank() }
+            .toList()
+
+    private fun collectHydraUrls(html: String, baseUrl: String): List<String> =
+        Regex("""(?i)https?://(?:www\.)?playhydrax\.com/?\?v=[^\s'"<>\\]+""")
+            .findAll(html)
+            .mapNotNull { fixUrl(it.value, baseUrl) }
+            .filterNot { it.isAdOrPlaceholderMedia() }
+            .distinctBy { it.substringBefore("#") }
+            .toList()
+
+    private fun t21DataHeaders(): Map<String, String> = defaultHeaders + mapOf(
+        "Accept" to "*/*",
+        "Content-Type" to "application/x-www-form-urlencoded",
+        "Origin" to mainUrl,
+        "Referer" to "$mainUrl/"
+    )
+
+    private fun t21PlayerHeaders(referer: String): Map<String, String> = defaultHeaders + mapOf(
+        "Accept" to "*/*",
+        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With" to "XMLHttpRequest",
+        "Origin" to t21BaseUrl,
+        "Referer" to referer
+    )
+
+    private fun t21PageHeaders(referer: String): Map<String, String> = defaultHeaders + mapOf(
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Origin" to origin(referer),
+        "Referer" to referer
+    )
+
+    private fun String.usesT21PlaybackFlow(): Boolean {
+        val lower = lowercase(Locale.ROOT)
+        return lower.contains("movieon21.mov") || lower.contains("t21.press")
     }
 
     private fun pagedUrl(path: String, page: Int): String {
@@ -415,36 +668,6 @@ class MovieOn21 : MainAPI() {
                 collectLinksFromHtml(body, pageUrl).forEach(links::add)
             }
         }
-
-        Regex("""(?i)(?:post|id)['"]?\s*[:=]\s*['"]?(\d{2,})['"]?""")
-            .findAll(html)
-            .map { it.groupValues[1] }
-            .distinct()
-            .take(5)
-            .forEach { post ->
-                listOf("movie", "tv", "episode").forEach { type ->
-                    (1..8).forEach { nume ->
-                        ajaxActions.forEach { action ->
-                            val body = try {
-                                app.post(
-                                    ajaxUrl,
-                                    data = mapOf(
-                                        "action" to action,
-                                        "post" to post,
-                                        "nume" to nume.toString(),
-                                        "type" to type
-                                    ),
-                                    headers = ajaxHeaders(pageUrl),
-                                    referer = pageUrl
-                                ).text
-                            } catch (_: Throwable) {
-                                ""
-                            }
-                            collectLinksFromHtml(body, pageUrl).forEach(links::add)
-                        }
-                    }
-                }
-            }
         return links.toList()
     }
 
@@ -513,22 +736,18 @@ class MovieOn21 : MainAPI() {
     private fun collectGdrivePlayerLinks(html: String, baseUrl: String): List<String> {
         val links = linkedSetOf<String>()
         val normalized = normalize(html)
-
         Regex("""(?i)(?:https?:)?//gdriveplayer\.io/hlsplaylist\.php\?[^\s'"<>\\]+""")
             .findAll(normalized)
             .mapNotNull { fixUrl(it.value, baseUrl) }
             .forEach(links::add)
-
         Regex("""(?i)(?:https?:)?//lowhls\d+\.stream121\.space/video/data/[^\s'"<>\\]+""")
             .findAll(normalized)
             .mapNotNull { fixUrl(it.value, baseUrl) }
             .forEach(links::add)
-
         Regex("""(?i)hlsplaylist\.php\?[^\s'"<>\\]+""")
             .findAll(normalized)
             .mapNotNull { fixUrl(it.value, "http://gdriveplayer.io/") }
             .forEach(links::add)
-
         return links.toList()
     }
 
@@ -585,6 +804,12 @@ class MovieOn21 : MainAPI() {
     private fun playbackHeaders(url: String, referer: String): Map<String, String> {
         val lower = url.lowercase(Locale.ROOT)
         return when {
+            lower.contains("seneng.org") ->
+                defaultHeaders + mapOf(
+                    "Accept" to "*/*",
+                    "Origin" to t21BaseUrl,
+                    "Referer" to "$t21BaseUrl/"
+                )
             lower.contains("stream121.space") || lower.contains("gdriveplayer.io/hlsplaylist.php") ->
                 defaultHeaders + mapOf(
                     "Accept" to "*/*",
@@ -601,6 +826,7 @@ class MovieOn21 : MainAPI() {
 
     private fun String.playbackReferer(fallback: String): String =
         when {
+            contains("seneng.org", true) -> "$t21BaseUrl/"
             contains("stream121.space", true) -> ""
             contains("gdriveplayer.io/hlsplaylist.php", true) -> ""
             else -> fallback
@@ -629,6 +855,7 @@ class MovieOn21 : MainAPI() {
         val lower = url.lowercase(Locale.ROOT)
         return !lower.isNoiseUrl() && (
             lower.contains("movieon21.mov") ||
+                lower.contains("t21.press") ||
                 lower.contains("terbit21") ||
                 lower.contains("embed") ||
                 lower.contains("player") ||
@@ -648,6 +875,9 @@ class MovieOn21 : MainAPI() {
                 lower.contains("gdriveplayer") ||
                 lower.contains("hlsplaylist.php") ||
                 lower.contains("stream121.space") ||
+                lower.contains("seneng.org") ||
+                lower.contains("playhydrax.com") ||
+                lower.contains("abyss.to") ||
                 lower.contains("lowhls") ||
                 lower.contains("krakenfiles") ||
                 lower.contains("filelions") ||
@@ -843,7 +1073,7 @@ class MovieOn21 : MainAPI() {
 
     private fun String.isImageLike(): Boolean {
         val lower = lowercase(Locale.ROOT)
-        return lower.contains(".jpg") || lower.contains(".jpeg") || lower.contains(".png") || lower.contains(".webp") || lower.contains("/images/") || lower.contains("image.tmdb.org")
+        return lower.contains(".jpg") || lower.contains(".jpeg") || lower.contains(".png") || lower.contains(".webp") || lower.contains("/images/") || lower.contains("image.tmdb.org") || lower.contains("rts.gdn")
     }
 
     private fun String.isAdImage(): Boolean {
@@ -853,6 +1083,7 @@ class MovieOn21 : MainAPI() {
 
     private fun String.isPlayableMedia(): Boolean {
         val lower = lowercase(Locale.ROOT)
+        if (isAdOrPlaceholderMedia()) return false
         if (
             lower.endsWith(".html") ||
             lower.endsWith(".htm") ||
@@ -884,8 +1115,39 @@ class MovieOn21 : MainAPI() {
             lower.contains("/stream/")
     }
 
+    private fun String.isAdOrPlaceholderMedia(): Boolean {
+        val lower = lowercase(Locale.ROOT)
+        return lower.contains("loading.mp4") ||
+            lower.contains("terbit21org/terbit21") ||
+            lower.contains("raw.githubusercontent.com/terbit21org") ||
+            lower.contains("github.com/terbit21org") ||
+            lower.contains("googlevideo.com") ||
+            lower.contains("youtube.com") ||
+            lower.contains("youtu.be") ||
+            lower.contains("shopee") ||
+            lower.contains("jwpltx.com") ||
+            lower.contains("morphify.net") ||
+            lower.contains("googlesyndication") ||
+            lower.contains("doubleclick") ||
+            lower.contains("histats") ||
+            lower.contains("tracking") ||
+            lower.contains("analytics") ||
+            lower.contains("pagead") ||
+            lower.contains("/ads") ||
+            lower.contains("ads.") ||
+            lower.contains("/ping.gif") ||
+            lower.contains("cdn-cgi/rum") ||
+            lower.contains("challenge-platform")
+    }
+
+    private fun String.isT21UtamaMedia(): Boolean {
+        val lower = lowercase(Locale.ROOT)
+        return !isAdOrPlaceholderMedia() && lower.contains("seneng.org/") && isM3u8Like()
+    }
+
     private fun String.isNoiseUrl(): Boolean {
         val lower = lowercase(Locale.ROOT)
+        if (isAdOrPlaceholderMedia()) return true
         return lower.contains("facebook.com") ||
             lower.contains("telegram") ||
             lower.contains("twitter.com") ||

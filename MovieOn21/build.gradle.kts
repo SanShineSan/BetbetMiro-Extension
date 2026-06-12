@@ -1,9 +1,9 @@
-version = 3
+version = 4
 
 cloudstream {
     authors = listOf("sad25kag")
     language = "id"
-    description = "MovieOn21 Stable Candidate provider v3 untuk streaming film subtitle Indonesia dari tv.movieon21.mov dengan parser listing/detail dan resolver playback GDrivePlayer/Stream121 berbasis HAR."
+    description = "MovieOn21 Stable Candidate provider v4 dengan resolver t21.press evidence-based untuk host Utama/Hydra, klasifikasi iframe-first, dan filter ads/loading."
     status = 1
 
     tvTypes = listOf(
