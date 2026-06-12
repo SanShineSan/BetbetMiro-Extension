@@ -23,9 +23,7 @@ class MynimekuProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "" to "Home",
         "full-list/mix/o:popular/" to "Popular",
-        "full-list/" to "List",
         "full-list/mix/s:completed~t:BD,LA,MOVIE,MUSIC,ONA,OVA,SPECIAL,TV/" to "Completed",
         "full-list/mix/s:on-going~t:BD,LA,MOVIE,MUSIC,ONA,OVA,SPECIAL,TV/" to "On-Going",
         "latest-series/" to "Latest",
@@ -35,8 +33,7 @@ class MynimekuProvider : MainAPI() {
         "full-list/mix/t:ONA/" to "ONA",
         "full-list/mix/t:OVA/" to "OVA",
         "full-list/mix/t:SPECIAL/" to "Special",
-        "full-list/mix/t:LA/" to "LA",
-        "full-list/mix/t:MUSIC/" to "Music"
+        "full-list/mix/t:LA/" to "LA"
     )
 
     private data class CardData(
@@ -100,17 +97,13 @@ class MynimekuProvider : MainAPI() {
         ).mapNotNull { directUrl ->
             runCatching {
                 val document = app.get(directUrl, headers = defaultHeaders()).document
-                val title = document.selectFirst("h1, h1.entry-title, .entry-title, .post-title")
-                    ?.text()
-                    ?.trim()
-                    .orEmpty()
-                if (title.isBlank()) null else CardData(
+                val title = parseDetailTitle(document, directUrl)
+                val sourceType = parseInfoValue(document, "Type")
+                if (title.isBlank() || title.equals(name, true)) null else CardData(
                     title = cleanTitle(title),
                     url = directUrl,
-                    poster = document.selectFirst("article img, .poster img, .thumb img, .entry-content img, img[alt]")
-                        ?.imageAttr()
-                        ?.let { normalizeUrlOrNull(it, directUrl) },
-                    type = detectType(directUrl, title),
+                    poster = parsePoster(document, directUrl),
+                    type = detectType(directUrl, sourceType, title),
                     episode = null
                 )
             }.getOrNull()
@@ -122,55 +115,49 @@ class MynimekuProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val fixedUrl = normalizeUrl(url)
         val document = app.get(fixedUrl, headers = defaultHeaders()).document
+        val isSeriesPage = fixedUrl.contains("/series/", ignoreCase = true)
 
-        val rawTitle = document.selectFirst("h1, h1.entry-title, .entry-title, .post-title, .series-title")
-            ?.text()
-            ?.trim()
-            .orEmpty()
-            .ifBlank {
-                document.title()
-                    .substringBefore(" - MyNimeku")
-                    .substringBefore(" – MyNimeku")
-                    .substringBefore(" | MyNimeku")
-                    .trim()
-            }
-
+        val rawTitle = parseDetailTitle(document, fixedUrl)
         val title = cleanTitle(rawTitle).ifBlank {
             throw ErrorLoadingException("Judul Mynimeku tidak ditemukan")
         }
 
-        val poster = document.selectFirst(
-            "article img[alt*='${title.take(24)}'], .poster img, .thumb img, .series-poster img, " +
-                ".entry-content img, img[alt='$title'], img[alt]"
-        )?.imageAttr()?.let { normalizeUrlOrNull(it, fixedUrl) }
-
+        val poster = parsePoster(document, fixedUrl)
         val description = parseDescription(document)
         val tags = parseTags(document)
         val year = parseYear(document)
         val status = parseStatus(document)
-        val type = detectType(fixedUrl, rawTitle, document.text())
+        val sourceType = parseInfoValue(document, "Type")
+        val type = detectType(fixedUrl, sourceType, rawTitle)
         val episodes = parseEpisodeList(document, fixedUrl)
         val recommendations = collectRecommendations(document)
             .distinctBy { it.url }
             .map { it.toSearchResponse() }
 
-        return if (episodes.isNotEmpty()) {
-            newAnimeLoadResponse(title, fixedUrl, type) {
-                posterUrl = poster
-                plot = description
-                this.tags = tags
-                this.year = year
-                showStatus = status
-                this.recommendations = recommendations
-                addEpisodes(DubStatus.Subbed, episodes)
+        return when {
+            episodes.isNotEmpty() || (isSeriesPage && type != TvType.AnimeMovie) -> {
+                newAnimeLoadResponse(title, fixedUrl, type) {
+                    posterUrl = poster
+                    backgroundPosterUrl = poster
+                    plot = description
+                    this.tags = tags
+                    this.year = year
+                    showStatus = status
+                    this.recommendations = recommendations
+                    if (episodes.isNotEmpty()) addEpisodes(DubStatus.Subbed, episodes)
+                }
             }
-        } else {
-            newMovieLoadResponse(title, fixedUrl, TvType.AnimeMovie, fixedUrl) {
-                posterUrl = poster
-                plot = description
-                this.tags = tags
-                this.year = year
-                this.recommendations = recommendations
+
+            else -> {
+                val movieData = collectPlayerCandidates(document).firstOrNull { isPlayerCandidate(it) } ?: fixedUrl
+                newMovieLoadResponse(title, fixedUrl, TvType.AnimeMovie, movieData) {
+                    posterUrl = poster
+                    backgroundPosterUrl = poster
+                    plot = description
+                    this.tags = tags
+                    this.year = year
+                    this.recommendations = recommendations
+                }
             }
         }
     }
@@ -238,8 +225,8 @@ class MynimekuProvider : MainAPI() {
         val response = runCatching {
             app.get(
                 playerUrl,
-                referer = mainUrl,
-                headers = defaultHeaders(mainUrl),
+                referer = referer,
+                headers = defaultHeaders(referer),
                 timeout = 20L
             )
         }.getOrNull() ?: return false
@@ -261,7 +248,7 @@ class MynimekuProvider : MainAPI() {
                     emitGoogleDrive(resolved, playerTitle, callback)
                     emitted = true
                 }
-                isDirectMedia(resolved) -> {
+                isDirectMedia(resolved) || isWorkersMedia(resolved) -> {
                     emitDirect(resolved, playerUrl, callback)
                     emitted = true
                 }
@@ -376,6 +363,11 @@ class MynimekuProvider : MainAPI() {
             lower.contains("alt=media")
     }
 
+    private fun isWorkersMedia(url: String): Boolean {
+        val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
+        return host.endsWith("workers.dev")
+    }
+
     private suspend fun emitGoogleDrive(
         link: String,
         qualityHint: String,
@@ -423,64 +415,79 @@ class MynimekuProvider : MainAPI() {
 
     private fun collectCards(document: Document): List<CardData> {
         val sourceItems = document.select(
-            "article.mynimeku-update-feed__item, li.mynimeku-update-widget__item, " +
-                "article.mynimeku-mix-feed__item, article[class*='mynimeku'][class*='item']"
+            "article.mynimeku-mix-feed__item, article.mynimeku-update-feed__item, " +
+                "li.mynimeku-update-widget__item"
         ).mapNotNull { it.toCardData() }
 
-        val genericItems = document.select(
-            "article:has(a[href*='/series/']), li:has(a[href*='/series/']), " +
-                "div:has(> a[href*='/series/']), a[href*='/series/'], " +
-                "article:has(a[href*='/episode/']), li:has(a[href*='/episode/'])"
-        ).mapNotNull { it.toCardData() }
+        if (sourceItems.isNotEmpty()) {
+            return sourceItems
+                .filterNot { isNavigationTitle(it.title) }
+                .distinctBy { it.url }
+        }
 
-        return (sourceItems + genericItems)
+        return document.select(
+            "a.mynimeku-mix-feed__series-title[href*='/series/'], " +
+                "a.mynimeku-update-feed__series-title[href*='/series/'], " +
+                "a.mynimeku-update-widget__series-title[href*='/series/'], " +
+                "a.komik-series-chapter-item[href*='/episode/']"
+        ).mapNotNull { it.toCardData() }
             .filterNot { isNavigationTitle(it.title) }
             .distinctBy { it.url }
     }
 
     private fun collectRecommendations(document: Document): List<CardData> {
         return document.select(
-            "article a[href*='/anime/'], article a[href*='/series/'], " +
-                "a[href*='/anime/'], a[href*='/series/']"
+            "article.mynimeku-mix-feed__item, article.mynimeku-update-feed__item, " +
+                "li.mynimeku-update-widget__item"
         ).mapNotNull { it.toCardData() }
             .filterNot { isNavigationTitle(it.title) }
+            .distinctBy { it.url }
     }
 
     private fun Element.toCardData(): CardData? {
-        val href = when {
-            tagName().equals("a", true) -> attr("abs:href").ifBlank { attr("href") }
+        val hrefElement = when {
+            tagName().equals("a", true) -> this
             else -> selectFirst(
-                "a[class*='series-title'][href*='/series/'], " +
-                    "a[class*='cover'][href*='/series/'], a[href*='/series/'], " +
-                    "a[href*='/anime/'], a[class*='latest-link'][href*='/episode/'], a[href*='/episode/']"
-            )?.let { it.attr("abs:href").ifBlank { it.attr("href") } }.orEmpty()
-        }.trim()
+                "a.mynimeku-mix-feed__series-title[href*='/series/'], " +
+                    "a.mynimeku-update-feed__series-title[href*='/series/'], " +
+                    "a.mynimeku-update-widget__series-title[href*='/series/'], " +
+                    "a.mynimeku-mix-feed__cover[href*='/series/'], " +
+                    "a.mynimeku-update-feed__cover[href*='/series/'], " +
+                    "a.mynimeku-update-widget__cover[href*='/series/'], " +
+                    "a.komik-series-chapter-item[href*='/episode/']"
+            )
+        } ?: return null
 
-        val fixedHref = normalizeUrl(href)
-        if (!isContentUrl(fixedHref)) return null
+        val fixedHref = normalizeUrl(hrefElement.attr("abs:href").ifBlank { hrefElement.attr("href") })
+        if (!isContentUrl(fixedHref) || isBadUrl(fixedHref)) return null
 
-        val rawTitle = attr("title").trim().ifBlank {
-            selectFirst(
-                "a[class*='series-title'], [class*='series-title'], " +
-                    "h1, h2, h3, h4, .title, .judul, .entry-title, .post-title"
-            )?.text()?.trim().orEmpty()
-        }.ifBlank {
-            selectFirst("img[alt]")?.attr("alt")?.trim().orEmpty()
-        }.ifBlank {
-            selectFirst("a[href*='/series/']:not([class*='cover']), a[href*='/anime/']:not([class*='cover'])")
+        val rawTitle = selectFirst(
+            ".mynimeku-mix-feed__series-title, .mynimeku-update-feed__series-title, " +
+                ".mynimeku-update-widget__series-title, .komik-series-chapter-item__title"
+        )?.text()?.trim().orEmpty().ifBlank {
+            hrefElement.takeUnless { it.hasClass("mynimeku-mix-feed__cover") || it.hasClass("mynimeku-update-feed__cover") || it.hasClass("mynimeku-update-widget__cover") }
                 ?.text()
                 ?.trim()
                 .orEmpty()
         }.ifBlank {
-            text().trim()
+            selectFirst("img[alt]")?.attr("alt")?.trim().orEmpty()
+        }.ifBlank {
+            fixedHref.trimEnd('/').substringAfterLast('/').replace("-", " ")
         }
 
         val title = cleanTitle(rawTitle)
-        if (title.length < 2 || isNavigationTitle(title)) return null
+        if (title.length < 2 || isNavigationTitle(title) || isNoiseText(title)) return null
 
-        val episode = parseEpisodeNumber(rawTitle) ?: parseEpisodeNumber(title) ?: parseEpisodeNumber(fixedHref)
-        val type = detectType(fixedHref, rawTitle, title)
-        val poster = selectFirst("img")?.imageAttr()?.let { normalizeUrlOrNull(it, fixedHref) }
+        val episodeText = selectFirst(
+            ".mynimeku-update-feed__latest-pill, .mynimeku-update-widget__latest-pill, " +
+                ".komik-series-chapter-item__num"
+        )?.text()?.trim().orEmpty()
+        val episode = parseEpisodeNumber(episodeText) ?: parseEpisodeNumber(rawTitle) ?: parseEpisodeNumber(fixedHref)
+        val sourceType = selectFirst(".mynimeku-mix-feed__type, .mynimeku-update-feed__badge, .mynimeku-update-widget__type")
+            ?.text()
+            ?.trim()
+        val type = detectType(fixedHref, sourceType, rawTitle)
+        val poster = selectBestImage(this, fixedHref)
 
         return CardData(
             title = title,
@@ -500,21 +507,29 @@ class MynimekuProvider : MainAPI() {
 
     private fun parseEpisodeList(document: Document, referer: String): List<Episode> {
         val anchors = document.select(
-            "#episode-list a[href*='/episode/'], .episode-list a[href*='/episode/'], " +
-                ".daftar-episode a[href*='/episode/'], .eplister a[href*='/episode/'], " +
-                "a[href*='/episode/']"
+            "a.komik-series-chapter-item[href*='/episode/'], " +
+                ".komik-series-chapter-list a[href*='/episode/'], " +
+                ".komik-series-chapters a[href*='/episode/']"
         ).filter {
             val href = normalizeUrl(it.attr("abs:href").ifBlank { it.attr("href") })
-            isContentUrl(href) && !href.equals(referer, true)
+            isContentUrl(href) && !href.equals(referer, true) && !isBadUrl(href)
         }
 
         return anchors.mapNotNull { anchor ->
             val href = normalizeUrl(anchor.attr("abs:href").ifBlank { anchor.attr("href") })
-            val rawTitle = anchor.text().trim().ifBlank {
-                href.trimEnd('/').substringAfterLast('/').replace("-", " ")
+            val numberText = anchor.attr("data-episode-number").ifBlank {
+                anchor.selectFirst(".komik-series-chapter-item__num")?.text()?.trim().orEmpty()
             }
+            val titleText = anchor.selectFirst(".komik-series-chapter-item__title")?.text()?.trim().orEmpty()
+            val rawTitle = titleText.ifBlank {
+                anchor.attr("data-episode-search-text").ifBlank {
+                    href.trimEnd('/').substringAfterLast('/').replace("-", " ")
+                }
+            }
+            val episode = numberText.toIntOrNull()
+                ?: parseEpisodeNumber(rawTitle)
+                ?: parseEpisodeNumber(href)
             val title = cleanEpisodeTitle(rawTitle)
-            val episode = parseEpisodeNumber(rawTitle) ?: parseEpisodeNumber(href)
 
             if (episode == null && title.length < 2) return@mapNotNull null
 
@@ -527,51 +542,140 @@ class MynimekuProvider : MainAPI() {
     }
 
     private fun parseDescription(document: Document): String? {
-        val direct = document.selectFirst(".sinopsis, .synopsis, .summary, .entry-content, article")
-            ?.select("p")
-            ?.map { it.text().trim() }
-            ?.filter { it.isNotBlank() && !isNoiseText(it) }
-            ?.joinToString("\n")
+        val text = document.selectFirst(".komik-series-entry")?.text()?.trim()
+            ?: document.selectFirst(".komik-series-hero__synopsis .komik-series-entry")?.text()?.trim()
+            ?: document.selectFirst(".komik-series-hero__synopsis")?.text()?.trim()?.removePrefix("Sinopsis")?.trim()
+            ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
+
+        return text
+            ?.replace(Regex("""(?i)^sinopsis\s*"""), "")
             ?.trim()
-            ?.takeIf { it.length > 20 }
-
-        if (!direct.isNullOrBlank()) return direct
-
-        return document.select("p")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() && !isNoiseText(it) }
-            .take(4)
-            .joinToString("\n")
-            .trim()
-            .takeIf { it.length > 20 }
+            ?.takeIf { it.length > 20 && !isNoiseText(it) }
     }
 
     private fun parseTags(document: Document): List<String> {
-        return document.select("a[href*='/genre/'], .genre a, .genres a, .tagcloud a")
+        return document.select(".komik-series-taxonomy a[href*='/genre/'], a.mynimeku-mix-feed__genre[href*='/genre/']")
             .map { it.text().trim() }
-            .filter { it.isNotBlank() && it.length in 2..40 && !it.any { ch -> ch.isDigit() } }
+            .filter { it.isNotBlank() && it.length in 2..40 && !isNoiseText(it) }
             .distinct()
     }
 
     private fun parseYear(document: Document): Int? {
-        return Regex("""(?i)\b(?:Years?|Release Date)\s+.*?\b(20\d{2}|19\d{2})\b""")
-            .find(document.text())
+        val release = parseInfoValue(document, "Years") ?: parseInfoValue(document, "Release Date") ?: parseInfoValue(document, "Released")
+        return Regex("""\b(20\d{2}|19\d{2})\b""")
+            .find(release.orEmpty())
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
             ?: Regex("""\b(20\d{2}|19\d{2})\b""")
-                .find(document.select(".info, .spe, .series-info, article").text())
+                .find(document.select(".komik-series-info, .komik-series-card").text())
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.toIntOrNull()
     }
 
     private fun parseStatus(document: Document): ShowStatus? {
-        val text = document.text()
+        val status = parseInfoValue(document, "Status") ?: document.select(".mynimeku-mix-feed__status, .mynimeku-update-feed__badge, .mynimeku-update-widget__status").text()
         return when {
-            Regex("(?i)Status\\s+On-Going|Airing|Ongoing").containsMatchIn(text) -> ShowStatus.Ongoing
-            Regex("(?i)Status\\s+Completed|Completed|Finished").containsMatchIn(text) -> ShowStatus.Completed
+            status.contains("on-going", true) || status.contains("ongoing", true) || status.contains("airing", true) -> ShowStatus.Ongoing
+            status.contains("completed", true) || status.contains("finished", true) || status.contains("tamat", true) -> ShowStatus.Completed
             else -> null
+        }
+    }
+
+    private fun parseDetailTitle(document: Document, url: String): String {
+        return document.selectFirst("h1.komik-series-hero__title")?.text()?.trim().orEmpty()
+            .ifBlank { document.selectFirst("h1.mynimeku-episode-head__title")?.text()?.trim().orEmpty() }
+            .ifBlank {
+                document.selectFirst("meta[property=og:title]")?.attr("content")
+                    ?.substringBefore(" - MyNimeku")
+                    ?.substringBefore(" – MyNimeku")
+                    ?.substringBefore(" | MyNimeku")
+                    ?.trim()
+                    .orEmpty()
+            }
+            .ifBlank {
+                document.title()
+                    .substringBefore(" - MyNimeku")
+                    .substringBefore(" – MyNimeku")
+                    .substringBefore(" | MyNimeku")
+                    .trim()
+            }
+            .ifBlank { url.trimEnd('/').substringAfterLast('/').replace("-", " ") }
+    }
+
+    private fun parsePoster(document: Document, base: String): String? {
+        return selectBestImage(document.selectFirst(".komik-series-hero__cover") ?: document, base)
+            ?: normalizeUrlOrNull(document.selectFirst("meta[property=og:image]")?.attr("content"), base)
+            ?: normalizeUrlOrNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"), base)
+    }
+
+    private fun parseInfoValue(document: Document, label: String): String? {
+        val wanted = label.lowercase()
+
+        document.select(".komik-series-info tr, .komik-series-card tr").forEach { row ->
+            val key = row.selectFirst("th")?.text()?.trim(':', ' ')?.lowercase()
+            if (key == wanted || key?.startsWith(wanted) == true) {
+                val value = row.selectFirst("td")?.text()?.trim()
+                if (!value.isNullOrBlank()) return value
+            }
+        }
+
+        document.select(".komik-series-info li, .komik-series-info div, .komik-series-card li, .komik-series-card div").forEach { element ->
+            val key = element.selectFirst(".komik-series-info__label, .komik-series-meta__label, .label, strong, b")
+                ?.text()
+                ?.trim(':', ' ')
+                ?.lowercase()
+            if (key == wanted || key?.startsWith(wanted) == true) {
+                val value = element.selectFirst(".komik-series-info__value, .komik-series-meta__value, .value")
+                    ?.text()
+                    ?.trim()
+                    ?: element.text().replace(Regex("""(?i)^\s*${Regex.escape(label)}\s*:?\s*"""), "").trim()
+                if (value.isNotBlank() && !value.equals(label, true)) return value
+            }
+        }
+
+        val text = document.select(".komik-series-info, .komik-series-card").text()
+        return Regex("""(?i)\b${Regex.escape(label)}\s+([^\n\r]+?)(?=\s+(?:Status|Type|Japanese|Synonyms|English|Rating|Release Date|Episodes|Duration|Season|Studio|Producer|Years|Rate)\b|$)""")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun selectBestImage(element: Element, base: String): String? {
+        return element.select("img").asSequence()
+            .mapNotNull { it.imageAttr() }
+            .mapNotNull { normalizeUrlOrNull(it, base) }
+            .firstOrNull { isValidImageUrl(it) }
+    }
+
+    private fun isValidImageUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.startsWith("http") &&
+            !lower.startsWith("data:") &&
+            !lower.contains("svg%3csvg") &&
+            !lower.endsWith(".svg") &&
+            !lower.contains("icon-mynimeku") &&
+            !lower.contains("/assets/img/preview") &&
+            !isAdUrl(lower)
+    }
+
+    private fun playerCandidatePriority(url: String): Int {
+        val lower = url.lowercase()
+        return when {
+            isGoogleDriveMedia(url) -> 1000
+            lower.contains("players.myplayerku.my.id/drive/") -> 950
+            isWorkersMedia(url) -> 900
+            lower.contains("players.myplayerku.my.id/public/") -> 850
+            lower.contains("players.myplayerku.my.id/proxy/") -> 800
+            isDirectMedia(url) -> 750
+            isMyPlayerku(url) -> 700
+            lower.contains("googlevideo.com/videoplayback") -> 650
+            lower.contains("drive.google.com") -> 600
+            else -> 0
         }
     }
 
@@ -593,7 +697,7 @@ class MynimekuProvider : MainAPI() {
         document.select(
             "option[value], [data-video], [data-src], [data-url], [data-iframe], [data-player], [data-player-url], [data-link], [data-file]"
         ).forEach { element ->
-            listOf(
+            val values = listOf(
                 element.attr("value"),
                 element.attr("data-video"),
                 element.attr("data-src"),
@@ -603,8 +707,10 @@ class MynimekuProvider : MainAPI() {
                 element.attr("data-player-url"),
                 element.attr("data-link"),
                 element.attr("data-file")
-            ).forEach { value ->
-                if (value.isBlank()) return@forEach
+            )
+
+            for (value in values) {
+                if (value.isBlank()) continue
                 decodeServerValue(value)?.let { decoded ->
                     Jsoup.parse(decoded).select("iframe[src], video[src], source[src], embed[src], a[href]")
                         .forEach { embedded ->
@@ -635,10 +741,14 @@ class MynimekuProvider : MainAPI() {
             .map { cleanCandidate(it) }
             .filter { it.isNotBlank() }
             .distinct()
+            .sortedWith(
+                compareByDescending<String> { playerCandidatePriority(it) }
+                    .thenBy { it.lowercase() }
+            )
     }
 
     private suspend fun emitDirect(link: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
-        if (!isDirectMedia(link) || isBadUrl(link)) return false
+        if (!(isDirectMedia(link) || isWorkersMedia(link)) || isBadUrl(link)) return false
 
         callback(
             newExtractorLink(
@@ -768,6 +878,7 @@ class MynimekuProvider : MainAPI() {
             isMyPlayerku(url) ||
             isGoogleDriveMedia(url) ||
             lower.contains("googlevideo.com") ||
+            isWorkersMedia(url) ||
             lower.contains("/embed") ||
             lower.contains("embed/") ||
             lower.contains("player") ||
@@ -795,6 +906,13 @@ class MynimekuProvider : MainAPI() {
             lower.contains("instagram.com") ||
             lower.contains("youtube.com") ||
             lower.contains("trakteer.id") ||
+            lower.contains("guidepaparazzisurface") ||
+            lower.contains("odqghulazoz") ||
+            lower.contains("wpadmngr") ||
+            lower.contains("admanager") ||
+            lower.contains("slot") ||
+            lower.contains("judi") ||
+            lower.contains("promo") ||
             lower.contains("mailto:") ||
             lower.contains("/genre/") ||
             lower.contains("/tag/") ||
@@ -830,7 +948,8 @@ class MynimekuProvider : MainAPI() {
             path.endsWith(".mov") ||
             lower.contains("googlevideo.com/videoplayback") ||
             lower.contains("redirector.googlevideo.com/videoplayback") ||
-            isGoogleDriveMedia(url)
+            isGoogleDriveMedia(url) ||
+            isWorkersMedia(url)
     }
 
     private fun isM3u8Media(url: String): Boolean {
@@ -872,15 +991,13 @@ class MynimekuProvider : MainAPI() {
         }.getOrDefault(link.substringBefore("?").trimEnd('/').lowercase())
     }
 
-    private fun detectType(url: String, vararg titleHints: String): TvType {
+    private fun detectType(url: String, vararg titleHints: String?): TvType {
         val lowerUrl = url.lowercase()
-        val lowerText = titleHints.joinToString(" ").lowercase()
+        val hints = titleHints.filterNotNull().joinToString(" ").lowercase()
 
         return when {
-            lowerText.contains("type movie") || Regex("""(?i)\bmovie\b""").containsMatchIn(lowerText) -> TvType.AnimeMovie
-            lowerText.contains("type ova") || Regex("""(?i)\b(?:ova|special)\b""").containsMatchIn(lowerText) -> TvType.OVA
-            lowerUrl.contains("t%3amovie") -> TvType.AnimeMovie
-            lowerUrl.contains("t%3aova") || lowerUrl.contains("t%3aspecial") -> TvType.OVA
+            Regex("""(?i)\bmovie\b""").containsMatchIn(hints) || lowerUrl.contains("t:movie") || lowerUrl.contains("t%3amovie") -> TvType.AnimeMovie
+            Regex("""(?i)\b(?:ova|special|ona)\b""").containsMatchIn(hints) || lowerUrl.contains("t:ova") || lowerUrl.contains("t:special") || lowerUrl.contains("t:ona") -> TvType.OVA
             else -> TvType.Anime
         }
     }
@@ -981,7 +1098,17 @@ class MynimekuProvider : MainAPI() {
 
     private fun isNoiseText(text: String): Boolean {
         val lower = text.lowercase()
-        return lower.contains("laporkan masalah") ||
+        return lower.contains("iklan") ||
+            lower.contains("ads") ||
+            lower.contains("slot") ||
+            lower.contains("judi") ||
+            lower.contains("promo") ||
+            lower.contains("fan talk") ||
+            lower.contains("fan discussion") ||
+            lower.contains("ruang ngobrol") ||
+            lower.contains("simpan nama") ||
+            lower.contains("komentar saya berikutnya") ||
+            lower.contains("laporkan masalah") ||
             lower.contains("bantu kami memperbaiki") ||
             lower.contains("fan discussion") ||
             lower.contains("belum ada komentar") ||
@@ -990,6 +1117,20 @@ class MynimekuProvider : MainAPI() {
             lower.contains("daftar disini") ||
             lower.contains("mynimeku tidak menyimpan file") ||
             lower.contains("bagikan mynimeku")
+    }
+
+    private fun isAdUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("ads") ||
+            lower.contains("slot") ||
+            lower.contains("judi") ||
+            lower.contains("promo") ||
+            lower.contains("doubleclick") ||
+            lower.contains("googlesyndication") ||
+            lower.contains("guidepaparazzisurface") ||
+            lower.contains("odqghulazoz") ||
+            lower.contains("wpadmngr") ||
+            lower.contains("admanager")
     }
 
     private fun defaultHeaders(referer: String = mainUrl): Map<String, String> {
@@ -1002,15 +1143,19 @@ class MynimekuProvider : MainAPI() {
 
     private fun Element.imageAttr(): String? {
         val image = if (tagName().equals("img", true)) this else selectFirst("img")
-        return image?.attr("abs:data-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("abs:data-lazy-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("abs:data-original")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("abs:srcset")?.substringBefore(" ")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("abs:src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("data-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("data-original")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("src")?.substringBefore(" ")?.takeIf { it.isNotBlank() }
+        return listOf(
+            image?.attr("abs:data-src"),
+            image?.attr("abs:data-lazy-src"),
+            image?.attr("abs:data-original"),
+            image?.attr("abs:srcset")?.substringBefore(" "),
+            image?.attr("abs:src"),
+            image?.attr("data-src"),
+            image?.attr("data-lazy-src"),
+            image?.attr("data-original"),
+            image?.attr("srcset")?.substringBefore(" "),
+            image?.attr("src")?.substringBefore(" ")
+        ).map { it?.trim().orEmpty() }
+            .firstOrNull { it.isNotBlank() && !it.startsWith("data:", true) }
     }
 
     private fun Element?.iframeAttr(): String? {
