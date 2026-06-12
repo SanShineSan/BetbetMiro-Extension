@@ -2,7 +2,7 @@ android {
     namespace = "com.sad25kag.minioppai"
 }
 
-version = 1
+version = 2
 
 cloudstream {
     authors = listOf("sad25kag")
