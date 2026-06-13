@@ -168,6 +168,7 @@ class NontonAnimeX : MainAPI() {
         val emittedUrls = linkedSetOf<String>()
 
         fun emit(link: ExtractorLink) {
+            if (link.url.cleanMediaUrl().isBlockedMediaUrl()) return
             if (emittedUrls.add(link.url.substringBefore("#"))) {
                 callback(link)
                 emitted = true
@@ -201,19 +202,12 @@ class NontonAnimeX : MainAPI() {
             if (candidateUrl.isBlank()) return
 
             val sourceLabel = resolvePlaybackLabel(candidateUrl, candidate.label) ?: return
+            val sourceReferer = playbackReferer(candidateUrl, sourceLabel, pageUrl)
 
-            if (emitDirect(candidateUrl, pageUrl, sourceLabel)) return
-
-            if (candidateUrl.isBloggerHost()) {
-                val bloggerLinks = extractBloggerDirectVideos(candidateUrl, pageUrl)
-                bloggerLinks.forEach { video ->
-                    emitDirect(video.url, "https://www.blogger.com/", "Blogger")
-                }
-                if (bloggerLinks.isNotEmpty()) return
-            }
+            if (emitDirect(candidateUrl, sourceReferer, sourceLabel)) return
 
             runCatching {
-                loadExtractor(candidateUrl, pageUrl, subtitleCallback) { link ->
+                loadExtractor(candidateUrl, sourceReferer, subtitleCallback) { link ->
                     emit(link)
                 }
             }
@@ -221,7 +215,7 @@ class NontonAnimeX : MainAPI() {
             if (emitted) return
 
             val iframePage = runCatching {
-                app.get(candidateUrl, headers = siteHeaders + mapOf("Referer" to pageUrl), referer = pageUrl, timeout = 20000L)
+                app.get(candidateUrl, headers = siteHeaders + mapOf("Referer" to sourceReferer), referer = sourceReferer, timeout = 20000L)
             }.getOrNull() ?: return
 
             val iframeHtml = iframePage.text
@@ -237,7 +231,7 @@ class NontonAnimeX : MainAPI() {
                 .map { it.value.cleanMediaUrl() }
                 .filter { it.isPlayableMediaUrl() }
                 .distinct()
-                .forEach { emitDirect(it, candidateUrl, sourceLabel) }
+                .forEach { emitDirect(it, playbackReferer(it, sourceLabel, candidateUrl), sourceLabel) }
         }
 
         val candidates = linkedMapOf<String, VideoCandidate>()
@@ -429,21 +423,29 @@ class NontonAnimeX : MainAPI() {
     }
 
     private fun resolvePlaybackLabel(url: String, label: String): String? {
-        val value = "$url $label".lowercase()
+        val cleanUrl = url.cleanMediaUrl().lowercase()
+        val cleanLabel = label.cleanTitleForCompare()
         return when {
-            value.contains("dailymotion.com") || value.contains("geo.dailymotion") -> "GeoDailymotion"
-            value.contains("minochinos") -> "Minochinos"
-            value.contains("rumble.com") -> "Rumble"
-            value.contains("emturbovid") || value.contains("turbovid") -> "Emturbovid"
-            value.contains("blogger.com/video.g") || value.contains("googlevideo.com/videoplayback") -> "Blogger"
+            cleanUrl.contains("dailymotion.com") || cleanUrl.contains("geo.dailymotion") ||
+                cleanLabel.contains("dailymotion") -> "GeoDailymotion"
+            cleanUrl.contains("minochinos") || cleanLabel.contains("minochinos") -> "Minochinos"
+            cleanUrl.contains("rumble.com") || cleanLabel.contains("rumble") -> "Rumble"
+            cleanUrl.contains("emturbovid") || cleanUrl.contains("turbovid") ||
+                cleanLabel.contains("emturbovid") || cleanLabel.contains("turbovid") -> "Emturbovid"
+            cleanUrl.contains("mega.nz/file/") || cleanUrl.contains("mega.nz/embed/") -> "Mega"
+            cleanUrl.contains("krakenfiles.com") || cleanUrl.contains("krakencloud.net/play/video/") ||
+                cleanLabel == "kfiles" && cleanUrl.contains("kraken") -> "KFiles"
             else -> null
         }
     }
 
-    private fun String.isBloggerHost(): Boolean {
-        val value = lowercase()
-        return value.contains("blogger.com/video.g") ||
-            value.contains("googlevideo.com/videoplayback")
+    private fun playbackReferer(url: String, label: String, fallback: String): String {
+        val cleanUrl = url.lowercase()
+        return when {
+            label == "KFiles" || cleanUrl.contains("krakencloud.net") || cleanUrl.contains("krakenfiles.com") -> "https://krakenfiles.com/"
+            label == "Mega" || cleanUrl.contains("mega.nz") -> "https://mega.nz/"
+            else -> fallback
+        }
     }
 
     private fun String.isLikelyVideoHost(): Boolean {
@@ -457,7 +459,7 @@ class NontonAnimeX : MainAPI() {
                 value.contains(".mp4") ||
                 value.contains(".webm") ||
                 value.contains(".mkv") ||
-                value.contains("googlevideo.com/videoplayback")
+                value.contains("krakencloud.net/play/video/")
         )
     }
 
@@ -468,7 +470,8 @@ class NontonAnimeX : MainAPI() {
             ".css", ".js", ".woff", ".woff2", ".ttf", ".eot"
         ).any { value.endsWith(it) } || listOf(
             "shopee", "ads", "banner", "doubleclick", "googlesyndication",
-            "googleadservices", "adservice", "analytics"
+            "googleadservices", "adservice", "analytics", "blogger.com",
+            "blogger.googleusercontent.com", "googlevideo.com", "youtube.googleapis.com"
         ).any { lowercase().contains(it) }
     }
 
@@ -596,129 +599,6 @@ class NontonAnimeX : MainAPI() {
             ?: Qualities.Unknown.value
     }
 
-    private suspend fun extractBloggerDirectVideos(url: String, referer: String?): List<ResolvedVideo> {
-        val fixedUrl = fixUrlSafe(url.cleanMediaUrl())
-
-        if (!fixedUrl.isBlockedMediaUrl() && fixedUrl.isPlayableMediaUrl() &&
-            fixedUrl.contains("googlevideo.com/videoplayback", true)
-        ) {
-            return listOf(
-                ResolvedVideo(
-                    url = fixedUrl,
-                    quality = itagToQuality(
-                        Regex("""[?&]itag=(\d+)""")
-                            .find(fixedUrl)
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.toIntOrNull()
-                    )
-                )
-            )
-        }
-
-        val page = runCatching {
-            app.get(
-                fixedUrl,
-                referer = referer ?: "$mainUrl/",
-                headers = mapOf(
-                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "User-Agent" to USER_AGENT
-                ),
-                timeout = 20000L
-            )
-        }.getOrNull() ?: return emptyList()
-
-        val pageHtml = page.text
-        val directFromPage = extractGoogleVideos(pageHtml)
-        if (directFromPage.isNotEmpty()) return directFromPage
-
-        val token = Regex("""[?&]token=([^&]+)""")
-            .find(fixedUrl)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: Regex("""[?&]token=([^&"']+)""")
-                .find(pageHtml.decodeEscaped())
-                ?.groupValues
-                ?.getOrNull(1)
-            ?: return emptyList()
-
-        val fSid = Regex("""FdrFJe":"(-?\d+)"""")
-            .find(pageHtml)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: ""
-        val bl = Regex("""cfb2h":"([^"]+)"""")
-            .find(pageHtml)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return emptyList()
-        val hl = Regex("""<html[^>]+lang=["']([^"']+)["']""")
-            .find(pageHtml)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.ifBlank { null }
-            ?: "id"
-
-        val rpcId = "WcwnYd"
-        val payload = """[[["$rpcId","[\"$token\",\"\",0]",null,"generic"]]]"""
-        val apiUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
-            "?rpcids=$rpcId&source-path=%2Fvideo.g&f.sid=$fSid&bl=$bl&hl=$hl&_reqid=81327&rt=c"
-
-        val response = runCatching {
-            app.post(
-                apiUrl,
-                data = mapOf("f.req" to payload),
-                referer = fixedUrl,
-                cookies = page.cookies,
-                headers = mapOf(
-                    "Origin" to "https://www.blogger.com",
-                    "Accept" to "*/*",
-                    "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
-                    "X-Same-Domain" to "1",
-                    "User-Agent" to USER_AGENT
-                ),
-                timeout = 20000L
-            ).text
-        }.getOrNull() ?: return emptyList()
-
-        return extractGoogleVideos(response)
-    }
-
-    private fun extractGoogleVideos(source: String): List<ResolvedVideo> {
-        return Regex("""https://[^\s"']+""")
-            .findAll(source.decodeEscaped())
-            .map { it.value.cleanMediaUrl() }
-            .filter {
-                !it.isBlockedMediaUrl() && it.contains("googlevideo.com/videoplayback", true)
-            }
-            .distinct()
-            .map { videoUrl ->
-                ResolvedVideo(
-                    url = videoUrl,
-                    quality = itagToQuality(
-                        Regex("""[?&]itag=(\d+)""")
-                            .find(videoUrl)
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.toIntOrNull()
-                    )
-                )
-            }
-            .toList()
-    }
-
-    private fun itagToQuality(itag: Int?): Int {
-        return when (itag) {
-            37, 137 -> Qualities.P1080.value
-            22, 136 -> Qualities.P720.value
-            59, 135 -> Qualities.P480.value
-            18, 43, 134 -> Qualities.P360.value
-            36, 133 -> Qualities.P240.value
-            17, 160 -> Qualities.P144.value
-            else -> Qualities.Unknown.value
-        }
-    }
-
     private fun fixUrlSafe(url: String): String {
         val cleaned = url.trim().htmlUnescape().decodeEscaped()
         return when {
@@ -732,10 +612,5 @@ class NontonAnimeX : MainAPI() {
     private data class VideoCandidate(
         val url: String,
         val label: String = ""
-    )
-
-    private data class ResolvedVideo(
-        val url: String,
-        val quality: Int
     )
 }
