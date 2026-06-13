@@ -1,9 +1,9 @@
-version = 5
+version = 6
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "NoDrakorID provider for richemmerson.com with source-backed categories, filtered cards, and AbyssPlayer, Boosterx, and guarded unsupported player handling."
+    description = "NoDrakorID Stable Candidate for richemmerson.com with cleaned categories, duplicate-card filtering, and source-backed sf21/minochinos playback handling."
 
     status = 1
 

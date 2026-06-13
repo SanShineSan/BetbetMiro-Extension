@@ -39,18 +39,16 @@ internal object NoDrakorIDParser {
         val cards = parseCards(api, doc).take(40)
         if (cards.isNotEmpty()) return cards
 
-        return doc.select("a[href]").mapNotNull { anchor -> parseCard(api, anchor) }
-            .distinctBy { it.url }
+        return dedupeCards(doc.select("a[href]").mapNotNull { anchor -> parseCard(api, anchor) })
             .take(40)
     }
 
     fun parseCards(api: MainAPI, doc: Document, query: String? = null): List<SearchResponse> {
         val needle = query?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
-        return doc.select(cardSelectors)
+        val cards = doc.select(cardSelectors)
             .mapNotNull { parseCard(api, it) }
             .filter { needle == null || it.name.lowercase().contains(needle) }
-            .distinctBy { it.url }
-            .take(100)
+        return dedupeCards(cards).take(100)
     }
 
     private fun parseCard(api: MainAPI, element: Element): SearchResponse? {
@@ -160,5 +158,33 @@ internal object NoDrakorIDParser {
         return element.selectFirst("h1 a[href], h2 a[href], h3 a[href], .entry-title a[href], .data h3 a[href], .data h2 a[href], .title a[href], .name a[href]")
             ?: element.selectFirst("a[href*='/episode/'], a[href*='/eps/'], a[href*='/tv/'], a[href]:has(img)")
             ?: element.selectFirst("a[href]")
+    }
+
+    private fun dedupeCards(cards: List<SearchResponse>): List<SearchResponse> {
+        val seenUrls = linkedSetOf<String>()
+        val seenTitles = linkedSetOf<String>()
+        return cards.filter { card ->
+            val urlKey = normalizeCardUrl(card.url)
+            val titleKey = normalizeCardTitle(card.name)
+            val urlFresh = urlKey.isBlank() || seenUrls.add(urlKey)
+            val titleFresh = titleKey.isBlank() || seenTitles.add(titleKey)
+            urlFresh && titleFresh
+        }
+    }
+
+    private fun normalizeCardUrl(url: String): String {
+        return NoDrakorIDUtils.decodeKnownRedirect(url)
+            .substringBefore('#')
+            .substringBefore('?')
+            .trimEnd('/')
+            .lowercase()
+    }
+
+    private fun normalizeCardTitle(title: String): String {
+        return NoDrakorIDUtils.cleanTitle(title)
+            .lowercase()
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("[^a-z0-9 ]"), "")
+            .trim()
     }
 }

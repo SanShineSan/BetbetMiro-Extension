@@ -6,7 +6,6 @@ internal object NoDrakorIDSepeda {
     const val LANGUAGE = "id"
 
     val mainPages = listOf(
-        NoDrakorIDCategory("/", "Beranda"),
         NoDrakorIDCategory("/genre/action/", "Action"),
         NoDrakorIDCategory("/genre/adventure/", "Adventure"),
         NoDrakorIDCategory("/genre/animation/", "Animation"),
