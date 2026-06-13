@@ -1,9 +1,9 @@
-version = 8
+version = 9
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "NoDrakorID v8 with Film21/LayarKaca-style playback fallback, sf21 multi-candidate HLS, and XFileShare stream reconstruction for minochinos/Dintezuvio."
+    description = "NoDrakorID v9 sf21-only playback resolver aligned with HAR evidence from richemmerson.com -> sf21.vidplayer.live encrypted API -> sf21 HLS."
 
     status = 1
 
