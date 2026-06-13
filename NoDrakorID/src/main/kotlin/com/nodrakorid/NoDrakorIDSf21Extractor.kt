@@ -80,15 +80,29 @@ class NoDrakorIDSf21VidPlayer : ExtractorApi() {
 
     private fun sf21PrimaryCandidates(root: JsonNode): List<String> {
         val config = parseStreamingConfig(root.path("streamingConfig"))
-        val primary = root.path("hlsVideoTiktok").asText("").takeIf { it.isNotBlank() && !isDisabled(config, "Tiktok") }
-        val withParams = primary?.let { applyStreamingParams(it, config, "Tiktok") }
-        if (!withParams.isNullOrBlank()) return listOf(withParams)
+        val output = linkedSetOf<String>()
+        val tiktok = root.path("hlsVideoTiktok").asText("")
+            .takeIf { it.isNotBlank() && !isDisabled(config, "Tiktok") }
+            ?.let { applyStreamingParams(it, config, "Tiktok") }
+        if (!tiktok.isNullOrBlank()) output += tiktok
 
-        return listOf(
+        // Film21-style fallback: HAR shows sf21 exposes more than one media field.
+        // Emit every playable candidate, not only the first one, so CloudStream has
+        // a direct fallback if one CDN rejects the request at runtime.
+        listOf(
             root.path("source").asText(""),
             root.path("hlsVideoGoogle").asText(""),
             root.path("cf").asText("")
-        ).filter { it.isNotBlank() }
+        ).filter { it.isNotBlank() }.forEach { output += normalizeSf21Candidate(it) }
+        return output.filter { it.isNotBlank() }
+    }
+
+    private fun normalizeSf21Candidate(raw: String): String {
+        val clean = NoDrakorIDUtils.cleanUrlText(raw)
+        return when {
+            clean.contains("cf-master", true) && clean.endsWith(".txt", true) -> clean.replace(".txt", ".m3u8")
+            else -> clean
+        }
     }
 
     private fun parseStreamingConfig(node: JsonNode): JsonNode? {
@@ -148,7 +162,7 @@ class NoDrakorIDSf21VidPlayer : ExtractorApi() {
                         source = name,
                         name = displayName,
                         url = url,
-                        type = ExtractorLinkType.VIDEO
+                        type = if (url.contains(".m3u8", true) || url.contains("/hls/", true) || url.contains("/v4/", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = getQualityFromName(url).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value
@@ -214,6 +228,13 @@ open class NoDrakorIDMinochinos : ExtractorApi() {
         val links = parseLinksObject(scan)
         val emitted = linkedSetOf<String>()
 
+        // Film21 reference pattern for XFileShare: active minochinos pages can
+        // keep stream parts inside packed text, so rebuild the master.m3u8 path
+        // from file_id + packed token triplet before trying JW sources.
+        xFileShareStream(scan, origin)?.let { rebuilt ->
+            if (emitted.add(normalizeMediaKey(rebuilt))) emitXFileHls(rebuilt, pageUrl, callback)
+        }
+
         jwPlayerSources(scan, links).forEach { rawUrl ->
             val videoUrl = absoluteToOrigin(origin, rawUrl) ?: return@forEach
             if (!isXFileHls(videoUrl, origin) || !emitted.add(normalizeMediaKey(videoUrl))) return@forEach
@@ -278,6 +299,16 @@ open class NoDrakorIDMinochinos : ExtractorApi() {
         return output.toList()
     }
 
+    private fun xFileShareStream(text: String, origin: String): String? {
+        val fileId = Regex("""${'$'}\.cookie\(["']file_id["']\s*,\s*["'](\d+)["']""")
+            .find(text)?.groupValues?.getOrNull(1) ?: return null
+        val stream = Regex("""\|(\d{10})\|([a-z0-9]+)\|([A-Za-z0-9_-]{16,})\|""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .map { it.groupValues }
+            .firstOrNull { it[3].length >= 20 } ?: return null
+        return "${origin.trimEnd('/')}/stream/${stream[3]}/${stream[2]}/${stream[1]}/$fileId/master.m3u8"
+    }
+
     private fun isXFileHls(url: String, origin: String): Boolean {
         val lower = url.lowercase()
         if (isAdUrl(lower)) return false
@@ -301,7 +332,7 @@ open class NoDrakorIDMinochinos : ExtractorApi() {
         }
         if (!emitted) {
             runCatching {
-                callback(newExtractorLink(name, "$name HLS", url, ExtractorLinkType.VIDEO) {
+                callback(newExtractorLink(name, "$name HLS", url, ExtractorLinkType.M3U8) {
                     this.referer = pageUrl
                     this.quality = getQualityFromName(url).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value
                     this.headers = headers

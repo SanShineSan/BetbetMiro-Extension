@@ -36,9 +36,9 @@ private data class NoDrakorIDAbyssPayload(
 )
 
 internal object NoDrakorIDExtractor {
-    private const val EXTRACT_TIMEOUT_MS = 45_000L
-    private const val REQUEST_TIMEOUT_MS = 12_000L
-    private const val LOAD_EXTRACTOR_TIMEOUT_MS = 14_000L
+    private const val EXTRACT_TIMEOUT_MS = 70_000L
+    private const val REQUEST_TIMEOUT_MS = 20_000L
+    private const val LOAD_EXTRACTOR_TIMEOUT_MS = 25_000L
     private const val MAX_DEPTH = 5
 
     private val directVideoRegex = Regex(
@@ -390,7 +390,7 @@ internal object NoDrakorIDExtractor {
                         source = label.ifBlank { "NoDrakorID HLS" },
                         name = label.ifBlank { "NoDrakorID HLS" },
                         url = clean,
-                        type = ExtractorLinkType.VIDEO
+                        type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = referer
                         this.quality = getQualityFromName(clean).takeIf { it != Qualities.Unknown.value } ?: Qualities.Unknown.value

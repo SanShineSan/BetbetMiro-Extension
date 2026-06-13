@@ -1,9 +1,9 @@
-version = 7
+version = 8
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "NoDrakorID Stable Candidate for richemmerson.com with direct HAR-backed sf21/minochinos playback bridges, active iframe host routing, and guarded HLS fallback emission."
+    description = "NoDrakorID v8 with Film21/LayarKaca-style playback fallback, sf21 multi-candidate HLS, and XFileShare stream reconstruction for minochinos/Dintezuvio."
 
     status = 1
 
