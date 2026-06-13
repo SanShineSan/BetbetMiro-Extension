@@ -6,7 +6,6 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 
@@ -33,28 +32,16 @@ class NontonAnimeX : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/terbaru/page/%d" to "Anime Terbaru",
-        "$mainUrl/ongoing/page/%d" to "Anime Ongoing",
         "$mainUrl/complete/page/%d" to "Anime Complete",
-        "$mainUrl/jadwal-rilis/page/%d" to "Jadwal Rilis",
         "$mainUrl/donghua/terbaru/page/%d" to "Donghua Terbaru",
-        "$mainUrl/donghua/status/ongoing/page/%d" to "Donghua Ongoing",
         "$mainUrl/donghua/status/completed/page/%d" to "Donghua Complete",
-        "$mainUrl/genre/action/page/%d" to "Action",
-        "$mainUrl/genre/adventure/page/%d" to "Adventure",
-        "$mainUrl/genre/comedy/page/%d" to "Comedy",
-        "$mainUrl/genre/fantasy/page/%d" to "Fantasy",
-        "$mainUrl/genre/romance/page/%d" to "Romance",
-        "$mainUrl/genre/school/page/%d" to "School",
-        "$mainUrl/genre/shounen/page/%d" to "Shounen",
-        "$mainUrl/donghua/genres/cultivation/page/%d" to "Cultivation",
-        "$mainUrl/donghua/genres/martial-arts/page/%d" to "Martial Arts",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(buildPageUrl(request.data, page), headers = siteHeaders).document
         val results = document.select(
             ".main-col .listbox .xrelated, .main-col .xrelated, .asw-item, " +
-                ".ulinklist li, .slist li"
+                "article, .post, .bs, .listupd article"
         ).mapNotNull { it.toSearchResult() }.distinctBy { it.url }
 
         val hasNext = document.select(
@@ -81,7 +68,7 @@ class NontonAnimeX : MainAPI() {
                 val document = app.get(url, headers = siteHeaders).document
                 document.select(
                     ".main-col .listbox .xrelated, .main-col .xrelated, .asw-item, " +
-                        "a[href*=/episode/], a[href*=/anime/], a[href*=/donghua/]"
+                        "article, .post, .bs, .listupd article, .search-results article"
                 ).mapNotNull { it.toSearchResult() }.forEach { results[it.url] = it }
             }
         }
@@ -107,7 +94,7 @@ class NontonAnimeX : MainAPI() {
             ?: throw ErrorLoadingException("Title not found")
 
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let(::fixUrlSafe)
-            ?: document.selectFirst(".ppcov img, .ccov img, .post-body img, img")?.imageUrl()
+            ?: document.selectFirst(".ppcov img, .ccov img, .post-body img, .entry-content img, img")?.imageUrl()
 
         val plot = document.selectFirst(".sinops, .sinopsis, .entry-content, .post-body p")
             ?.text()
@@ -118,7 +105,9 @@ class NontonAnimeX : MainAPI() {
         val genres = document.select(
             ".genres a, .post-body a[href*=/genre/], .post-body a[href*=/genres/], " +
                 ".infolt a[href*=/genre/], .infolt a[href*=/genres/]"
-        ).map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
+        ).map { it.text().trim() }
+            .filter { it.isNotBlank() && !it.isBlockedContentTitle() }
+            .distinct()
 
         val status = document.statusFromInfo()
         val year = Regex("""\b(19|20)\d{2}\b""")
@@ -126,13 +115,15 @@ class NontonAnimeX : MainAPI() {
             ?.value
             ?.toIntOrNull()
 
-        val recommendations = document.select(".asw-item, .xrelated")
+        val recommendations = document.select(".asw-item, .xrelated, article, .post")
             .mapNotNull { it.toSearchResult() }
             .filterNot { it.url == fixedUrl }
             .distinctBy { it.url }
 
-        val episodes = document.select(".slist a[href], .ulinklist a[href], #selecteps option[value]")
-            .mapNotNull { it.toEpisode() }
+        val episodes = document.select(
+            ".slist a[href], .ulinklist a[href], #selecteps option[value], " +
+                "select[name=episode] option[value], select.episode option[value]"
+        ).mapNotNull { it.toEpisode() }
             .distinctBy { it.data }
             .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name })
 
@@ -205,32 +196,17 @@ class NontonAnimeX : MainAPI() {
         suspend fun inspectCandidate(candidate: VideoCandidate, depth: Int = 0) {
             if (depth > 3) return
 
-            var candidateUrl = fixUrlSafe(candidate.url.cleanMediaUrl())
+            val candidateUrl = fixUrlSafe(candidate.url.cleanMediaUrl())
             if (candidateUrl.isBlank()) return
 
-            if (candidateUrl.contains("link.desustream.com", true)) {
-                val encoded = URLEncoder.encode(candidateUrl, "UTF-8")
-                candidateUrl = "$mainUrl/lstream?to=$encoded"
-            }
+            val sourceLabel = resolvePlaybackLabel(candidateUrl, candidate.label) ?: return
 
-            if (candidateUrl.contains("$mainUrl/lstream", true)) {
-                val resolved = runCatching {
-                    app.get(candidateUrl, headers = siteHeaders, referer = pageUrl, timeout = 20000L).url
-                }.getOrNull()
-                if (!resolved.isNullOrBlank() && resolved != candidateUrl) {
-                    inspectCandidate(candidate.copy(url = resolved), depth + 1)
-                    return
-                }
-            }
+            if (emitDirect(candidateUrl, pageUrl, sourceLabel)) return
 
-            if (emitDirect(candidateUrl, pageUrl, candidate.label)) return
-
-            if (candidateUrl.contains("blogger.com/video.g", true) ||
-                candidateUrl.contains("blogger.googleusercontent.com", true)
-            ) {
+            if (candidateUrl.isBloggerHost()) {
                 val bloggerLinks = extractBloggerDirectVideos(candidateUrl, pageUrl)
                 bloggerLinks.forEach { video ->
-                    emitDirect(video.url, "https://www.blogger.com/", candidate.label.ifBlank { "Blogger" })
+                    emitDirect(video.url, "https://www.blogger.com/", "Blogger")
                 }
                 if (bloggerLinks.isNotEmpty()) return
             }
@@ -251,7 +227,7 @@ class NontonAnimeX : MainAPI() {
             val unpacked = runCatching { getAndUnpack(iframeHtml) }.getOrDefault("")
             val combined = "$iframeHtml\n$unpacked"
 
-            extractMediaCandidates(combined, candidateUrl, candidate.label).forEach {
+            extractMediaCandidates(combined, candidateUrl, sourceLabel).forEach {
                 if (it.url != candidateUrl) inspectCandidate(it, depth + 1)
             }
 
@@ -260,42 +236,59 @@ class NontonAnimeX : MainAPI() {
                 .map { it.value.cleanMediaUrl() }
                 .filter { it.isPlayableMediaUrl() }
                 .distinct()
-                .forEach { emitDirect(it, candidateUrl, candidate.label) }
+                .forEach { emitDirect(it, candidateUrl, sourceLabel) }
         }
 
         val candidates = linkedMapOf<String, VideoCandidate>()
 
-        extractMediaCandidates(html, pageUrl, name).forEach { candidates[it.url] = it }
+        fun addCandidate(rawUrl: String, rawLabel: String) {
+            val cleaned = rawUrl.cleanMediaUrl()
+            val label = cleanSourceLabel(rawLabel)
+            val resolvedLabel = resolvePlaybackLabel(cleaned, label) ?: return
+            candidates[cleaned] = VideoCandidate(cleaned, resolvedLabel)
+        }
+
+        extractMediaCandidates(html, pageUrl, name).forEach { addCandidate(it.url, it.label) }
 
         document.select("iframe[src], video[src], source[src], embed[src]").forEach { element ->
             element.attr("src").takeIf { it.isNotBlank() }?.let {
-                val label = element.attr("title").ifBlank { element.attr("class") }.ifBlank { name }
-                candidates[it] = VideoCandidate(it, label)
+                val label = element.attr("title")
+                    .ifBlank { element.attr("data-title") }
+                    .ifBlank { element.attr("aria-label") }
+                    .ifBlank { element.attr("class") }
+                    .ifBlank { name }
+                addCandidate(it, label)
             }
         }
 
-        document.select("select.mirvid option[value], select[name=mirvid] option[value], option[value]").forEach { option ->
+        document.select("select.mirvid option[value], select[name=mirvid] option[value]").forEach { option ->
             val label = option.text().trim().ifBlank { name }
             val raw = option.attr("value").trim()
             if (raw.isBlank()) return@forEach
             decodeBase64Text(raw)?.let { decoded ->
-                extractMediaCandidates(decoded, pageUrl, label).forEach { candidates[it.url] = it }
+                extractMediaCandidates(decoded, pageUrl, label).forEach { addCandidate(it.url, it.label) }
             }
-            if (raw.startsWith("http", true) || raw.startsWith("//") || raw.startsWith("/")) {
-                candidates[raw] = VideoCandidate(raw, label)
+            if (raw.startsWith("http", true) || raw.startsWith("//")) {
+                addCandidate(raw, label)
             }
         }
 
-        document.select("[data-src], [data-url], [data-link], [data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream]").forEach { element ->
-            val label = element.text().trim().take(40).ifBlank { name }
-            listOf("data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream")
+        document.select("[data-src], [data-url], [data-link], [data-iframe], [data-embed], [data-player], [data-video], [data-file]").forEach { element ->
+            val label = element.attr("data-title")
+                .ifBlank { element.attr("title") }
+                .ifBlank { element.attr("aria-label") }
+                .ifBlank { element.text().trim().take(40) }
+                .ifBlank { name }
+            listOf("data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file")
                 .map { element.attr(it).trim() }
                 .filter { it.isNotBlank() }
                 .forEach { raw ->
                     decodeBase64Text(raw)?.let { decoded ->
-                        extractMediaCandidates(decoded, pageUrl, label).forEach { candidates[it.url] = it }
+                        extractMediaCandidates(decoded, pageUrl, label).forEach { addCandidate(it.url, it.label) }
                     }
-                    candidates[raw] = VideoCandidate(raw, label)
+                    if (raw.startsWith("http", true) || raw.startsWith("//")) {
+                        addCandidate(raw, label)
+                    }
                 }
         }
 
@@ -323,25 +316,23 @@ class NontonAnimeX : MainAPI() {
 
         val href = fixUrlSafe(link.attr("href").trim())
         if (!href.contains(mainUrl) || href == mainUrl || href.contains("#")) return null
-        if (href.contains("/genre/") || href.contains("/genres/") || href.contains("/tag/") ||
-            href.contains("/status/") || href.contains("/page/") || href.contains("/jadwal-rilis")
-        ) return null
+        if (href.isNavigationUrl()) return null
 
-        val rawTitle = selectFirst(".titlelist, .asw-post-ti, h2, h3, h4")?.text()?.takeIf { it.isNotBlank() }
+        val rawTitle = selectFirst(".titlelist, .asw-post-ti, h2, h3, h4, .tt, .entry-title")?.text()?.takeIf { it.isNotBlank() }
             ?: link.attr("title").takeIf { it.isNotBlank() }
             ?: selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
             ?: text()
 
         val title = rawTitle.cleanTitle().takeIf { it.isNotBlank() } ?: return null
-        if (title.equals("Home", true) || title.length < 2) return null
+        if (title.isBlockedContentTitle()) return null
 
         val poster = selectFirst("img")?.imageUrl()
         val ep = Regex("""(\d+)\s*(?:Episode|Eps|Ep)?""", RegexOption.IGNORE_CASE)
-            .find(selectFirst(".eplist")?.text().orEmpty())
+            .find(selectFirst(".eplist, .ep, .episode")?.text().orEmpty())
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
-        val scoreText = selectFirst(".starlist")?.text()?.trim()
+        val scoreText = selectFirst(".starlist, .score, .rating")?.text()?.trim()
 
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             posterUrl = poster
@@ -358,14 +349,18 @@ class NontonAnimeX : MainAPI() {
 
         val href = fixUrlSafe(rawHref)
         if (!href.contains(mainUrl)) return null
+        if (href.isNavigationUrl()) return null
 
         val label = text().cleanTitle().ifBlank { "Episode" }
+        if (label.isBlockedPlaybackLabel()) return null
+        if (!href.isLikelyEpisodeUrl() && !label.hasEpisodeMarker()) return null
+
         val number = Regex("""(?:Episode|Ep)\s*(\d+)""", RegexOption.IGNORE_CASE)
             .find(label)
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
-            ?: Regex("""(\d+)""")
+            ?: Regex("""\b(\d+)\b""")
                 .find(label)
                 ?.groupValues
                 ?.getOrNull(1)
@@ -404,7 +399,8 @@ class NontonAnimeX : MainAPI() {
             val fixed = rawUrl?.trim()?.trim('"', '\'', ' ', ';')?.cleanMediaUrl().orEmpty()
             if (fixed.isBlank()) return
             if (!fixed.startsWith("http", true) && !fixed.startsWith("//") && !fixed.startsWith("/")) return
-            candidates[fixed] = VideoCandidate(fixed, rawLabel.ifBlank { name })
+            val resolvedLabel = resolvePlaybackLabel(fixed, rawLabel) ?: return
+            candidates[fixed] = VideoCandidate(fixed, resolvedLabel)
         }
 
         Regex("""<iframe[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -419,28 +415,40 @@ class NontonAnimeX : MainAPI() {
             .findAll(cleanSource)
             .forEach { add(it.groupValues.getOrNull(1), label) }
 
-        Regex("""(?:data-src|data-url|data-link|data-iframe|data-embed|data-player|data-video|data-file|data-stream)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        Regex("""(?:data-src|data-url|data-link|data-iframe|data-embed|data-player|data-video|data-file)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .findAll(cleanSource)
             .forEach { add(it.groupValues.getOrNull(1), label) }
 
         Regex("""https?://[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
             .findAll(cleanSource)
             .map { it.value.cleanMediaUrl() }
-            .filter { it.isLikelyVideoHost() || it.isPlayableMediaUrl() || it.contains("$mainUrl/lstream", true) }
             .forEach { add(it, label) }
 
         return candidates.values.toList()
     }
 
-    private fun String.isLikelyVideoHost(): Boolean {
+    private fun resolvePlaybackLabel(url: String, label: String): String? {
+        val value = "$url $label".lowercase()
+        return when {
+            value.contains("dailymotion.com") || value.contains("geo.dailymotion") -> "GeoDailymotion"
+            value.contains("minochinos") -> "Minochinos"
+            value.contains("rumble.com") -> "Rumble"
+            value.contains("emturbovid") || value.contains("turbovid") -> "Emturbovid"
+            value.contains("blogger.com/video.g") || value.contains("blogger.googleusercontent.com") ||
+                value.contains("googlevideo.com") || value.contains("youtube.googleapis.com") -> "Blogger"
+            else -> null
+        }
+    }
+
+    private fun String.isBloggerHost(): Boolean {
         val value = lowercase()
-        return listOf(
-            "dailymotion.com", "geo.dailymotion.com", "ok.ru", "rumble.com",
-            "vidhide", "short.ink", "rubystm", "streamruby", "strwish", "streamwish",
-            "krakenfiles.com", "mega.nz", "acefile.co", "desustream.info",
-            "link.desustream.com", "blogger.com/video.g", "googlevideo.com",
-            "blogger.googleusercontent.com"
-        ).any { value.contains(it) }
+        return value.contains("blogger.com/video.g") ||
+            value.contains("blogger.googleusercontent.com") ||
+            value.contains("googlevideo.com")
+    }
+
+    private fun String.isLikelyVideoHost(): Boolean {
+        return resolvePlaybackLabel(this, "") != null
     }
 
     private fun String.isPlayableMediaUrl(): Boolean {
@@ -451,6 +459,57 @@ class NontonAnimeX : MainAPI() {
             value.contains(".mkv") ||
             value.contains("videoplayback") ||
             value.contains("blogger.googleusercontent.com")
+    }
+
+    private fun String.isNavigationUrl(): Boolean {
+        val value = lowercase()
+        return listOf(
+            "/genre/", "/genres/", "/tag/", "/status/", "/page/", "/jadwal-rilis",
+            "anime-list", "bookmark", "schedule", "versi-text", "versi-gambar", "filter",
+            "popular", "populer", "login", "daftar", "register", "mainkan-game", "game",
+            "responsive-stream", "#"
+        ).any { value.contains(it) }
+    }
+
+    private fun String.isLikelyEpisodeUrl(): Boolean {
+        val value = lowercase()
+        return value.contains("/episode/") || value.contains("episode-") || value.contains("-episode") ||
+            Regex("""/ep-?\d+""", RegexOption.IGNORE_CASE).containsMatchIn(value)
+    }
+
+    private fun String.hasEpisodeMarker(): Boolean {
+        return Regex("""\b(?:episode|eps|ep)\s*\d+\b""", RegexOption.IGNORE_CASE).containsMatchIn(this) ||
+            Regex("""\b\d+\s*(?:episode|eps|ep)\b""", RegexOption.IGNORE_CASE).containsMatchIn(this)
+    }
+
+    private fun String.isBlockedContentTitle(): Boolean {
+        val value = cleanTitleForCompare()
+        return value.isBlank() || value.length < 2 || listOf(
+            "home", "bookmark", "schedule", "versi text", "versi gambar", "filter donghua",
+            "populer", "popular", "login", "daftar", "register", "mainkan game", "nontonanimex",
+            "responsive stream", "putar di browser"
+        ).any { value == it || value.contains(it) }
+    }
+
+    private fun String.isBlockedPlaybackLabel(): Boolean {
+        val value = cleanTitleForCompare()
+        return value.isBlank() || listOf(
+            "responsive stream", "nontonanimex", "putar di browser", "browser", "wrapper",
+            "container", "player", "embed", "mirror", "lapor", "lampu", "komentar"
+        ).any { value == it || value.contains(it) }
+    }
+
+    private fun cleanSourceLabel(value: String): String {
+        val cleaned = value.cleanTitle().trim()
+        return if (cleaned.isBlockedPlaybackLabel()) name else cleaned
+    }
+
+    private fun String.cleanTitleForCompare(): String {
+        return cleanTitle()
+            .lowercase()
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
     }
 
     private fun String.cleanTitle(): String {
@@ -546,12 +605,6 @@ class NontonAnimeX : MainAPI() {
             )
         }
 
-        val token = Regex("""[?&]token=([^&]+)""")
-            .find(fixedUrl)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return emptyList()
-
         val page = runCatching {
             app.get(
                 fixedUrl,
@@ -565,6 +618,19 @@ class NontonAnimeX : MainAPI() {
         }.getOrNull() ?: return emptyList()
 
         val pageHtml = page.text
+        val directFromPage = extractGoogleVideos(pageHtml)
+        if (directFromPage.isNotEmpty()) return directFromPage
+
+        val token = Regex("""[?&]token=([^&]+)""")
+            .find(fixedUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: Regex("""[?&]token=([^&"']+)""")
+                .find(pageHtml.decodeEscaped())
+                ?.groupValues
+                ?.getOrNull(1)
+            ?: return emptyList()
+
         val fSid = Regex("""FdrFJe":"(-?\d+)"""")
             .find(pageHtml)
             ?.groupValues
@@ -604,8 +670,12 @@ class NontonAnimeX : MainAPI() {
             ).text
         }.getOrNull() ?: return emptyList()
 
+        return extractGoogleVideos(response)
+    }
+
+    private fun extractGoogleVideos(source: String): List<ResolvedVideo> {
         return Regex("""https://[^\s"']+""")
-            .findAll(response.decodeEscaped())
+            .findAll(source.decodeEscaped())
             .map { it.value.cleanMediaUrl() }
             .filter {
                 it.contains("googlevideo.com/videoplayback", true) ||
