@@ -2,7 +2,7 @@ android {
     namespace = "com.BetbetMiro.nontonanimex"
 }
 
-version = 3
+version = 4
 
 cloudstream {
     language = "id"

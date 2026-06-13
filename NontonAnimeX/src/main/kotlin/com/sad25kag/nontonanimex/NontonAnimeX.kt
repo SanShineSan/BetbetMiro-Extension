@@ -176,6 +176,7 @@ class NontonAnimeX : MainAPI() {
 
         suspend fun emitDirect(url: String, referer: String, label: String = name): Boolean {
             val clean = url.cleanMediaUrl().substringBefore("#")
+            if (clean.isBlockedMediaUrl()) return false
             if (!clean.isPlayableMediaUrl()) return false
             if (!emittedUrls.add(clean)) return true
 
@@ -434,8 +435,7 @@ class NontonAnimeX : MainAPI() {
             value.contains("minochinos") -> "Minochinos"
             value.contains("rumble.com") -> "Rumble"
             value.contains("emturbovid") || value.contains("turbovid") -> "Emturbovid"
-            value.contains("blogger.com/video.g") || value.contains("blogger.googleusercontent.com") ||
-                value.contains("googlevideo.com") || value.contains("youtube.googleapis.com") -> "Blogger"
+            value.contains("blogger.com/video.g") || value.contains("googlevideo.com/videoplayback") -> "Blogger"
             else -> null
         }
     }
@@ -443,8 +443,7 @@ class NontonAnimeX : MainAPI() {
     private fun String.isBloggerHost(): Boolean {
         val value = lowercase()
         return value.contains("blogger.com/video.g") ||
-            value.contains("blogger.googleusercontent.com") ||
-            value.contains("googlevideo.com")
+            value.contains("googlevideo.com/videoplayback")
     }
 
     private fun String.isLikelyVideoHost(): Boolean {
@@ -453,12 +452,24 @@ class NontonAnimeX : MainAPI() {
 
     private fun String.isPlayableMediaUrl(): Boolean {
         val value = lowercase()
-        return value.contains(".m3u8") ||
-            value.contains(".mp4") ||
-            value.contains(".webm") ||
-            value.contains(".mkv") ||
-            value.contains("videoplayback") ||
-            value.contains("blogger.googleusercontent.com")
+        return !value.isBlockedMediaUrl() && (
+            value.contains(".m3u8") ||
+                value.contains(".mp4") ||
+                value.contains(".webm") ||
+                value.contains(".mkv") ||
+                value.contains("googlevideo.com/videoplayback")
+        )
+    }
+
+    private fun String.isBlockedMediaUrl(): Boolean {
+        val value = lowercase().substringBefore("?")
+        return listOf(
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".ico",
+            ".css", ".js", ".woff", ".woff2", ".ttf", ".eot"
+        ).any { value.endsWith(it) } || listOf(
+            "shopee", "ads", "banner", "doubleclick", "googlesyndication",
+            "googleadservices", "adservice", "analytics"
+        ).any { lowercase().contains(it) }
     }
 
     private fun String.isNavigationUrl(): Boolean {
@@ -588,8 +599,8 @@ class NontonAnimeX : MainAPI() {
     private suspend fun extractBloggerDirectVideos(url: String, referer: String?): List<ResolvedVideo> {
         val fixedUrl = fixUrlSafe(url.cleanMediaUrl())
 
-        if (fixedUrl.contains("googlevideo.com/videoplayback", true) ||
-            fixedUrl.contains("blogger.googleusercontent.com", true)
+        if (!fixedUrl.isBlockedMediaUrl() && fixedUrl.isPlayableMediaUrl() &&
+            fixedUrl.contains("googlevideo.com/videoplayback", true)
         ) {
             return listOf(
                 ResolvedVideo(
@@ -678,8 +689,7 @@ class NontonAnimeX : MainAPI() {
             .findAll(source.decodeEscaped())
             .map { it.value.cleanMediaUrl() }
             .filter {
-                it.contains("googlevideo.com/videoplayback", true) ||
-                    it.contains("blogger.googleusercontent.com", true)
+                !it.isBlockedMediaUrl() && it.contains("googlevideo.com/videoplayback", true)
             }
             .distinct()
             .map { videoUrl ->
