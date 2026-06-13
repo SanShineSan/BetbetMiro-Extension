@@ -285,36 +285,63 @@ class NontonDrakor : MainAPI() {
         if (loadExtractor(embedUrl, mainUrl, subtitleCallback, callback)) delivered++
         val text = runCatching { app.get(embedUrl, headers = headers, referer = mainUrl).text }.getOrNull().orEmpty()
         if (text.isBlank()) return delivered
+
         Regex("""https?://[^'\"<>\s]+?\.vtt[^'\"<>\s]*""", RegexOption.IGNORE_CASE).findAll(text.replace("\\/", "/")).forEach { match ->
             val subUrl = match.value.cleanMediaUrl()
             val lang = subUrl.substringAfterLast('/').substringBefore('.').ifBlank { "Subtitle" }
             subtitleCallback(SubtitleFile(lang, subUrl))
         }
-        val candidates = mutableListOf<String>()
-        Regex("""https?://[^'\"<>\s]+?\.mp4[^'\"<>\s]*""", RegexOption.IGNORE_CASE).findAll(text.replace("\\/", "/")).forEach { candidates.add(it.value) }
-        Regex("""//strcloud\.in/get_video\?i['\"]?\s*\+\s*\(['\"]([^'\"]+)['\"]\)\.substring\((\d+)\)""", RegexOption.IGNORE_CASE).findAll(text).forEach { match ->
-            val payload = match.groupValues[1]
-            val start = match.groupValues[2].toIntOrNull() ?: 0
-            candidates.add("https://strcloud.in/get_video?i" + payload.drop(start) + "&stream=1")
-        }
-        candidates.distinct().forEach { candidate ->
+
+        val candidates = extractStrcloudVideoCandidates(text)
+        candidates.forEach { candidate ->
             val fixed = candidate.cleanMediaUrl()
-            if (emitted.add(fixed)) {
-                val finalUrl = runCatching { app.get(fixed, headers = fixed.playbackHeaders(embedUrl), referer = embedUrl).url }.getOrDefault(fixed)
-                val output = finalUrl.cleanMediaUrl()
-                if (emitted.add(output) || output == fixed) {
-                    callback(
-                        newExtractorLink("Strcloud", "Strcloud", output, ExtractorLinkType.VIDEO) {
-                            quality = output.qualityFromUrl()
-                            referer = "https://strcloud.in/"
-                            headers = output.playbackHeaders("https://strcloud.in/")
-                        }
-                    )
-                    delivered++
-                }
+            val finalUrl = runCatching {
+                app.get(fixed, headers = fixed.playbackHeaders(embedUrl), referer = embedUrl).url
+            }.getOrDefault(fixed).cleanMediaUrl()
+            val output = if (finalUrl.isEvidenceMediaUrl()) finalUrl else fixed
+            if (output.isEvidenceMediaUrl() && emitted.add(output)) {
+                callback(
+                    newExtractorLink("Strcloud", "Strcloud", output, ExtractorLinkType.VIDEO) {
+                        quality = output.qualityFromUrl()
+                        referer = "https://strcloud.in/"
+                        headers = output.playbackHeaders("https://strcloud.in/")
+                    }
+                )
+                delivered++
             }
         }
         return delivered
+    }
+
+    private fun extractStrcloudVideoCandidates(text: String): List<String> {
+        val clean = text.replace("\\/", "/")
+        val candidates = mutableListOf<String>()
+
+        Regex("""(?i)(?:https?:)?//strcloud\.in/get_video\?[^'\"<>\s]+""").findAll(clean).forEach { match ->
+            val url = match.value.let { if (it.startsWith("//")) "https:$it" else it }
+            candidates.add(url)
+        }
+        Regex("""(?i)/strcloud\.in/get_video\?[^'\"<>\s]+""").findAll(clean).forEach { match ->
+            candidates.add("https:/" + match.value)
+        }
+
+        Regex("""(?i)get_video\?([a-z]+)[^+]{0,80}\+\s*(?:''\s*\+\s*)?\(['\"]([^'\"]+)['\"]\)((?:\.substring\(\d+\))+)?""").findAll(clean).forEach { match ->
+            val prefix = match.groupValues[1]
+            val payload = applySubstringChain(match.groupValues[2], match.groupValues.getOrNull(3).orEmpty())
+            candidates.add("https://strcloud.in/get_video?$prefix$payload&stream=1")
+        }
+
+        Regex("""https?://[^'\"<>\s]+?\.mp4[^'\"<>\s]*""", RegexOption.IGNORE_CASE).findAll(clean).forEach { candidates.add(it.value) }
+        return candidates.distinct()
+    }
+
+    private fun applySubstringChain(raw: String, chain: String): String {
+        var output = raw
+        Regex("""\.substring\((\d+)\)""").findAll(chain).forEach { match ->
+            val start = match.groupValues[1].toIntOrNull() ?: 0
+            output = if (start <= output.length) output.substring(start) else ""
+        }
+        return output
     }
 
     private suspend fun resolveJustplay(
@@ -438,7 +465,7 @@ class NontonDrakor : MainAPI() {
             selectFirst(".synopsis, .desc, .summary, .storyline, .sinopsis, div.entry-content[itemprop='description'], .entry-content p")?.text(),
             selectFirst("meta[property=og:description]")?.attr("content"),
             selectFirst("meta[name=description]")?.attr("content")
-        ).mapNotNull { it?.cleanText() }
+        ).mapNotNull { it?.cleanText()?.stripDetailMetadata() }
             .firstOrNull { it.isValidPlot() }
     }
 
@@ -545,7 +572,7 @@ class NontonDrakor : MainAPI() {
             .firstOrNull()
     }
 
-    private fun Document.extractEpisodes(baseUrl: String, expectedTotal: Int? = null): List<Episode> {
+    private suspend fun Document.extractEpisodes(baseUrl: String, expectedTotal: Int? = null): List<Episode> {
         val episodeContainers = select(
             ".gmr-listseries, .episodios, .se-c, .episodelist, .episode-list, .les-content, .eplister, .listing"
         ).filterNot { it.isInsideNoiseBlock() }
@@ -563,27 +590,35 @@ class NontonDrakor : MainAPI() {
             .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name })
 
         val total = expectedTotal ?: extractTotalEpisodes()
-        if (total != null && total > parsed.size && total <= 500) {
-            val synthesized = synthesizeEpisodes(baseUrl, total, parsed)
-            if (synthesized.size > parsed.size) return synthesized
+        val validated = parsed.toMutableList()
+        if (total != null && total > parsed.size && total <= 200) {
+            validated.addAll(discoverAvailableEpisodes(baseUrl, total, parsed))
         }
-        return parsed
+        return validated.distinctBy { it.data }
+            .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name })
     }
 
-    private fun synthesizeEpisodes(baseUrl: String, total: Int, existing: List<Episode>): List<Episode> {
-        val existingMap = existing.mapNotNull { ep -> ep.episode?.let { it to ep } }.toMap()
+    private suspend fun discoverAvailableEpisodes(baseUrl: String, total: Int, existing: List<Episode>): List<Episode> {
+        val existingNumbers = existing.mapNotNull { it.episode }.toSet()
         val slug = when {
             baseUrl.contains("/tv/", true) -> baseUrl.trimEnd('/').substringAfterLast('/')
             baseUrl.contains("/eps/", true) -> baseUrl.trimEnd('/').substringAfterLast('/').replace(Regex("(?i)-episode-?\\d+.*$"), "")
-            else -> return existing
+            else -> return emptyList()
         }
-        if (slug.isBlank()) return existing
-        return (1..total).map { number ->
-            existingMap[number] ?: newEpisode("$mainUrl/eps/$slug-episode-$number/".toPlaybackData(baseUrl)) {
+        if (slug.isBlank()) return emptyList()
+
+        val discovered = mutableListOf<Episode>()
+        for (number in 1..total) {
+            if (number in existingNumbers) continue
+            val episodeUrl = "$mainUrl/eps/$slug-episode-$number/"
+            val text = runCatching { app.get(episodeUrl, headers = headers, referer = baseUrl).text }.getOrNull().orEmpty()
+            if (!text.isValidEpisodePage(number, slug)) continue
+            discovered.add(newEpisode(episodeUrl.toPlaybackData(baseUrl)) {
                 name = "Episode $number"
                 episode = number
-            }
+            })
         }
+        return discovered
     }
 
     private fun Document.extractMoviePlayData(pageUrl: String): String? {
@@ -744,6 +779,21 @@ class NontonDrakor : MainAPI() {
         return if (found != null) "Episode $found" else this
     }
 
+
+    private fun String.stripDetailMetadata(): String {
+        var output = this.cleanText()
+        val hardMarkers = listOf(
+            " By:", " Posted on:", " Views:", " Tagline:", " Genre:", " Quality:",
+            " Year:", " Duration:", " Country:", " Release:", " Last Air Date:",
+            " Number Of Episode:", " Network:", " Cast:", " Director:", " Stars:"
+        )
+        hardMarkers.forEach { marker ->
+            val index = output.indexOf(marker, ignoreCase = true)
+            if (index > 0) output = output.substring(0, index).trim()
+        }
+        return output.replace(Regex("\s+"), " ").trim()
+    }
+
     private fun String.cleanText(): String {
         return Jsoup.parse(this).text().replace(Regex("\\s+"), " ").trim()
     }
@@ -863,6 +913,21 @@ class NontonDrakor : MainAPI() {
             body()?.text()
         ).joinToString(" ")
         return Regex("(?i)(?:total\\s*)?(\\d{1,4})\\s*episode").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+
+    private fun String.isValidEpisodePage(number: Int, slug: String): Boolean {
+        if (isBlank()) return false
+        val lower = lowercase()
+        if (lower.contains("error 404") || lower.contains("page not found") || lower.contains("nothing found")) return false
+        val hasEpisodeIdentity = lower.contains("$slug-episode-$number") ||
+            lower.contains("${slug.replace('-', ' ')} episode $number") ||
+            lower.contains("episode $number")
+        val hasPlayerEvidence = lower.contains("?player=2") || lower.contains("?player=3") ||
+            lower.contains("server 1") || lower.contains("server 2") || lower.contains("server 3") ||
+            lower.contains("vidmoly.biz") || lower.contains("strcloud.in") || lower.contains("justplay.cam") ||
+            lower.contains("<iframe")
+        return hasEpisodeIdentity && hasPlayerEvidence
     }
 
     private fun String.isValidPlot(): Boolean {
