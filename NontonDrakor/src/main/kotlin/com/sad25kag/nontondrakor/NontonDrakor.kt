@@ -791,7 +791,7 @@ class NontonDrakor : MainAPI() {
             val index = output.indexOf(marker, ignoreCase = true)
             if (index > 0) output = output.substring(0, index).trim()
         }
-        return output.replace(Regex("\s+"), " ").trim()
+        return output.replace(Regex("\\s+"), " ").trim()
     }
 
     private fun String.cleanText(): String {
