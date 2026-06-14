@@ -8,10 +8,7 @@ object PasarBokepSeeds {
      */
     val mainPage = listOf(
         PasarBokepCategory("Bokep Indo", "/category/bokep-indo/"),
-        PasarBokepCategory("Bokep Korea", "/category/bokep-korea/"),
-        PasarBokepCategory("Bokep Barat", "/category/bokep-barat/"),
         PasarBokepCategory("Bokep Jilbab", "/category/bokep-jilbab/"),
-        PasarBokepCategory("Bokep Jepang", "/category/bokep-jepang/"),
     )
 
     val blockedPathHints = listOf(
