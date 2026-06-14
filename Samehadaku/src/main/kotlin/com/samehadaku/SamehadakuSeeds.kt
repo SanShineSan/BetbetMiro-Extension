@@ -5,6 +5,7 @@ object SamehadakuSeeds {
     const val LANDING_URL = "https://samehadaku.care"
     const val LEGACY_BATCH_URL = "https://v1.samehadaku.how"
     const val BATCH_URL = "$LEGACY_BATCH_URL/batch/"
+    const val CATEGORY_DATA_SEPARATOR = "||"
 
     val mirrors = listOf(
         MAIN_URL,
@@ -34,27 +35,25 @@ object SamehadakuSeeds {
         "Sports" to "sports"
     )
 
-    val mainPage = buildList {
-        add(SamehadakuCategory("Anime Terbaru", "$MAIN_URL/anime-terbaru/%page%", true, SamehadakuCategoryMode.HomeLatest))
-        add(SamehadakuCategory("Top 10 Minggu Ini", "$MAIN_URL/", false, SamehadakuCategoryMode.HomeTop))
-        add(SamehadakuCategory("Project Movie Samehadaku", "$MAIN_URL/", false, SamehadakuCategoryMode.HomeMovie))
-        add(SamehadakuCategory("Daftar Anime", "$MAIN_URL/daftar-anime-2/%page%"))
-        add(SamehadakuCategory("Batch", BATCH_URL, false, SamehadakuCategoryMode.Listing))
-        add(SamehadakuCategory("Jadwal Rilis", "$MAIN_URL/jadwal-rilis/%page%", true, SamehadakuCategoryMode.Schedule))
-
-        add(SamehadakuCategory("Status: Ongoing", "$MAIN_URL/anime-status/ongoing/%page%"))
-        add(SamehadakuCategory("Status: Completed", "$MAIN_URL/anime-status/completed/%page%"))
-
-        add(SamehadakuCategory("Type: TV", "$MAIN_URL/anime-type/tv/%page%"))
-        add(SamehadakuCategory("Type: OVA", "$MAIN_URL/anime-type/ova/%page%"))
-        add(SamehadakuCategory("Type: ONA", "$MAIN_URL/anime-type/ona/%page%"))
-        add(SamehadakuCategory("Type: Special", "$MAIN_URL/anime-type/special/%page%"))
-        add(SamehadakuCategory("Type: Movie", "$MAIN_URL/anime-type/movie/%page%"))
-
-        websiteGenres.forEach { (name, slug) ->
-            add(SamehadakuCategory("Genre: $name", "$MAIN_URL/genre/$slug/%page%"))
-        }
-    }
+    val mainPage = listOf(
+        SamehadakuCategory("Anime", "$MAIN_URL/anime-terbaru/%page%", true, SamehadakuCategoryMode.HomeLatest),
+        SamehadakuCategory("Movie", "$MAIN_URL/anime-type/movie/%page%"),
+        SamehadakuCategory("Fantasy", "$MAIN_URL/genre/fantasy/%page%"),
+        SamehadakuCategory("Action/Adventure", "$MAIN_URL/genre/action/%page%$CATEGORY_DATA_SEPARATOR$MAIN_URL/genre/adventure/%page%"),
+        SamehadakuCategory("Comedy", "$MAIN_URL/genre/comedy/%page%"),
+        SamehadakuCategory("Romance", "$MAIN_URL/genre/romance/%page%"),
+        SamehadakuCategory("Supernatural", "$MAIN_URL/genre/supernatural/%page%"),
+        SamehadakuCategory("Isekai", "$MAIN_URL/genre/isekai/%page%"),
+        SamehadakuCategory("Sci-Fi", "$MAIN_URL/genre/sci-fi/%page%"),
+        SamehadakuCategory("Seinen", "$MAIN_URL/genre/seinen/%page%"),
+        SamehadakuCategory("Reincarnation", "$MAIN_URL/genre/reincarnation/%page%"),
+        SamehadakuCategory("Super Power", "$MAIN_URL/genre/super-power/%page%"),
+        SamehadakuCategory("Historical", "$MAIN_URL/genre/historical/%page%"),
+        SamehadakuCategory("Mystery", "$MAIN_URL/genre/mystery/%page%"),
+        SamehadakuCategory("Harem", "$MAIN_URL/genre/harem/%page%"),
+        SamehadakuCategory("Slice of Life", "$MAIN_URL/genre/slice-of-life/%page%"),
+        SamehadakuCategory("Ecchi", "$MAIN_URL/genre/ecchi/%page%")
+    )
 
     val fallbackLatest = listOf(
         SamehadakuSeedItem("Hidarikiki no Eren", "$MAIN_URL/anime/hidarikiki-no-eren/"),

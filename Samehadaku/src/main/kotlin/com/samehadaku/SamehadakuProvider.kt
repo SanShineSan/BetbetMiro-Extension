@@ -45,6 +45,14 @@ class SamehadakuProvider : MainAPI() {
             .distinct()
     }
 
+    private fun categoryPageUrls(data: String, page: Int): List<String> {
+        return data.split(SamehadakuSeeds.CATEGORY_DATA_SEPARATOR)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { buildPageUrl(it, page) }
+            .distinct()
+    }
+
     private suspend fun safeGet(
         url: String,
         referer: String? = "$mainUrl/",
@@ -75,13 +83,15 @@ class SamehadakuProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val category = SamehadakuSeeds.mainPage.firstOrNull { it.name == request.name }
-        val pageUrl = buildPageUrl(request.data, page)
+        val pageUrls = categoryPageUrls(request.data, page)
         val mode = category?.mode ?: SamehadakuCategoryMode.Listing
         val isPaged = category?.paged ?: true
 
-        val liveResults = safeGet(pageUrl)?.document?.let { document ->
-            SamehadakuParser.parseByMode(this, document, pageUrl, mainUrl, mode)
-        }.orEmpty()
+        val liveResults = pageUrls.flatMap { pageUrl ->
+            safeGet(pageUrl)?.document?.let { document ->
+                SamehadakuParser.parseByMode(this, document, pageUrl, mainUrl, mode)
+            }.orEmpty()
+        }.distinctBy { it.url }
 
         val results = liveResults.ifEmpty { fallbackResults(request.name, mode) }
         return newHomePageResponse(listOf(HomePageList(request.name, results, isPaged)))
