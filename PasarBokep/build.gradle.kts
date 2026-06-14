@@ -1,4 +1,4 @@
-version = 6
+version = 4
 
 cloudstream {
     description = "PasarBokep provider by BetbetMiro"

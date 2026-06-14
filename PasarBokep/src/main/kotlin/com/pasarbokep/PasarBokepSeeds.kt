@@ -2,15 +2,18 @@ package com.pasarbokep
 
 object PasarBokepSeeds {
     /**
-     * Only source-backed playable category rows. Generic latest row and uncensored branch are
-     * excluded because the app row became noisy/dead for category playback validation.
+     * Playable homepage sections only.
+     * Source also has Cerita/Komik menu branches, but those are article/photo pages,
+     * so they are intentionally excluded from Cloudstream video rows to avoid dead playback.
      */
     val mainPage = listOf(
+        PasarBokepCategory("Video Terbaru", "/"),
         PasarBokepCategory("Bokep Indo", "/category/bokep-indo/"),
         PasarBokepCategory("Bokep Korea", "/category/bokep-korea/"),
         PasarBokepCategory("Bokep Barat", "/category/bokep-barat/"),
         PasarBokepCategory("Bokep Jilbab", "/category/bokep-jilbab/"),
         PasarBokepCategory("Bokep Jepang", "/category/bokep-jepang/"),
+        PasarBokepCategory("Jepang Uncensored", "/category/bokep-jepang-uncensored/"),
     )
 
     val blockedPathHints = listOf(
@@ -27,8 +30,6 @@ object PasarBokepSeeds {
         "/blog-category/",
         "/photos-category/",
         "/page/",
-        "/wp-admin",
-        "/wp-login",
         "#",
     )
 
@@ -44,11 +45,6 @@ object PasarBokepSeeds {
         "random videos",
         "show more",
         "home",
-        "next",
-        "last",
-        "loading",
-        "refresh",
-        "close",
         "category:",
         "photo category:",
         "cerita dewasa",

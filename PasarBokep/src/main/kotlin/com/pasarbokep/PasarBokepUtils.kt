@@ -9,14 +9,10 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 object PasarBokepUtils {
-    private const val LOAD_PREFIX = "pbload::"
-    private const val SEP = "::poster::"
-
     val headers = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control" to "no-cache",
     )
 
     fun videoHeaders(referer: String): Map<String, String> {
@@ -24,7 +20,6 @@ object PasarBokepUtils {
         return mapOf(
             "User-Agent" to USER_AGENT,
             "Accept" to "*/*",
-            "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
             "Origin" to origin,
             "Referer" to referer,
         )
@@ -40,21 +35,6 @@ object PasarBokepUtils {
 
     fun encodeQuery(query: String): String {
         return URLEncoder.encode(query.trim(), "UTF-8")
-    }
-
-    fun packLoadData(pageUrl: String, posterUrl: String?): String {
-        val cleanPoster = posterUrl.orEmpty()
-        return if (cleanPoster.isBlank()) pageUrl else LOAD_PREFIX + pageUrl + SEP + cleanPoster
-    }
-
-    fun unpackLoadData(value: String, mainUrl: String): PasarBokepLoadData {
-        if (!value.startsWith(LOAD_PREFIX)) {
-            return PasarBokepLoadData(updateHost(value, mainUrl), null)
-        }
-        val raw = value.removePrefix(LOAD_PREFIX)
-        val page = raw.substringBefore(SEP)
-        val poster = raw.substringAfter(SEP, "").takeIf { it.isNotBlank() }
-        return PasarBokepLoadData(updateHost(page, mainUrl), poster)
     }
 
     fun decodeMaybe(value: String?): String {
@@ -100,18 +80,13 @@ object PasarBokepUtils {
         }.getOrNull()
     }
 
-    fun hostOf(url: String): String? {
-        return runCatching { URI(url).host?.lowercase() }.getOrNull()
-    }
-
     fun updateHost(url: String, mainUrl: String): String {
         return try {
             val original = URI(url)
             val target = URI(mainUrl)
-            if (original.host.isNullOrBlank()) return absoluteUrl(url, mainUrl) ?: url
             URI(target.scheme, original.userInfo, target.host, target.port, original.path, original.query, original.fragment).toString()
         } catch (_: Throwable) {
-            absoluteUrl(url, mainUrl) ?: url
+            url
         }
     }
 
@@ -126,55 +101,33 @@ object PasarBokepUtils {
     }
 
     fun Element.bestImage(mainUrl: String): String? {
-        val candidates = linkedSetOf<String>()
-        select("img, source").forEach { img ->
-            listOf(
-                img.attr("data-src"),
-                img.attr("data-lazy-src"),
-                img.attr("data-original"),
-                img.attr("data-img"),
-                img.attr("data-thumb"),
-                img.attr("data-poster"),
-                img.attr("data-srcset").srcSetFirst(),
-                img.attr("srcset").srcSetFirst(),
-                img.attr("src"),
-            ).filter { it.isNotBlank() }.forEach { candidates.add(it) }
-        }
-
-        select("noscript").forEach { noscript ->
-            Regex("""(?is)<img[^>]+(?:data-src|data-lazy-src|src)=[\"']([^\"']+)[\"']""")
-                .findAll(noscript.html())
-                .forEach { candidates.add(it.groupValues[1]) }
-        }
-
-        listOf(
-            attr("data-src"),
-            attr("data-lazy-src"),
-            attr("data-original"),
-            attr("data-thumb"),
-            attr("data-poster"),
-            attr("style").styleImageUrl(),
-        ).filter { it.isNotBlank() }.forEach { candidates.add(it) }
-
-        return candidates.asSequence()
-            .mapNotNull { absoluteUrl(it, mainUrl) }
-            .firstOrNull { isValidPoster(it) }
+        val img = selectFirst("img") ?: return null
+        val raw = listOf(
+            img.attr("data-src"),
+            img.attr("data-lazy-src"),
+            img.attr("data-original"),
+            img.attr("data-img"),
+            img.attr("data-thumb"),
+            img.attr("data-poster"),
+            img.attr("src"),
+            img.attr("data-srcset").substringBefore(" "),
+            img.attr("srcset").substringBefore(" "),
+        ).firstOrNull { it.isNotBlank() }
+        return absoluteUrl(raw, mainUrl)?.takeIf { !isBadMediaAsset(it) }
     }
 
     fun Document.bestPoster(mainUrl: String): String? {
-        val metaCandidates = listOf(
+        val fromMeta = listOf(
             selectFirst("meta[property=og:image]")?.attr("content"),
             selectFirst("meta[name=twitter:image]")?.attr("content"),
-            selectFirst("meta[itemprop=thumbnailUrl]")?.attr("content"),
             selectFirst("link[rel=image_src]")?.attr("href"),
             selectFirst("video[poster]")?.attr("poster"),
-        )
-        metaCandidates.mapNotNull { absoluteUrl(it, mainUrl) }
-            .firstOrNull { isValidPoster(it) }
-            ?.let { return it }
+        ).firstOrNull { !it.isNullOrBlank() }
+        if (!fromMeta.isNullOrBlank()) return absoluteUrl(fromMeta, mainUrl)?.takeIf { !isBadMediaAsset(it) }
 
-        return selectFirst("article, .entry-content, .post-content, .single-content, .site-main, main, body")
-            ?.bestImage(mainUrl)
+        return selectFirst("article img, .entry-content img, .post-content img, .single img, main img, img")
+            ?.let { absoluteUrl(it.attr("data-src").ifBlank { it.attr("src") }, mainUrl) }
+            ?.takeIf { !isBadMediaAsset(it) }
     }
 
     fun Document.hasNextPage(): Boolean {
@@ -186,7 +139,6 @@ object PasarBokepUtils {
     fun isLikelyVideoPage(url: String, title: String, mainUrl: String): Boolean {
         val cleanTitle = cleanText(title).lowercase()
         if (cleanTitle.length < 3) return false
-        if (cleanTitle.length <= 2 && cleanTitle.all { it.isDigit() }) return false
         if (PasarBokepSeeds.blockedTitleHints.any { cleanTitle == it || cleanTitle.contains(it) }) return false
 
         val fixed = absoluteUrl(url, mainUrl) ?: return false
@@ -223,7 +175,7 @@ object PasarBokepUtils {
 
     fun isHlsLike(url: String): Boolean {
         val lower = url.substringBefore('#').lowercase()
-        return lower.contains(".m3u8") || lower.contains("/hls/") || lower.contains("playlist.m3u") || lower.contains("master.m3u")
+        return lower.contains(".m3u8") || lower.contains("/hls/") || lower.contains("playlist.m3u")
     }
 
     fun isDirectVideo(url: String): Boolean {
@@ -239,14 +191,11 @@ object PasarBokepUtils {
     }
 
     fun isPotentialExtractor(url: String, mainUrl: String): Boolean {
-        val fixed = absoluteUrl(url, mainUrl) ?: return false
-        val lower = fixed.lowercase()
+        val lower = url.lowercase()
         if (isPseudoUrl(lower)) return false
+        if (lower.startsWith(mainUrl.lowercase())) return false
         if (shouldSkipUrl(lower)) return false
         if (isBadMediaAsset(lower)) return false
-        if (lower.startsWith(mainUrl.lowercase())) {
-            return lower.contains("/embed/") || lower.contains("/player") || lower.contains("?player=") || lower.contains("/watch/")
-        }
         return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("//")
     }
 
@@ -254,9 +203,9 @@ object PasarBokepUtils {
         val lower = url.lowercase()
         return listOf(
             "streamsb", "sbembed", "sbbrisk", "sbfull", "sblanh", "sbplay", "sbthe", "sbspeed", "sbfast", "sbface", "waaw",
-            "dood", "doodstream", "d000d", "dooood", "ds2play",
+            "dood", "doodstream", "d000d", "ds2play",
             "streamtape", "stape", "strtape",
-            "filemoon", "filelions", "files.im", "filesim", "streamwish", "wishfast", "vidhide", "vidguard", "voe.sx", "voe.",
+            "filemoon", "filelions", "streamwish", "wishfast", "vidhide", "vidguard", "voe.sx", "voe.",
             "mixdrop", "mp4upload", "lulustream", "luluvdo", "lulu", "uqload", "streamruby", "wolfstream", "short.ink",
             "embed", "player", "/e/", "/embed/", "/file/"
         ).any { lower.contains(it) }
@@ -274,7 +223,6 @@ object PasarBokepUtils {
             lower.contains("/contact") ||
             lower.contains("/dmca") ||
             lower.contains("/privacy") ||
-            lower.contains("/terms") ||
             lower.contains("/category/") ||
             lower.contains("/tag/") ||
             lower.contains("/author/") ||
@@ -284,9 +232,7 @@ object PasarBokepUtils {
             lower.contains("googlesyndication") ||
             lower.contains("google-analytics") ||
             lower.contains("cloudflareinsights") ||
-            lower.contains("histats") ||
-            lower.contains(".css") ||
-            lower.contains(".woff")
+            lower.contains("histats")
     }
 
     fun isPseudoUrl(value: String?): Boolean {
@@ -302,22 +248,8 @@ object PasarBokepUtils {
             lower.endsWith(".gif") || lower.endsWith(".svg") || lower.endsWith(".css") || lower.endsWith(".js") ||
             lower.endsWith(".ico") || lower.endsWith(".woff") || lower.endsWith(".woff2") || lower.endsWith(".ttf")
     }
-
-    fun isValidPoster(url: String): Boolean {
-        val lower = url.lowercase()
-        if (lower.isBlank() || lower.contains("favicon") || lower.contains("logo") || lower.contains("avatar")) return false
-        if (lower.contains("adsterra") || lower.contains("doubleclick") || lower.contains("histats")) return false
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.contains("wp-content/uploads")
-    }
-
-    private fun String.srcSetFirst(): String {
-        return split(',').firstOrNull()?.trim()?.substringBefore(' ').orEmpty()
-    }
-
-    private fun String.styleImageUrl(): String {
-        return Regex("""url\((['\"]?)([^)'\"]+)\1\)""").find(this)?.groupValues?.getOrNull(2).orEmpty()
-    }
 }
+
 
 fun Element.bestImage(mainUrl: String): String? = with(PasarBokepUtils) {
     this@bestImage.bestImage(mainUrl)

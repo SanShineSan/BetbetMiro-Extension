@@ -21,17 +21,16 @@ import org.jsoup.nodes.Document
 import java.net.URLDecoder
 
 object PasarBokepExtractor {
-    private const val MAX_PAGE_HOPS = 3
-    private const val MAX_EMBEDS = 42
+    private const val MAX_PAGE_HOPS = 2
+    private const val MAX_EMBEDS = 28
     private const val MAX_DIRECT = 24
 
     private val playableSelector = listOf(
         "meta[itemprop=embedURL]", "meta[property=og:video]", "meta[property=og:video:url]", "meta[property=og:video:secure_url]",
-        "meta[property=og:video:iframe]", "meta[itemprop=contentUrl]", "link[itemprop=contentUrl]",
         "video[src]", "video[data-src]", "video[data-video]", "video[poster]", "video source[src]", "source[src]", "source[data-src]",
         "iframe[src]", "iframe[data-src]", "iframe[data-litespeed-src]", "iframe[data-lazy-src]", "iframe[data-original]", "iframe[srcdoc]",
         "embed[src]", "object[data]", "a[href]",
-        "[data-src]", "[data-litespeed-src]", "[data-lazy-src]", "[data-original]", "[data-video]", "[data-video-url]", "[data-file]", "[data-url]",
+        "[data-src]", "[data-litespeed-src]", "[data-lazy-src]", "[data-original]", "[data-video]", "[data-file]", "[data-url]",
         "[data-link]", "[data-href]", "[data-embed]", "[data-iframe]", "[data-player]", "[data-play]", "[data-frame]", "[data-html]", "[data-content]"
     ).joinToString(",")
 
@@ -42,7 +41,7 @@ object PasarBokepExtractor {
     )
 
     private val keyValueRegex = Regex(
-        """(?is)(?:data-playlist|playlist|hlsUrl|hls_url|hls|file|fileUrl|file_url|source|sources|src|url|embed|embedUrl|embed_url|iframe|video|videoUrl|video_url|stream|streamUrl|contentUrl|content_url|download|downloadUrl)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
+        """(?is)(?:data-playlist|playlist|hlsUrl|hls_url|hls|file|fileUrl|file_url|source|src|url|embed|embedUrl|embed_url|iframe|video|videoUrl|video_url|stream|streamUrl|contentUrl|content_url)\s*[:=]\s*['\"]([^'\"]+)['\"]"""
     )
     private val htmlAttributeRegex = Regex(
         """(?is)(?:src|href|content|data-(?:src|litespeed-src|lazy-src|original|video|video-url|file|url|link|href|embed|iframe|player|play|frame|html|content))\s*=\s*['\"]([^'\"]+)['\"]"""
@@ -51,10 +50,9 @@ object PasarBokepExtractor {
         """(?is)(?:https?:)?//[^'\"<>\s]+?(?:\.m3u8|\.mp4|\.webm|\.mkv|videoplayback|googlevideo|get_video|playlist|master)[^'\"<>\s]*"""
     )
     private val knownHostRegex = Regex(
-        """(?is)(?:https?:)?//[^'\"<>\s]+?(?:streamsb|sbembed|sbbrisk|sbfull|sblanh|sbplay|sbthe|sbspeed|sbfast|sbface|waaw|dood|d000d|dooood|ds2play|streamtape|stape|strtape|filemoon|filesim|files\.im|filelions|streamwish|wishfast|vidhide|vidguard|voe\.sx|voe\.|mixdrop|mp4upload|lulustream|luluvdo|uqload|streamruby|wolfstream|short\.ink|/embed/|/player|/e/|/file/)[^'\"<>\s]*"""
+        """(?is)(?:https?:)?//[^'\"<>\s]+?(?:streamsb|sbembed|sbbrisk|sbfull|sblanh|sbplay|sbthe|sbspeed|waaw|dood|d000d|streamtape|stape|filemoon|filelions|streamwish|wishfast|vidhide|vidguard|voe\.sx|mixdrop|mp4upload|lulustream|luluvdo|uqload|short\.ink)[^'\"<>\s]*"""
     )
     private val encodedUrlRegex = Regex("""https?%3A%2F%2F[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
-    private val escapedUrlRegex = Regex("""https?:\\/\\/[^'\"<>\s]+""", RegexOption.IGNORE_CASE)
     private val atobRegex = Regex("""(?is)atob\s*\(\s*['\"]([A-Za-z0-9+/=_-]{16,})['\"]\s*\)""")
     private val base64StringRegex = Regex("""['\"]([A-Za-z0-9+/=_-]{32,})['\"]""")
 
@@ -108,15 +106,11 @@ object PasarBokepExtractor {
         }
         if (found) return true
 
-        webViewCandidates(pageUrl, referer, mainUrl).forEach { captured ->
+        // Some WordPress players inject StreamSB/player requests only after the page runs in WebView.
+        webViewCandidates(pageUrl, referer).forEach { captured ->
             when {
                 PasarBokepUtils.isDirectVideo(captured) -> found = emitDirect(captured, pageUrl, emitted, callback) || found
-                PasarBokepUtils.isPotentialExtractor(captured, mainUrl) || PasarBokepUtils.isKnownHost(captured) -> {
-                    found = runExtractor(captured, pageUrl, emitted, subtitleCallback, callback) || found
-                    if (!found && depth < MAX_PAGE_HOPS) {
-                        found = resolvePage(captured, mainUrl, pageUrl, depth + 1, seenPages, emitted, subtitleCallback, callback) || found
-                    }
-                }
+                PasarBokepUtils.isPotentialExtractor(captured, mainUrl) -> found = runExtractor(captured, pageUrl, emitted, subtitleCallback, callback) || found
             }
             if (found) return@forEach
         }
@@ -174,9 +168,9 @@ object PasarBokepExtractor {
             }
         }
 
-        base64StringRegex.findAll(html).take(120).forEach { match ->
+        base64StringRegex.findAll(html).take(80).forEach { match ->
             decodeBase64(match.groupValues[1]).forEach { decoded ->
-                if (decoded.contains("http", true) || decoded.contains("iframe", true) || decoded.contains("m3u8", true) || decoded.contains("mp4", true)) {
+                if (decoded.contains("http", true) || decoded.contains("iframe", true) || decoded.contains("m3u8", true)) {
                     scanText(decoded, pageUrl, mainUrl).forEach { add(it) }
                 }
             }
@@ -202,9 +196,6 @@ object PasarBokepExtractor {
             knownHostRegex.findAll(source).forEach { out.add(it.value) }
             encodedUrlRegex.findAll(source).forEach { encoded ->
                 runCatching { URLDecoder.decode(encoded.value, "UTF-8") }.getOrNull()?.let { out.add(it) }
-            }
-            escapedUrlRegex.findAll(source).forEach { escaped ->
-                out.add(escaped.value.replace("\\/", "/"))
             }
         }
 
@@ -276,11 +267,11 @@ object PasarBokepExtractor {
         }.getOrDefault(false)
     }
 
-    private suspend fun webViewCandidates(url: String, referer: String, mainUrl: String): List<String> {
+    private suspend fun webViewCandidates(url: String, referer: String): List<String> {
         val out = linkedSetOf<String>()
         val regexes = listOf(
-            Regex("""(?i).*(streamsb|sbembed|sbbrisk|sbfull|sblanh|waaw|m3u8|mp4|videoplayback|get_video|streamtape|dood|d000d|filemoon|streamwish|vidhide|vidguard|mp4upload|luluvdo|short\.ink).*"""),
-            Regex("""(?i).*(/embed/|/e/|/player|player|source|playlist|master|file|video).*"""),
+            Regex("""(?i).*(streamsb|sbembed|sbbrisk|sbfull|sblanh|waaw|m3u8|mp4|videoplayback|get_video|streamtape|dood|filemoon|streamwish).*"""),
+            Regex("""(?i).*(/embed/|/e/|player|source|playlist|master).*"""),
         )
 
         regexes.forEach { regex ->
@@ -289,12 +280,12 @@ object PasarBokepExtractor {
                     url,
                     headers = PasarBokepUtils.headers,
                     referer = referer,
-                    interceptor = WebViewResolver(regex, timeout = 25_000L)
+                    interceptor = WebViewResolver(regex, timeout = 20_000L)
                 )
             }.getOrNull() ?: return@forEach
 
             PasarBokepUtils.absoluteUrl(response.url, url)?.let { out.add(it) }
-            extractCandidates(response.document, response.text, url, mainUrl).forEach { out.add(it) }
+            extractCandidates(response.document, response.text, url, PasarBokepUtils.originOf(url) ?: url).forEach { out.add(it) }
         }
         return out.toList()
     }
@@ -335,9 +326,9 @@ object PasarBokepExtractor {
             PasarBokepUtils.isDirectVideo(lower) -> 0
             lower.contains("streamsb") || lower.contains("sbembed") || lower.contains("sbbrisk") || lower.contains("sbfull") || lower.contains("sblanh") || lower.contains("waaw") -> 1
             lower.contains("streamwish") || lower.contains("wishfast") -> 2
-            lower.contains("filemoon") || lower.contains("filelions") || lower.contains("files.im") -> 3
+            lower.contains("filemoon") -> 3
             lower.contains("vidhide") || lower.contains("vidguard") -> 4
-            lower.contains("dood") || lower.contains("d000d") -> 5
+            lower.contains("dood") -> 5
             lower.contains("streamtape") || lower.contains("stape") -> 6
             lower.contains("mp4upload") -> 7
             lower.contains("embed") || lower.contains("player") -> 20
@@ -386,32 +377,12 @@ class PasarBokepDoodWf : DoodLaExtractor() {
     override var mainUrl = "https://dood.wf"
 }
 
-class PasarBokepDoodTo : DoodLaExtractor() {
-    override var name = "Dood.to"
-    override var mainUrl = "https://dood.to"
-}
-
-class PasarBokepDoodRe : DoodLaExtractor() {
-    override var name = "Dood.re"
-    override var mainUrl = "https://dood.re"
-}
-
 class PasarBokepStreamWish : StreamWishExtractor() {
     override var name = "StreamWish"
     override var mainUrl = "https://streamwish.to"
 }
 
-class PasarBokepWishFast : StreamWishExtractor() {
-    override var name = "WishFast"
-    override var mainUrl = "https://wishfast.top"
-}
-
 class PasarBokepFileMoon : Filesim() {
     override val name = "FileMoon"
     override val mainUrl = "https://filemoon.sx"
-}
-
-class PasarBokepFileLions : Filesim() {
-    override val name = "FileLions"
-    override val mainUrl = "https://filelions.to"
 }

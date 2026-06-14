@@ -14,5 +14,5 @@ data class PasarBokepCard(
 
 data class PasarBokepLoadData(
     val pageUrl: String,
-    val posterUrl: String? = null,
+    val referer: String,
 )

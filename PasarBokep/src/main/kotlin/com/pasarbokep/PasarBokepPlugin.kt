@@ -11,6 +11,8 @@ class PasarBokepPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(PasarBokepProvider())
 
+        // Pasarbokep error page mentions StreamSB playback; keep the common aliases local
+        // so loadExtractor can resolve mirrors even when the embed host changes domain.
         registerExtractorAPI(PasarBokepStreamSB())
         registerExtractorAPI(PasarBokepSbrisk())
         registerExtractorAPI(PasarBokepSbfull())
@@ -19,12 +21,8 @@ class PasarBokepPlugin : Plugin() {
         registerExtractorAPI(PasarBokepWaaw())
         registerExtractorAPI(PasarBokepDood())
         registerExtractorAPI(PasarBokepDoodWf())
-        registerExtractorAPI(PasarBokepDoodTo())
-        registerExtractorAPI(PasarBokepDoodRe())
         registerExtractorAPI(PasarBokepStreamWish())
-        registerExtractorAPI(PasarBokepWishFast())
         registerExtractorAPI(PasarBokepFileMoon())
-        registerExtractorAPI(PasarBokepFileLions())
         registerExtractorAPI(StreamTape())
         registerExtractorAPI(Mp4Upload())
     }
