@@ -33,9 +33,6 @@ class SpankBang : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/trending_videos/" to "Trending",
-        "$mainUrl/new_videos/" to "New",
-        "$mainUrl/upcoming/" to "Upcoming",
         "$mainUrl/s/verified+creators/?o=trending&p=m" to "Creators",
         "$mainUrl/s/asian/" to "Asian",
         "$mainUrl/s/japanese/" to "Japanese",
