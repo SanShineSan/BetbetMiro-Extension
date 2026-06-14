@@ -238,26 +238,32 @@ class ReynimeProvider : MainAPI() {
                 }
             }.getOrDefault(emptyList())
         }
-            .distinctBy { it.id }
-            .filter { it.episode >= series.firstEpisode || series.firstEpisode <= 1 }
+            .distinctBy { it.episode }
+            .filter { it.episode > 0 }
             .sortedBy { it.episode }
 
-        return apiEpisodes.map { item ->
-            val pageUrl = "$mainUrl/watch/${item.id}"
+        val episodeByNumber = apiEpisodes.associateBy { it.episode }
+        val start = series.firstEpisode.coerceAtLeast(1)
+        val lastFromApi = apiEpisodes.maxOfOrNull { it.episode } ?: 0
+        val end = maxOf(series.latestEpisode, lastFromApi, start)
+
+        return (start..end).map { ep ->
+            val item = episodeByNumber[ep]
+            val pageUrl = item?.let { "$mainUrl/watch/${it.id}" } ?: "$mainUrl/watch/${series.id}/$ep"
             newEpisode(
                 buildEpisodeData(
                     pageUrl = pageUrl,
                     seriesId = series.id,
-                    episode = item.episode,
-                    episodeId = item.id,
-                    title = item.title,
+                    episode = ep,
+                    episodeId = item?.id,
+                    title = item?.title ?: "Episode $ep",
                     seedSlug = series.slug
                 )
             ) {
-                name = item.title.cleanTitle().ifBlank { "Episode ${item.episode}" }
-                episode = item.episode
-                posterUrl = item.poster ?: series.poster
-                description = item.description
+                name = item?.title?.cleanTitle()?.ifBlank { "Episode $ep" } ?: "Episode $ep"
+                episode = ep
+                posterUrl = item?.poster ?: series.poster
+                description = item?.description
             }
         }
     }
