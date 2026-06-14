@@ -43,8 +43,8 @@ class ReynimeProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "anime" to "Anime",
-        "donghua" to "Donghua"
+        "$mainUrl/browse?type=anime" to "Anime",
+        "$mainUrl/browse?type=donghua" to "Donghua"
     )
 
     private val headers = mapOf(
@@ -68,14 +68,16 @@ class ReynimeProvider : MainAPI() {
         val safePage = page.coerceAtLeast(1)
         val webItems = fetchOfficialRows(request.data, safePage)
         val seedItems = filterSeeds(request.data)
+        val isTypedBrowse = requestedType(request.data) != null
+        val limit = if (isTypedBrowse) 150 else 40
 
         val items = (webItems.ifEmpty { seedItems })
             .distinctBy { it.url }
-            .take(40)
+            .take(limit)
 
         return newHomePageResponse(
             HomePageList(request.name, items, false),
-            hasNext = webItems.isNotEmpty() && safePage < 3
+            hasNext = webItems.isNotEmpty() && if (isTypedBrowse) safePage < 8 else safePage < 3
         )
     }
 
@@ -139,23 +141,33 @@ class ReynimeProvider : MainAPI() {
     }
 
     private suspend fun fetchOfficialRows(data: String, page: Int): List<SearchResponse> {
+        val requestType = requestedType(data)
         val sort = when (data) {
             "featured" -> "popular"
             "updated" -> "updated"
             "all" -> "title"
             "ongoing" -> "updated"
             "completed" -> "updated"
-            "donghua" -> "updated"
-            "anime" -> "updated"
             else -> "updated"
         }
-        val candidates = linkedSetOf(
-            "$mainUrl/backend/api/series.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}",
-            "$mainUrl/backend/api/anime.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}",
-            "$mainUrl/api/series?sort=$sort&page=$page&limit=40",
-            "$mainUrl/api/anime?sort=$sort&page=$page&limit=40",
-            "$mainUrl/browse?sort=$sort&page=$page"
-        )
+
+        val candidates = linkedSetOf<String>().apply {
+            if (requestType != null) {
+                add("$mainUrl/browse?type=$requestType&page=$page")
+                add("$mainUrl/browse?type=$requestType&sort=$sort&page=$page")
+                add("$mainUrl/backend/api/series.php?type=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/series.php?category=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/series.php?kind=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/api/series?type=$requestType&sort=$sort&page=$page&limit=150")
+                add("$mainUrl/api/anime?type=$requestType&sort=$sort&page=$page&limit=150")
+            } else {
+                add("$mainUrl/backend/api/series.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/anime.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/api/series?sort=$sort&page=$page&limit=40")
+                add("$mainUrl/api/anime?sort=$sort&page=$page&limit=40")
+                add("$mainUrl/browse?sort=$sort&page=$page")
+            }
+        }
 
         val parsed = candidates.flatMap { candidate ->
             runCatching {
@@ -164,7 +176,8 @@ class ReynimeProvider : MainAPI() {
             }.getOrDefault(emptyList())
         }
             .distinctBy { it.id }
-            .filter { matchesRequest(it, data) }
+            .map { item -> requestType?.let { item.forceKind(it) } ?: item }
+            .filter { requestType != null || matchesRequest(it, data) }
 
         return parsed.map { mergeSeries(ReynimeSeeds.byId(it.id), it) ?: it }.map { it.toSearchResponse() }
     }
@@ -301,16 +314,35 @@ class ReynimeProvider : MainAPI() {
     }
 
     private fun matchesRequest(item: ReynimeSeries, data: String): Boolean {
-        return when {
-            data == "featured" -> item.featured
-            data == "updated" -> item.updated || item.status.equals("Ongoing", true)
-            data == "ongoing" -> item.status.contains("ongoing", true)
-            data == "completed" -> item.status.contains("complete", true) || item.status.contains("finished", true)
-            data == "donghua" -> item.kind.equals("Donghua", true) || item.genres.contains("donghua")
-            data == "anime" -> item.kind.equals("Anime", true) || item.genres.contains("anime")
-            data.startsWith("genre:") -> item.genres.contains(data.removePrefix("genre:").lowercase())
-            else -> true
+        return when (requestedType(data)) {
+            "donghua" -> item.kind.equals("Donghua", true) || item.genres.contains("donghua")
+            "anime" -> item.kind.equals("Anime", true) || item.genres.contains("anime")
+            else -> when {
+                data == "featured" -> item.featured
+                data == "updated" -> item.updated || item.status.equals("Ongoing", true)
+                data == "ongoing" -> item.status.contains("ongoing", true)
+                data == "completed" -> item.status.contains("complete", true) || item.status.contains("finished", true)
+                data.startsWith("genre:") -> item.genres.contains(data.removePrefix("genre:").lowercase())
+                else -> true
+            }
         }
+    }
+
+    private fun requestedType(data: String): String? {
+        val value = data.lowercase()
+        return when {
+            value == "anime" || value.contains("type=anime") -> "anime"
+            value == "donghua" || value.contains("type=donghua") -> "donghua"
+            else -> null
+        }
+    }
+
+    private fun ReynimeSeries.forceKind(type: String): ReynimeSeries {
+        val normalizedKind = if (type == "anime") "Anime" else "Donghua"
+        return copy(
+            kind = normalizedKind,
+            genres = (genres + type).filter { it.isNotBlank() }.toSet()
+        )
     }
 
     private fun mergeSeries(seed: ReynimeSeries?, official: ReynimeSeries?): ReynimeSeries? {
