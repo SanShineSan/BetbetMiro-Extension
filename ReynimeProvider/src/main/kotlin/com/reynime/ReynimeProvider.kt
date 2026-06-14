@@ -43,23 +43,8 @@ class ReynimeProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "featured" to "Featured",
-        "updated" to "Update Terbaru",
-        "all" to "Daftar Donghua",
-        "ongoing" to "Ongoing Series",
-        "completed" to "Completed Series",
-        "donghua" to "Donghua",
         "anime" to "Anime",
-        "genre:action" to "Action",
-        "genre:adventure" to "Adventure",
-        "genre:fantasy" to "Fantasy",
-        "genre:martial-arts" to "Martial Arts",
-        "genre:xuanhuan" to "Xuanhuan",
-        "genre:xianxia" to "Xianxia",
-        "genre:wuxia" to "Wuxia",
-        "genre:sci-fi" to "Sci-Fi",
-        "genre:romance" to "Romance",
-        "genre:comedy" to "Comedy"
+        "donghua" to "Donghua"
     )
 
     private val headers = mapOf(
