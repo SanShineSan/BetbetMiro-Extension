@@ -7,8 +7,14 @@ import org.jsoup.nodes.Element
 
 object SurgeFilm21Parser {
     private val cardSelectors = listOf(
-        "article", ".movie-item", ".film-item", ".poster", ".item", ".card", ".grid a[href]",
-        ".swiper-slide", ".splide__slide", ".poster-card", "a[href]"
+        "[itemscope][itemtype*=Movie]",
+        "[itemscope][itemtype*=TVSeries]",
+        "div:has(> a[itemprop=url][href])",
+        "div:has(a[itemprop=url][href] h3)",
+        "article:has(a[href])",
+        ".movie-item:has(a[href])",
+        ".film-item:has(a[href])",
+        ".poster-card:has(a[href])"
     ).joinToString(",")
 
     fun parseHomeItems(api: MainAPI, document: Document, baseUrl: String, defaultType: TvType = TvType.Movie): List<SearchResponse> {
@@ -37,16 +43,15 @@ object SurgeFilm21Parser {
     }
 
     private fun Element.toSearchResponse(api: MainAPI, baseUrl: String, defaultType: TvType = TvType.Movie): SearchResponse? {
-        val anchor = if (`is`("a[href]")) this else selectFirst("a[href]") ?: return null
+        val anchor = selectFirst("a[itemprop=url][href]") ?: selectFirst("a[href]") ?: return null
         val href = anchor.attr("href").absUrlSf21(baseUrl) ?: return null
-        if (!href.contains("surgafilm21.homes", true)) return null
-        if (href.isNoiseUrlSf21()) return null
+        if (!href.isCatalogUrlSf21()) return null
 
         val title = listOf(
-            attr("title"),
-            selectFirst("h1,h2,h3,h4,.title,.name,.film-title,.movie-title")?.text(),
+            selectFirst("h1,h2,h3,h4,[itemprop=name],.title,.name,.film-title,.movie-title")?.text(),
             selectFirst("img[alt]")?.attr("alt"),
             anchor.attr("title"),
+            attr("title"),
             anchor.text()
         ).firstOrNull { !it.isNullOrBlank() }?.cleanTitleSf21() ?: return null
 
@@ -99,14 +104,14 @@ object SurgeFilm21Parser {
             document.selectFirst("meta[property=og:image]")?.attr("content"),
             document.selectFirst("meta[name=twitter:image]")?.attr("content"),
             document.selectFirst("video[poster]")?.attr("poster")
-        ).firstOrNull { !it.isNullOrBlank() }?.absUrlSf21(pageUrl) ?: posterUrl(document.body(), pageUrl)
+        ).firstOrNull { !it.isNullOrBlank() && !it.contains("noimage", true) }?.absUrlSf21(pageUrl) ?: posterUrl(document.body(), pageUrl)
     }
 
     fun parsePlot(document: Document): String? {
         return listOf(
             document.selectFirst("meta[property=og:description]")?.attr("content"),
             document.selectFirst("meta[name=description]")?.attr("content"),
-            document.selectFirst(".synopsis,.sinopsis,.description,.overview,.entry-content,.content,.movie-desc")?.text()
+            document.selectFirst(".synopsis,.sinopsis,.description,.overview,.entry-content,.content,.movie-desc,[itemprop=description]")?.text()
         ).firstOrNull { !it.isNullOrBlank() }?.cleanSf21()?.takeIf { it.length > 10 }
     }
 
@@ -130,17 +135,22 @@ object SurgeFilm21Parser {
     }
 
     fun parseEpisodes(api: MainAPI, document: Document, pageUrl: String): List<Episode> {
-        val candidates = document.select("a[href*='episode'], a[href*='/eps'], a[href*='?episode='], .episode a[href], .episodes a[href], .eps a[href], .eplist a[href], .list-episode a[href]")
+        val candidates = document.select("a[href*='/series/episode/'], .episode a[href], .episodes a[href], .eps a[href], .eplist a[href], .list-episode a[href]")
         return candidates.mapNotNull { element ->
             val href = element.attr("href").absUrlSf21(pageUrl) ?: return@mapNotNull null
-            if (href == pageUrl) return@mapNotNull null
+            if (!href.contains("/series/episode/", true)) return@mapNotNull null
+            if (href.trimEnd('/') == pageUrl.trimEnd('/')) return@mapNotNull null
+
             val number = Regex("""(?i)(?:episode|eps|ep|e)[-_\s]*(\d+)""").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: Regex("""(?i)\bEpisode\s*(\d+)\b""").find(element.text().trim())?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Regex("""^\D*(\d+)\D*$""").find(element.text().trim())?.groupValues?.getOrNull(1)?.toIntOrNull()
+
             api.newEpisode(href) {
-                name = element.text().cleanSf21().takeIf { it.isNotBlank() && it.length > 1 } ?: number?.let { "Episode $it" } ?: "Episode"
+                name = element.text().cleanTitleSf21().takeIf { it.isNotBlank() && it.length > 1 } ?: number?.let { "Episode $it" } ?: "Episode"
                 episode = number
             }
         }.distinctBy { it.data }
+            .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name })
     }
 
     fun inferType(title: String, url: String, defaultType: TvType = TvType.Movie): TvType {
@@ -148,8 +158,8 @@ object SurgeFilm21Parser {
         return when {
             text.contains("anime") && text.contains("movie") -> TvType.AnimeMovie
             text.contains("animation") || text.contains("animasi") || text.contains("cartoon") -> TvType.Cartoon
-            text.contains("series") || text.contains("season") || text.contains("episode") || url.isSeriesLikeSf21() -> TvType.TvSeries
-            text.contains("drama china") || text.contains("drama korea") || text.contains("thai") || text.contains("thailand") -> TvType.AsianDrama
+            text.contains("/series/") || text.contains("series") || text.contains("season") || text.contains("episode") || url.isSeriesLikeSf21() -> TvType.TvSeries
+            text.contains("drama china") || text.contains("drama korea") || text.contains("thai") || text.contains("thailand") || text.contains("philippines") -> TvType.AsianDrama
             text.contains("semi") || text.contains("dewasa") -> TvType.NSFW
             else -> defaultType
         }

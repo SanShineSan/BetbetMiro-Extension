@@ -13,12 +13,12 @@ object SurgeFilm21Extractor {
     private val candidatePatterns = listOf(
         Regex("""<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
         Regex("""(?:data-src|data-fallback|data-embed|data-video|data-url|data-link)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""switchServer\(\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""(?:switchServer|switchServerDirect|loadIframeDirect)\(\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
         Regex("""["'](https?://[^"']*player-proxy\.php[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""(?:file|src|source|video|videoUrl|video_url|hls|url|embed|embed_url|embed_frame_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?:)?//[^"']+(?:\.m3u8|\.mp4|\.webm|\.mpd)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["'](https?://[^"']*(?:abyssplayer|abyss\.to|minochinos|bysejikuar|rupertisdivingintoocean|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive.google)[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video)[^"']*)["']""", RegexOption.IGNORE_CASE)
+        Regex("""(?:file|src|source|sources|video|videoUrl|video_url|hls|url|playlist|embed|embed_url|embed_frame_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["'](https?://[^"']*(?:\.m3u8|\.mp4|\.webm|\.mpd|/master\.txt|/index[^"']*\.txt)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["'](https?://[^"']*(?:vidlink\.pro|turbovidhls\.com|turboviplay\.com|morencius\.com|earnvids\.com|abyssplayer|abyss\.to|minochinos|bysejikuar|rupertisdivingintoocean|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive\.google)[^"']*)["']""", RegexOption.IGNORE_CASE),
+        Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video|dl)[^"']*)["']""", RegexOption.IGNORE_CASE)
     )
 
     suspend fun load(pageUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
@@ -48,15 +48,20 @@ object SurgeFilm21Extractor {
                 loadExtractor(url, referer, subtitleCallback) { link -> emit(link) }
             }
 
-            if (depth >= 3 || isKnownExternal(url)) return
+            if (depth >= 4 || shouldStopAfterExtractor(url)) return
 
             val response = runCatching {
                 app.get(url, headers = SurgeFilm21Sepeda.baseHeaders + mapOf("Referer" to referer), referer = referer, timeout = 15000L)
             }.getOrNull() ?: return
 
             val contentType = response.headers["Content-Type"].orEmpty().lowercase()
+            if (contentType.startsWith("video/") || contentType.contains("mpegurl") || contentType.contains("dash")) {
+                emitDirect(url, referer, ::emit)
+                return
+            }
+
             val contentLength = response.headers["Content-Length"]?.toLongOrNull()
-            if (contentType.startsWith("video/") || contentType.contains("mpegurl") || contentType.contains("dash") || contentType.contains("octet-stream") || (contentLength != null && contentLength > 5_000_000L)) return
+            if (contentType.contains("octet-stream") || (contentLength != null && contentLength > 5_000_000L)) return
 
             val body = runCatching { response.text.cleanSf21() }.getOrNull() ?: return
             for (candidate in collectCandidates(body, url)) {
@@ -67,7 +72,7 @@ object SurgeFilm21Extractor {
         val html = SurgeFilm21Sepeda.getText(pageUrl, SurgeFilm21Provider.DEFAULT_MAIN_URL).cleanSf21()
         val document = SurgeFilm21Parser.parseDocumentFromHtml(html, pageUrl)
 
-        for (element in document.select("iframe[src], iframe[data-src], embed[src], video source[src], video[src], source[src], a[href*='.mp4'], a[href*='.m3u8'], a[href*='.webm'], a[href*='embed'], a[href*='player'], [data-src], [data-embed], [data-video], [data-url], [data-link]")) {
+        for (element in document.select("iframe[src], iframe[data-src], embed[src], video source[src], video[src], source[src], a[href*='.mp4'], a[href*='.m3u8'], a[href*='embed'], a[href*='player'], a[href*='player-proxy.php'], [data-src], [data-embed], [data-video], [data-url], [data-link]")) {
             val candidate = listOf("src", "data-src", "href", "data-embed", "data-video", "data-url", "data-link")
                 .map { element.attr(it) }
                 .firstOrNull { it.isNotBlank() }
@@ -113,16 +118,48 @@ object SurgeFilm21Extractor {
     }
 
     private suspend fun emitDirect(url: String, referer: String, emit: (ExtractorLink) -> Unit) {
+        val quality = url.qualitySf21()
+        val label = quality.takeIf { it > 0 }?.toString() ?: "Auto"
+        val headers = hlsHeadersFromUrl(url, referer)
         emit(
-            newExtractorLink("SurgeFilm21", "SurgeFilm21 ${url.qualitySf21().takeIf { it > 0 } ?: "Auto"}", url, INFER_TYPE) {
-                this.referer = referer
-                this.quality = url.qualitySf21()
-                this.headers = mapOf("Referer" to referer, "User-Agent" to USER_AGENT)
+            newExtractorLink("SurgeFilm21", "SurgeFilm21 $label", url, INFER_TYPE) {
+                this.referer = headers["Referer"] ?: referer
+                this.quality = quality
+                this.headers = headers
             }
         )
     }
 
-    private fun isKnownExternal(url: String): Boolean {
+    private fun hlsHeadersFromUrl(url: String, referer: String): Map<String, String> {
+        val headers = linkedMapOf(
+            "Referer" to referer,
+            "User-Agent" to USER_AGENT
+        )
+
+        val rawHeaders = Regex("""[?&]headers=([^&]+)""", RegexOption.IGNORE_CASE)
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.urlDecodeSf21()
+
+        if (!rawHeaders.isNullOrBlank()) {
+            Regex("\"referer\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+                .find(rawHeaders)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { headers["Referer"] = it }
+
+            Regex("\"origin\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+                .find(rawHeaders)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { headers["Origin"] = it }
+        }
+
+        return headers
+    }
+
+    private fun shouldStopAfterExtractor(url: String): Boolean {
         val lower = url.lowercase()
         return listOf("dood", "streamtape", "filemoon", "vidhide", "vidguard", "voe", "mixdrop", "streamwish", "wishfast", "mp4upload", "uqload", "krakenfiles", "streamlare", "filelions", "drive.google", "gdrive").any { lower.contains(it) }
     }

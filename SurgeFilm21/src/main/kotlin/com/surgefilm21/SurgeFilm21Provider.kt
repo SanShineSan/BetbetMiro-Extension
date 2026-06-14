@@ -4,7 +4,7 @@ import com.lagradost.cloudstream3.*
 
 class SurgeFilm21Provider : MainAPI() {
     companion object {
-        const val DEFAULT_MAIN_URL = "https://surgafilm21.homes"
+        const val DEFAULT_MAIN_URL = "https://surgafilm21.website"
     }
 
     override var mainUrl = DEFAULT_MAIN_URL
@@ -17,20 +17,22 @@ class SurgeFilm21Provider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama, TvType.AnimeMovie, TvType.Cartoon, TvType.NSFW)
 
     private val sections = listOf(
-        SurgeFilm21Section("section:Populer Hari Ini", "Populer Hari Ini", "popular"),
-        SurgeFilm21Section("section:Update Terbaru", "Update Terbaru", "latest"),
-        SurgeFilm21Section("section:Update Eps", "Update Eps", "series"),
-        SurgeFilm21Section("section:Marathon Series Terhangat", "Marathon Series", "series"),
-        SurgeFilm21Section("section:Bikin Baper", "Romance", "romance"),
-        SurgeFilm21Section("section:Obat Stres", "Comedy", "comedy"),
-        SurgeFilm21Section("section:Drama Pilihan", "Drama", "drama"),
-        SurgeFilm21Section("section:Adrenalin", "Action", "action"),
-        SurgeFilm21Section("section:Dunia Imajinasi", "Animation", "animation"),
-        SurgeFilm21Section("section:Sci-Fi", "Sci-Fi", "sci-fi"),
-        SurgeFilm21Section("section:Uji Nyali", "Horror", "horror"),
-        SurgeFilm21Section("section:Teka-teki", "Mystery", "mystery"),
-        SurgeFilm21Section("section:Epik Sejarah", "War & History", "war"),
-        SurgeFilm21Section("section:Thailand", "Thailand", "thailand")
+        SurgeFilm21Section("/latest/", "Update Terbaru", "latest"),
+        SurgeFilm21Section("/series/", "Series Terbaru", "series"),
+        SurgeFilm21Section("/series/ongoing/", "Series Ongoing", "series"),
+        SurgeFilm21Section("/series/completed/", "Series Completed", "series"),
+        SurgeFilm21Section("/genre/romance/", "Romance", "romance"),
+        SurgeFilm21Section("/genre/comedy/", "Comedy", "comedy"),
+        SurgeFilm21Section("/genre/drama/", "Drama", "drama"),
+        SurgeFilm21Section("/genre/action/", "Action", "action"),
+        SurgeFilm21Section("/genre/animation/", "Animation", "animation"),
+        SurgeFilm21Section("/genre/science-fiction/", "Sci-Fi", "science fiction"),
+        SurgeFilm21Section("/genre/horror/", "Horror", "horror"),
+        SurgeFilm21Section("/genre/mystery/", "Mystery", "mystery"),
+        SurgeFilm21Section("/genre/war/", "War & History", "war"),
+        SurgeFilm21Section("/country/thailand/", "Thailand", "thailand"),
+        SurgeFilm21Section("/country/china/", "China", "china"),
+        SurgeFilm21Section("/country/philippines/", "Philippines", "philippines")
     )
 
     override val mainPage = mainPageOf(*sections.map { it.data to it.name }.toTypedArray())
@@ -39,19 +41,15 @@ class SurgeFilm21Provider : MainAPI() {
         val section = sections.firstOrNull { it.data == request.data }
         val defaultType = typeFromSection(section?.name ?: request.name)
 
-        if (page > 1) {
-            val fallback = section?.fallbackQuery ?: request.name
-            val list = searchPage(fallback, page, defaultType)
-            return newHomePageResponse(HomePageList(request.name, list, isHorizontalImages = true), hasNext = list.isNotEmpty())
-        }
-
-        val document = SurgeFilm21Sepeda.getDocument(mainUrl)
         val list = section?.let {
-            SurgeFilm21Parser.parseSectionItems(this, document, it.data.removePrefix("section:"), mainUrl, defaultType)
+            listingPage(it.data, page, defaultType)
                 .ifEmpty { searchPage(it.fallbackQuery, page, defaultType) }
-        } ?: SurgeFilm21Parser.parseHomeItems(this, document, mainUrl, defaultType)
+        } ?: listingPage("/latest/", page, defaultType)
 
-        return newHomePageResponse(HomePageList(request.name, list.distinctBy { it.url }, isHorizontalImages = true), hasNext = list.isNotEmpty())
+        return newHomePageResponse(
+            HomePageList(request.name, list.distinctBy { it.url }, isHorizontalImages = true),
+            hasNext = list.isNotEmpty()
+        )
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
@@ -67,11 +65,26 @@ class SurgeFilm21Provider : MainAPI() {
         return results
     }
 
+    private suspend fun listingPage(path: String, page: Int, defaultType: TvType): List<SearchResponse> {
+        val base = path.absUrlSf21(mainUrl) ?: return emptyList()
+        val pageUrl = if (page <= 1) {
+            base
+        } else {
+            base + if (base.contains("?")) "&ajax=load_more&page=$page" else "?ajax=load_more&page=$page"
+        }
+
+        return runCatching {
+            val document = SurgeFilm21Sepeda.getDocument(pageUrl, base)
+            SurgeFilm21Parser.parseHomeItems(this, document, base, defaultType)
+                .distinctBy { it.url }
+        }.getOrNull().orEmpty()
+    }
+
     private suspend fun searchPage(query: String, page: Int, defaultType: TvType): List<SearchResponse> {
         val encoded = query.urlEncodeSf21()
         val candidates = listOf(
-            "$mainUrl/search?q=$encoded&page=$page",
             "$mainUrl/?s=$encoded&page=$page",
+            "$mainUrl/search?q=$encoded&page=$page",
             "$mainUrl/page/$page/?s=$encoded",
             "$mainUrl/search/$encoded?page=$page"
         )
@@ -95,10 +108,13 @@ class SurgeFilm21Provider : MainAPI() {
         val plot = SurgeFilm21Parser.parsePlot(document)
         val tags = SurgeFilm21Parser.parseTags(document)
         val year = SurgeFilm21Parser.parseYear(document, title)
-        val inferredType = SurgeFilm21Parser.inferType(title, url, TvType.Movie)
         val episodes = SurgeFilm21Parser.parseEpisodes(this, document, url)
+        val inferredType = when {
+            episodes.isNotEmpty() || url.contains("/series/", true) -> SurgeFilm21Parser.inferType(title, url, TvType.TvSeries)
+            else -> SurgeFilm21Parser.inferType(title, url, TvType.Movie)
+        }
 
-        return if (episodes.isNotEmpty() && inferredType != TvType.Movie && inferredType != TvType.AnimeMovie) {
+        return if (episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, inferredType, episodes) {
                 posterUrl = poster
                 this.plot = plot
@@ -124,7 +140,7 @@ class SurgeFilm21Provider : MainAPI() {
         return when {
             lower.contains("series") || lower.contains("eps") -> TvType.TvSeries
             lower.contains("animation") -> TvType.Cartoon
-            lower.contains("thailand") || lower.contains("drama") -> TvType.AsianDrama
+            lower.contains("thailand") || lower.contains("china") || lower.contains("philippines") || lower.contains("drama") -> TvType.AsianDrama
             else -> TvType.Movie
         }
     }

@@ -2,6 +2,7 @@ package com.surgefilm21
 
 import com.lagradost.cloudstream3.utils.Qualities
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 
@@ -20,9 +21,10 @@ internal fun String.cleanSf21(): String {
 internal fun String.cleanTitleSf21(): String {
     return cleanSf21()
         .replace(Regex("""(?i)\s*-\s*Surgafilm21.*$"""), "")
-        .replace(Regex("""(?i)\s*Nonton\s+Film\s+"""), "")
+        .replace(Regex("""(?i)^\s*Nonton\s+(?:Film\s+|Series\s+)?"""), "")
         .replace(Regex("""(?i)\s+Subtitle\s+Indonesia.*$"""), "")
         .replace(Regex("""(?i)\s+Sub\s+Indo.*$"""), "")
+        .replace(Regex("""(?i)\s+Full\s+Movie.*$"""), "")
         .replace(Regex("""\s+"""), " ")
         .trim()
 }
@@ -42,14 +44,57 @@ internal fun String?.absUrlSf21(baseUrl: String): String? {
 
 internal fun String.urlEncodeSf21(): String = URLEncoder.encode(this.trim(), "UTF-8")
 
+internal fun String.urlDecodeSf21(): String = runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
+
+internal fun String.isSf21Host(): Boolean {
+    val host = runCatching { URI(this).host.orEmpty().lowercase() }.getOrDefault("")
+    return host == "surgafilm21.website" || host == "www.surgafilm21.website" || host == "surgafilm21.homes" || host == "www.surgafilm21.homes"
+}
+
+internal fun String.isCatalogUrlSf21(): Boolean {
+    if (!isSf21Host()) return false
+    val path = runCatching { URI(this).path.orEmpty().trim('/').lowercase() }.getOrDefault("")
+    if (path.isBlank()) return false
+
+    val rejectExact = setOf(
+        "series", "populer", "popular", "latest", "recommendation", "rekomendasi",
+        "top-imdb", "filter", "filter-movie", "watchlist", "amp"
+    )
+    if (path in rejectExact) return false
+
+    val rejectPrefixes = listOf(
+        "genre/", "country/", "year/", "page/", "assets/", "search", "tag/",
+        "privacy", "dmca", "contact", "series/ongoing", "series/completed",
+        "series/asian", "series/west", "series/episode/"
+    )
+    if (rejectPrefixes.any { path.startsWith(it) }) return false
+
+    return if (path.startsWith("series/")) {
+        true
+    } else {
+        Regex("""-(?:19|20)\d{2}/?$""").containsMatchIn(path)
+    }
+}
+
+internal fun String.isHlsManifestUrlSf21(): Boolean {
+    val lower = lowercase().substringBefore("#")
+    return lower.contains(".m3u8") ||
+        lower.contains("/master.txt") ||
+        lower.contains("/index") && lower.contains(".txt") && lower.contains("/hls")
+}
+
 internal fun String.isVideoUrlSf21(): Boolean {
     val lower = lowercase()
-    return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mpd")
+    return isHlsManifestUrlSf21() || lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mpd")
 }
 
 internal fun String.isNoiseUrlSf21(): Boolean {
     val lower = lowercase()
     return lower.contains("facebook.com") ||
+        lower.contains("api.whatsapp.com") ||
+        lower.contains("twitter.com") ||
+        lower.contains("t.me/share") ||
+        lower.contains("pinterest.com") ||
         lower.contains("ads.d21.media") ||
         lower.contains("pixel.morphify.net") ||
         lower.contains("poster.sf21.space/aff") ||
@@ -61,15 +106,15 @@ internal fun String.isNoiseUrlSf21(): Boolean {
         lower.contains("cdn.tailwindcss.com") ||
         lower.contains("ui-avatars.com") ||
         lower.contains("googletagmanager.com") ||
+        lower.contains("google-analytics") ||
         lower.contains("histats.com") ||
+        lower.contains("mc.yandex.ru") ||
         lower.contains("sf21.team") ||
         lower.contains("telegram") ||
         lower.contains("instagram") ||
-        lower.contains("twitter.com") ||
         lower.contains("youtube.com") ||
         lower.contains("doubleclick") ||
         lower.contains("googlesyndication") ||
-        lower.contains("google-analytics") ||
         lower.endsWith(".css") ||
         lower.endsWith(".js") ||
         lower.endsWith(".ico") ||
@@ -77,7 +122,10 @@ internal fun String.isNoiseUrlSf21(): Boolean {
         lower.endsWith(".jpg") ||
         lower.endsWith(".jpeg") ||
         lower.endsWith(".png") ||
-        lower.endsWith(".webp")
+        lower.endsWith(".webp") ||
+        lower.endsWith(".gif") ||
+        lower.endsWith(".woff") ||
+        lower.endsWith(".woff2")
 }
 
 internal fun String.posterCandidateScoreSf21(): Int {
@@ -114,5 +162,5 @@ internal fun decodeBase64Sf21(raw: String): String? {
 
 internal fun String.isSeriesLikeSf21(): Boolean {
     val lower = lowercase()
-    return lower.contains("/series") || lower.contains("/tv/") || lower.contains("season") || lower.contains("episode") || lower.contains("eps")
+    return lower.contains("/series/") || lower.contains("/tv/") || lower.contains("season") || lower.contains("episode") || lower.contains("eps")
 }
