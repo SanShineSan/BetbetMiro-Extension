@@ -1,9 +1,9 @@
-version = 17
+version = 18
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "PutarFlix provider with active source-backed categories, stronger Server 1/2/3 playback discovery, robust iframe/AJAX decoding, and hardened direct stream extraction."
+    description = "PutarFlix provider with approved source-backed categories and Semawur/FilePress playback fallback for current mirror links."
 
     status = 1
 

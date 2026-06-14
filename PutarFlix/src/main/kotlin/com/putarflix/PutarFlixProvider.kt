@@ -42,6 +42,11 @@ class PutarFlixProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        return PutarFlixExtractor.extract(data, subtitleCallback, callback)
+        val primaryResolved = runCatching {
+            PutarFlixExtractor.extract(data, subtitleCallback, callback)
+        }.getOrDefault(false)
+        if (primaryResolved) return true
+
+        return PutarFlixPlaybackFallback.extract(data, subtitleCallback, callback)
     }
 }

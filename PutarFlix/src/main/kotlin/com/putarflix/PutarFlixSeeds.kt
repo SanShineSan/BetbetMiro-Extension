@@ -8,14 +8,11 @@ internal object PutarFlixSeeds {
     // Source-backed rows trimmed to the Boss-approved mainPage set.
     val mainPages = listOf(
         PutarFlixCategory("/category/film-bioskop-terbaru/", "Film Bioskop Terbaru"),
-        PutarFlixCategory("/eps/", "Episode Terbaru"),
         PutarFlixCategory("/category/film-indonesia-terbaru/", "Film Indonesia Terbaru"),
-        PutarFlixCategory("/category/series-indonesia/", "Series Indonesia"),
         PutarFlixCategory("/category/box-office/", "Box Office"),
         PutarFlixCategory("/category/drama/", "Drama"),
         PutarFlixCategory("/category/film-semi/", "Film Semi"),
         PutarFlixCategory("/category/vivamax/", "Vivamax"),
-        PutarFlixCategory("/category/tv-show/", "Tv Show"),
         PutarFlixCategory("/category/action/", "Action"),
         PutarFlixCategory("/category/thriller/", "Thriller"),
         PutarFlixCategory("/category/horror/", "Horror / Kengerian"),
