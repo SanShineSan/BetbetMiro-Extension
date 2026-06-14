@@ -55,7 +55,7 @@ class SamehadakuProvider : MainAPI() {
 
     private suspend fun safeGet(
         url: String,
-        referer: String? = "$mainUrl/",
+        referer: String? = mainUrl,
         retries: Int = 2
     ): com.lagradost.nicehttp.NiceResponse? {
         var last: Throwable? = null
@@ -164,7 +164,7 @@ class SamehadakuProvider : MainAPI() {
     ): Boolean {
         return SamehadakuExtractor.loadLinks(
             data = data,
-            mainUrl = mainUrl,
+            mainUrl = mainUrl.trimEnd('/'),
             headers = headers,
             subtitleCallback = subtitleCallback,
             callback = callback
