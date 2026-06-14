@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     description = "Terbit21 - source movie dan tv series Indonesia berbasis evidence flow T21"

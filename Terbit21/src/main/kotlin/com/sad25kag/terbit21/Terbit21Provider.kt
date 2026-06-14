@@ -550,7 +550,7 @@ class Terbit21Provider : MainAPI() {
         }
     }
 
-    private fun emitM3u8(
+    private suspend fun emitM3u8(
         m3u8: String,
         referer: String,
         callback: (ExtractorLink) -> Unit,
@@ -565,7 +565,7 @@ class Terbit21Provider : MainAPI() {
         return true
     }
 
-    private fun emitDirectVideo(url: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun emitDirectVideo(url: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
         callback(
             newExtractorLink(
                 name,
