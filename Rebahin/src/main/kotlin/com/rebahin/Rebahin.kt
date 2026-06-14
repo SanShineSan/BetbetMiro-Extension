@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger
 open class Rebahin : MainAPI() {
     companion object {
         // Single point of domain rotation. Update here when the site moves.
-        const val DOMAIN = "https://rebahinxxi3.hair"
+        const val DOMAIN = "https://rebahinxxi3.boats"
 
         val baseHeaders =
             mapOf(
@@ -73,26 +73,22 @@ open class Rebahin : MainAPI() {
     ): HomePageResponse {
         val urls =
             listOf(
-                Pair("Featured", "xtab1"),
-                Pair("Film Terbaru", "xtab2"),
-                Pair("Romance", "xtab3"),
-                Pair("Drama", "xtab4"),
-                Pair("Action", "xtab5"),
-                Pair("Scifi", "xtab6"),
-                Pair("Tv Series Terbaru", "stab1"),
-                Pair("Anime Series", "stab2"),
-                Pair("Drakor Series", "stab3"),
-                Pair("West Series", "stab4"),
-                Pair("China Series", "stab5"),
-                Pair("Japan Series", "stab6"),
+                Pair("Nonton Anime", "$mainUrl/genre/animation/"),
+                Pair("Nonton Drama Barat", "$mainUrl/genre/westseries/"),
+                Pair("Nonton Drama Jepang", "$mainUrl/genre/drama-jepang/"),
+                Pair("Nonton Drama Korea", "$mainUrl/genre/drama-korea/"),
+                Pair("Nonton Drama Cina", "$mainUrl/genre/drama-china/"),
+                Pair("Nonton Drama Thailand", "$mainUrl/genre/thailand-series/"),
+                Pair("Nonton Drama Indonesia", "$mainUrl/genre/series-indonesia/"),
+                Pair("Nonton Drama Malaysia", "$mainUrl/genre/drama/series-malaysia/"),
+                Pair("Nonton Film", "$mainUrl/movies/"),
+                Pair("Nonton Bollywood", "$mainUrl/country/india/"),
             )
 
-        // Fan out all 12 tab fetches concurrently. Was previously a serial for-loop
-        // which made first paint take 12× longer than necessary.
         val items =
-            urls.amap { (header, tab) ->
+            urls.amap { (header, url) ->
                 val home =
-                    safeGet("$mainUrl/wp-content/themes/indoxxi/ajax-top-$tab.php")
+                    safeGet(url)
                         ?.document
                         ?.select("div.ml-item")
                         ?.mapNotNull { it.toSearchResult() }
