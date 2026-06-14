@@ -81,10 +81,15 @@ class Pusatfilm : MainAPI() {
             ?.fixImageQuality()
             ?: fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
 
-        val tags = document.select("strong:contains(Genre) ~ a, a[href*='/genre/']")
-            .map { it.text().trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
+        val genreBlock = document.select("div.gmr-moviedata")
+            .firstOrNull { it.text().contains("Genre", ignoreCase = true) }
+
+        val tags = genreBlock
+            ?.select("a[href*='/genre/']")
+            ?.map { it.text().trim() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            ?: emptyList()
 
         val year = document.select("div.gmr-moviedata strong:contains(Year:) > a, a[href*='/year/']")
             .firstOrNull()
