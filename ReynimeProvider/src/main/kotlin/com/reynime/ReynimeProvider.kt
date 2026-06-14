@@ -66,18 +66,22 @@ class ReynimeProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val safePage = page.coerceAtLeast(1)
-        val webItems = fetchOfficialRows(request.data, safePage)
-        val seedItems = filterSeeds(request.data)
-        val isTypedBrowse = requestedType(request.data) != null
-        val limit = if (isTypedBrowse) 150 else 40
+        val requestType = requestedType(request.data)
+        val webItems = if (requestType != null) {
+            fetchTypedBrowseRows(requestType)
+        } else {
+            fetchOfficialRows(request.data, safePage)
+        }
+        val seedItems = if (webItems.isEmpty()) filterSeeds(request.data) else emptyList()
+        val limit = if (requestType != null) 160 else 40
 
-        val items = (webItems.ifEmpty { seedItems })
+        val items = (webItems + seedItems)
             .distinctBy { it.url }
             .take(limit)
 
         return newHomePageResponse(
             HomePageList(request.name, items, false),
-            hasNext = webItems.isNotEmpty() && if (isTypedBrowse) safePage < 8 else safePage < 3
+            hasNext = requestType == null && webItems.isNotEmpty() && safePage < 3
         )
     }
 
@@ -140,6 +144,22 @@ class ReynimeProvider : MainAPI() {
         )
     }
 
+    private suspend fun fetchTypedBrowseRows(type: String): List<SearchResponse> {
+        val output = linkedMapOf<String, SearchResponse>()
+        val maxPages = if (type == "donghua") 12 else 6
+        var stalePages = 0
+
+        for (browsePage in 1..maxPages) {
+            val rows = fetchOfficialRows("$mainUrl/browse?type=$type", browsePage)
+            val before = output.size
+            rows.forEach { item -> output[item.url] = item }
+            stalePages = if (output.size == before) stalePages + 1 else 0
+            if (browsePage >= 2 && stalePages >= 2) break
+        }
+
+        return output.values.toList()
+    }
+
     private suspend fun fetchOfficialRows(data: String, page: Int): List<SearchResponse> {
         val requestType = requestedType(data)
         val sort = when (data) {
@@ -151,15 +171,25 @@ class ReynimeProvider : MainAPI() {
             else -> "updated"
         }
 
+        fun pagedBrowseUrl(type: String, sortValue: String? = null): String {
+            val sortPart = sortValue?.let { "&sort=$it" }.orEmpty()
+            return "$mainUrl/browse?type=$type$sortPart&page=$page"
+        }
+
         val candidates = linkedSetOf<String>().apply {
             if (requestType != null) {
-                add("$mainUrl/browse?type=$requestType&page=$page")
-                add("$mainUrl/browse?type=$requestType&sort=$sort&page=$page")
-                add("$mainUrl/backend/api/series.php?type=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
-                add("$mainUrl/backend/api/series.php?category=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
-                add("$mainUrl/backend/api/series.php?kind=$requestType&sort=$sort&page=$page&limit=150&_t=${System.currentTimeMillis()}")
-                add("$mainUrl/api/series?type=$requestType&sort=$sort&page=$page&limit=150")
-                add("$mainUrl/api/anime?type=$requestType&sort=$sort&page=$page&limit=150")
+                add(pagedBrowseUrl(requestType))
+                add(pagedBrowseUrl(requestType, sort))
+                add("$mainUrl/browse?page=$page&type=$requestType")
+                add("$mainUrl/backend/api/series.php?type=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/series.php?category=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/series.php?kind=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/anime.php?type=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/anime.php?category=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/backend/api/browse.php?type=$requestType&sort=$sort&page=$page&limit=100&_t=${System.currentTimeMillis()}")
+                add("$mainUrl/api/series?type=$requestType&sort=$sort&page=$page&limit=100")
+                add("$mainUrl/api/anime?type=$requestType&sort=$sort&page=$page&limit=100")
+                add("$mainUrl/api/browse?type=$requestType&sort=$sort&page=$page&limit=100")
             } else {
                 add("$mainUrl/backend/api/series.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}")
                 add("$mainUrl/backend/api/anime.php?sort=$sort&page=$page&limit=40&_t=${System.currentTimeMillis()}")

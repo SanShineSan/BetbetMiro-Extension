@@ -54,11 +54,12 @@ object ReynimeParser {
 
     fun parseSeries(text: String, baseUrl: String, mainUrl: String): List<ReynimeSeries> {
         val clean = text.cleanEscaped()
-        val jsonSeries = parseSeriesFromJson(clean, baseUrl, mainUrl)
-        if (jsonSeries.isNotEmpty()) return jsonSeries
-
         val document = Jsoup.parse(clean, baseUrl)
-        return parseSeriesFromDocument(document, baseUrl, mainUrl)
+        return (parseSeriesFromJson(clean, baseUrl, mainUrl) +
+            parseSeriesFromJsonFragments(clean, baseUrl, mainUrl) +
+            parseSeriesFromScriptData(document, baseUrl, mainUrl) +
+            parseSeriesFromDocument(document, baseUrl, mainUrl))
+            .distinctBy { it.id }
     }
 
     fun parseSeriesDetail(text: String, baseUrl: String, mainUrl: String): ReynimeSeries? {
@@ -226,6 +227,62 @@ object ReynimeParser {
                 description = obj.stringValue("description", "synopsis", "overview") ?: "Streaming Donghua subtitle Indonesia di Reynime."
             )
         }
+            .distinctBy { it.id }
+    }
+
+
+    private fun parseSeriesFromScriptData(document: Document, baseUrl: String, mainUrl: String): List<ReynimeSeries> {
+        return document.select("script").flatMap { script ->
+            val raw = script.data().ifBlank { script.html() }.cleanEscaped().trim()
+            if (raw.isBlank()) return@flatMap emptyList()
+            val candidates = linkedSetOf<String>()
+            if (raw.startsWith("{") || raw.startsWith("[")) candidates.add(raw)
+            listOf("__NEXT_DATA__", "__NUXT__", "initialData", "initialState", "pageProps", "props").forEach { marker ->
+                val markerIndex = raw.indexOf(marker, ignoreCase = true)
+                if (markerIndex >= 0) {
+                    raw.indexOf('{', markerIndex).takeIf { it >= 0 }?.let { start ->
+                        raw.substring(start).substringBefore(";</script>").trim().trimEnd(';').takeIf { it.startsWith("{") }?.let(candidates::add)
+                    }
+                    raw.indexOf('[', markerIndex).takeIf { it >= 0 }?.let { start ->
+                        raw.substring(start).substringBefore(";</script>").trim().trimEnd(';').takeIf { it.startsWith("[") }?.let(candidates::add)
+                    }
+                }
+            }
+            candidates.flatMap { candidate ->
+                parseSeriesFromJson(candidate, baseUrl, mainUrl) + parseSeriesFromJsonFragments(candidate, baseUrl, mainUrl)
+            }
+        }
+            .distinctBy { it.id }
+    }
+
+    private fun parseSeriesFromJsonFragments(text: String, baseUrl: String, mainUrl: String): List<ReynimeSeries> {
+        return Regex("""\{[^{}]*(?:series_id|seriesId|anime_id|animeId|latest_episode|latestEpisode|series_title|anime_title|poster|thumbnail|slug)[^{}]*}""", RegexOption.IGNORE_CASE)
+            .findAll(text.cleanEscaped())
+            .map { it.value }
+            .mapNotNull { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+            .mapNotNull { obj ->
+                if (!obj.looksLikeSeriesObject()) return@mapNotNull null
+                val id = obj.intValue("series_id", "seriesId", "anime_id", "animeId", "id") ?: return@mapNotNull null
+                val title = obj.stringValue("series_title", "anime_title", "title", "name", "judul")?.cleanTitle()?.takeIf { !isBadTitle(it) } ?: return@mapNotNull null
+                val slug = obj.stringValue("slug", "permalink") ?: title.slugify()
+                val genres = obj.stringValue("genres", "genre", "tags")?.split(',', '|', '/', ';')?.map { it.trim().lowercase().replace(" ", "-") }?.filter { it.isNotBlank() }?.toSet().orEmpty()
+                val type = if (obj.stringValue("type", "kind", "category")?.contains("movie", true) == true) TvType.AnimeMovie else TvType.Anime
+                ReynimeSeries(
+                    id = id,
+                    title = title,
+                    slug = slug,
+                    poster = normalizePoster(obj.stringValue("poster", "cover", "banner", "thumbnail", "image", "thumb"), baseUrl, mainUrl),
+                    kind = obj.stringValue("kind", "category", "type") ?: if (genres.contains("anime")) "Anime" else "Donghua",
+                    status = obj.stringValue("status") ?: "Ongoing",
+                    type = type,
+                    latestEpisode = obj.intValue("latest_episode", "latestEpisode", "total_episode", "totalEpisode", "episode_count", "episodeCount") ?: 1,
+                    firstEpisode = obj.intValue("first_episode", "firstEpisode", "start_episode", "startEpisode") ?: 1,
+                    year = obj.intValue("year", "release_year", "releaseYear"),
+                    score = obj.stringValue("score", "rating")?.toDoubleOrNull(),
+                    genres = genres,
+                    description = obj.stringValue("description", "synopsis", "overview") ?: "Streaming Donghua subtitle Indonesia di Reynime."
+                )
+            }
             .distinctBy { it.id }
     }
 
