@@ -25,6 +25,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicInteger
 
 class Sulasok : MainAPI() {
     override var mainUrl = "https://sulasok.uno"
@@ -35,7 +37,8 @@ class Sulasok : MainAPI() {
     override var lang = "id"
 
     private val videoCount = 20
-    private val bgUrlRegex = Regex("""url\("(.+)"""")
+    private val bgUrlRegex = Regex("""url\(['\"]?([^'\")]+)['\"]?\)""")
+    private val sourceParamRegex = Regex("([?&])s=[^&]*")
 
     override val mainPage = mainPageOf(
         "load_more.php?limit=$videoCount&filter=best" to "Trending",
@@ -53,14 +56,16 @@ class Sulasok : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = selectFirst(".video_title")?.text() ?: return null
-        val href = selectFirst("a")?.attr("href")
+        val title = selectFirst(".video_title")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val href = selectFirst("a[href]")?.attr("href")
+            ?.takeIf { it.isNotBlank() }
             ?.replace("watch.php", "video.php")
+            ?.toAbsoluteUrl()
             ?: return null
 
         val posterUrl = selectFirst("div.itemsContainer")?.attr("style")
-            ?.let { bgUrlRegex.find(it)?.groupValues?.get(1) }
-            ?.let { "$mainUrl/$it" }
+            ?.let { bgUrlRegex.find(it)?.groupValues?.getOrNull(1) }
+            ?.toAbsoluteUrl()
 
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
@@ -68,8 +73,9 @@ class Sulasok : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url =
-            "$mainUrl/load_more_search.php?start=${(page - 1) * videoCount}&limit=$videoCount&search=$query"
+            "$mainUrl/load_more_search.php?start=${(page - 1) * videoCount}&limit=$videoCount&search=$encodedQuery"
         val document = app.get(url).document
         val list = document.select("div.col").mapNotNull { it.toSearchResult() }
         return newSearchResponseList(list, list.size == videoCount)
@@ -78,10 +84,13 @@ class Sulasok : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val request = app.get(url)
         val document = request.document
-        val title = document.title()
+        val title = document.getElementsByAttributeValue("property", "og:title").attr("content")
+            .ifBlank { document.title() }
+            .trim()
         val posterUrl = document.getElementsByAttributeValue("property", "og:image")
             .attr("content")
-            .let { "$mainUrl/$it" }
+            .takeIf { it.isNotBlank() }
+            ?.toAbsoluteUrl()
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
@@ -89,7 +98,10 @@ class Sulasok : MainAPI() {
     }
 
     private val sources = listOf("vidara", "streamruby")
-    private val iframeSrcRegex = Regex("""iframe.src = "(.*)";""")
+    private val iframeSrcRegexes = listOf(
+        Regex("""iframe\.src\s*=\s*['\"]([^'\"]+)['\"]""", RegexOption.IGNORE_CASE),
+        Regex("""<iframe[^>]+src\s*=\s*['\"]([^'\"]+)['\"]""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
+    )
 
     override suspend fun loadLinks(
         data: String,
@@ -97,28 +109,60 @@ class Sulasok : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val executionList: List<suspend () -> Unit> = sources.map { source ->
-            suspend {
-                val text = app.get("$data&s=$source").text
-                val src = iframeSrcRegex.find(text)?.groupValues?.get(1) ?: return@map
+        val emittedLinks = AtomicInteger(0)
+        val countedCallback: (ExtractorLink) -> Unit = { link ->
+            emittedLinks.incrementAndGet()
+            callback(link)
+        }
 
-                // Force use my own streamruby extractor
-                // Remove if StreamPlay rubyvidhub extractor is updated
+        val executionList: List<suspend () -> Unit> = sources.map { source ->
+            suspend sourceTask@ {
+                val playerUrl = data.withSource(source)
+                val text = app.get(playerUrl).text
+                val src = text.extractIframeSrc()?.toAbsoluteUrl() ?: return@sourceTask
+
+                // Force use my own streamruby extractor.
+                // Remove if StreamPlay rubyvidhub extractor is updated.
                 if (source == "streamruby") {
                     getExtractorApiFromName("RubyVidHub").getUrl(
                         src,
                         subtitleCallback = subtitleCallback,
-                        callback = callback
+                        callback = countedCallback
                     )
-                    return@map
+                    return@sourceTask
                 }
 
-                loadExtractor(src, subtitleCallback, callback)
+                loadExtractor(src, subtitleCallback, countedCallback)
             }
         }
 
         runLimitedAsync(tasks = executionList.toTypedArray())
-        return true
+        return emittedLinks.get() > 0
+    }
+
+    private fun String.extractIframeSrc(): String? {
+        return iframeSrcRegexes.firstNotNullOfOrNull { regex ->
+            regex.find(this)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    private fun String.withSource(source: String): String {
+        val cleanUrl = trim()
+        if (sourceParamRegex.containsMatchIn(cleanUrl)) {
+            return sourceParamRegex.replace(cleanUrl) { match -> "${match.groupValues[1]}s=$source" }
+        }
+        val separator = if (cleanUrl.contains("?")) "&" else "?"
+        return "$cleanUrl${separator}s=$source"
+    }
+
+    private fun String.toAbsoluteUrl(): String {
+        val cleanUrl = trim()
+        return when {
+            cleanUrl.startsWith("//") -> "https:$cleanUrl"
+            cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://") -> cleanUrl
+            cleanUrl.startsWith("/") -> "$mainUrl$cleanUrl"
+            else -> "$mainUrl/$cleanUrl"
+        }
     }
 
     private suspend fun runLimitedAsync(
