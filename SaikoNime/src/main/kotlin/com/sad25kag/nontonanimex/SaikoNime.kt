@@ -12,7 +12,7 @@ import java.util.Locale
 
 class SaikoNime : MainAPI() {
     override var mainUrl = "https://saikonime.ink"
-    override var name = "SaikoNime"
+    override var name = "SaikoNime (Limited-NoLogin)"
     override val hasMainPage = true
     override val hasQuickSearch = true
     override var lang = "id"
