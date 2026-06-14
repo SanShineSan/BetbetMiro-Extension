@@ -38,7 +38,6 @@ object SamehadakuSeeds {
 
     val mainPage = listOf(
         SamehadakuCategory("Anime", "$MAIN_ROOT/anime-terbaru/%page%", true, SamehadakuCategoryMode.HomeLatest),
-        SamehadakuCategory("Movie", "$MAIN_ROOT/anime-type/movie/%page%"),
         SamehadakuCategory("Fantasy", "$MAIN_ROOT/genre/fantasy/%page%"),
         SamehadakuCategory("Action/Adventure", "$MAIN_ROOT/genre/action/%page%$CATEGORY_DATA_SEPARATOR$MAIN_ROOT/genre/adventure/%page%"),
         SamehadakuCategory("Comedy", "$MAIN_ROOT/genre/comedy/%page%"),

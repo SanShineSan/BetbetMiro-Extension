@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addSub
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
@@ -14,6 +15,7 @@ import com.samehadaku.SamehadakuUtils.parseYear
 import com.samehadaku.SamehadakuUtils.titleBloatClean
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 
 object SamehadakuParser {
     fun parseByMode(
@@ -123,7 +125,7 @@ object SamehadakuParser {
         ).takeIf { it.isNotBlank() }
         val background = normalizeUrl(document.selectFirst("meta[property=og:image]")?.attr("content"), pageUrl, mainUrl).takeIf { it.isNotBlank() }
         val infoText = document.select("div.spe, div.infoanime, div.info-content, .animeinfo, .entry-content, .infox").text().cleanEscaped()
-        val type = SamehadakuUtils.getType(extractInfo(infoText, "Type") ?: infoText)
+        val type = extractInfo(infoText, "Type")?.let { SamehadakuUtils.getType(it) } ?: TvType.Anime
         val status = SamehadakuUtils.getStatus(extractInfo(infoText, "Status") ?: infoText)
         val year = parseYear(extractInfo(infoText, "Released") ?: extractInfo(infoText, "Rilis") ?: extractInfo(infoText, "Season") ?: infoText)
         val score = document.selectFirst("span.ratingValue, .rtg, .rating, [itemprop=ratingValue]")?.text()?.trim()?.takeIf { it.isNotBlank() }
@@ -156,31 +158,51 @@ object SamehadakuParser {
             "div.listeps ul li",
             "ul.listeps li",
             "div.episodelist ul li",
-            ".episodelist li",
-            "li:has(a[href*=-episode-])",
-            "a[href*=-episode-]"
+            ".episodelist li"
         )
         val episodes = linkedMapOf<String, Episode>()
         selectors.forEach { selector ->
             document.select(selector).forEach { element ->
-                val anchor = if (element.tagName() == "a") element else element.selectFirst("span.lchx a[href], a[href*=-episode-], a[href]") ?: return@forEach
+                val anchor = element.selectFirst("span.lchx a[href], a[href*=-episode-], a[href]") ?: return@forEach
                 val link = normalizeUrl(anchor.attr("href"), baseUrl, mainUrl)
-                if (link.isBlank() || !link.contains("samehadaku", true)) return@forEach
-                val title = anchor.text().ifBlank { element.selectFirst(".lchx, h2, h3")?.text().orEmpty() }.ifBlank { element.text() }.cleanEscaped()
-                val episode = parseEpisodeNumber(title) ?: parseEpisodeNumber(link)
+                if (!isValidEpisodeUrl(link)) return@forEach
+                val title = anchor.text()
+                    .ifBlank { element.selectFirst(".lchx, h2, h3")?.text().orEmpty() }
+                    .ifBlank { element.text() }
+                    .cleanEscaped()
+                    .takeIf { it.isNotBlank() }
+                    ?: return@forEach
+                val episode = parseEpisodeNumber(title) ?: parseEpisodeNumberFromEpisodeUrl(link)
                 val poster = normalizeUrl(
                     element.selectFirst("img")?.let { img -> img.attr("data-src").ifBlank { img.attr("data-litespeed-src") }.ifBlank { img.attr("src") } },
                     baseUrl,
                     mainUrl
                 ).takeIf { it.isNotBlank() }
                 episodes[link] = api.newEpisode(link, initializer = {
-                    this.name = title.takeIf { it.isNotBlank() }
+                    this.name = title
                     this.episode = episode
                     this.posterUrl = poster
                 })
             }
         }
         return episodes.values.sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name ?: "" })
+    }
+
+    private fun isValidEpisodeUrl(url: String): Boolean {
+        if (url.isBlank() || !url.contains("samehadaku", true)) return false
+        if (url.contains("/anime/", true)) return false
+        return Regex("""(?i)(?:^|[-_/])episode[-_/]?\d{1,4}(?:[-_/]|$)""").containsMatchIn(url) ||
+            Regex("""(?i)(?:^|[-_/])eps?[-_/]?\d{1,4}(?:[-_/]|$)""").containsMatchIn(url)
+    }
+
+    private fun parseEpisodeNumberFromEpisodeUrl(url: String): Int? {
+        val path = runCatching { URI(url).path }.getOrDefault(url)
+        return listOf(
+            Regex("""(?i)(?:^|[-_/])episode[-_/]?(\d{1,4})(?:[-_/]|$)"""),
+            Regex("""(?i)(?:^|[-_/])eps?[-_/]?(\d{1,4})(?:[-_/]|$)""")
+        ).firstNotNullOfOrNull { regex ->
+            regex.find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
     }
 
     fun parseRecommendations(api: MainAPI, document: Document, baseUrl: String, mainUrl: String): List<SearchResponse> {

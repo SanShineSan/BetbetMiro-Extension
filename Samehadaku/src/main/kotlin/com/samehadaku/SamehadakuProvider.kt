@@ -140,8 +140,9 @@ class SamehadakuProvider : MainAPI() {
         val meta = SamehadakuParser.parseMeta(document, entryUrl, mainUrl) ?: return null
         val episodes = SamehadakuParser.parseEpisodes(this, document, entryUrl, mainUrl)
         val recommendations = SamehadakuParser.parseRecommendations(this, document, entryUrl, mainUrl)
+        val responseType = if (episodes.isNotEmpty() && meta.type == TvType.AnimeMovie) TvType.Anime else meta.type
 
-        return newAnimeLoadResponse(meta.title, entryUrl, meta.type) {
+        return newAnimeLoadResponse(meta.title, entryUrl, responseType) {
             engName = meta.title
             posterUrl = meta.poster
             backgroundPosterUrl = meta.background ?: meta.poster
