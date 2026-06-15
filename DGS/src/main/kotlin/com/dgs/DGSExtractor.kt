@@ -211,7 +211,7 @@ object DGSExtractor {
         return false
     }
 
-    private fun collectSubtitles(pageUrl: String, document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
+    private suspend fun collectSubtitles(pageUrl: String, document: Document, subtitleCallback: (SubtitleFile) -> Unit) {
         document.select("track[kind=subtitles], track[src], a[href$=.srt], a[href$=.vtt]").forEach { element ->
             val subUrl = absoluteUrl(pageUrl, element.attr("src").ifBlank { element.attr("href") }) ?: return@forEach
             val label = cleanText(element.attr("label").ifBlank { element.text().ifBlank { "Subtitle" } })
