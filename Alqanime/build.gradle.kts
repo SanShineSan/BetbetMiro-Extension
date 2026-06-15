@@ -2,12 +2,12 @@ android {
     namespace = "com.BetbetMiro.alqanime"
 }
 
-version = 18
+version = 19
 
 cloudstream {
     language = "id"
     description = "Nonton & Download Anime Subtitle Indonesia"
-    authors = listOf("sad25kag")
+    authors = listOf("BetbetMiro")
     status = 1
     tvTypes = listOf(
         "AnimeMovie",

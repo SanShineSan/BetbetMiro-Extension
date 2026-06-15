@@ -73,9 +73,17 @@ class Alqanime : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(request.data.format(page), headers = commonHeaders).document
-        val selector = "div.listupd:not(.popularslider) article.bs"
-        val home = document.select(selector).mapNotNull { it.toSearchResult() }
+        val home = runCatching {
+            val document = app.get(
+                request.data.format(page),
+                headers = commonHeaders,
+                referer = mainUrl,
+                timeout = 15000L
+            ).document
+            document.select("div.listupd:not(.popularslider) article.bs")
+                .mapNotNull { it.toSearchResult() }
+        }.getOrDefault(emptyList())
+
         return newHomePageResponse(request.name, home)
     }
 
