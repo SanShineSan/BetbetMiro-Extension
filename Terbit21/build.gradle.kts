@@ -1,7 +1,7 @@
-version = 5
+version = 6
 
 cloudstream {
-    description = "Terbit21 - source movie dan tv series Indonesia berbasis evidence flow T21"
+    description = "Terbit21 - source movie dan tv series Indonesia berbasis evidence HAR"
     language = "id"
     authors = listOf("sad25kag")
 
@@ -18,5 +18,5 @@ cloudstream {
         "TvSeries",
     )
 
-    iconUrl = "https://www.google.com/s2/favicons?domain=tv.movieon21.mov&sz=%size%"
+    iconUrl = "https://www.google.com/s2/favicons?domain=162.244.95.227&sz=%size%"
 }

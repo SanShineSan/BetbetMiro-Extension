@@ -14,6 +14,9 @@ import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
@@ -278,6 +281,37 @@ class Terbit21Provider : MainAPI() {
         val pageUrl = "$SF21_ORIGIN/#$videoId"
         var emitted = false
 
+        // HAR + SF21 asset evidence:
+        // /api/v1/video?id=<id>&w=421&h=935&r=<source-host> returns AES-CBC hex.
+        // Decrypted JSON contains playable "source" and "cf" HLS playlist URLs.
+        runCatching {
+            app.get(
+                "$SF21_ORIGIN/api/v1/info?id=$videoId",
+                headers = sf21ApiHeaders(),
+                referer = "$SF21_ORIGIN/",
+                timeout = 30L,
+            )
+        }
+
+        val videoPayload = runCatching {
+            app.get(
+                "$SF21_ORIGIN/api/v1/video?id=$videoId&w=421&h=935&r=$sourceHost",
+                headers = sf21ApiHeaders(),
+                referer = "$SF21_ORIGIN/",
+                timeout = 30L,
+            ).text
+        }.getOrNull()
+
+        val decrypted = videoPayload?.decryptSf21Payload().orEmpty()
+        decrypted.extractSf21PlaybackUrls().forEach { media ->
+            emitted = when {
+                media.isDirectM3u8() -> emitM3u8(media, SF21_ORIGIN, callback, SF21_ORIGIN) || emitted
+                media.isDirectVideo() -> emitDirectVideo(media, SF21_ORIGIN, callback) || emitted
+                else -> emitted
+            }
+        }
+        if (emitted) return true
+
         val resolver = WebViewResolver(
             HAR_MEDIA_REGEX,
             userAgent = MOBILE_USER_AGENT,
@@ -302,27 +336,6 @@ class Terbit21Provider : MainAPI() {
                     else -> false
                 }
             }
-
-        // HAR evidence shows SF21 calls these API endpoints before playback:
-        // /api/v1/info?id=<id> and /api/v1/video?id=<id>&w=421&h=935&r=<source-host>.
-        // The responses are encrypted application/octet-stream, so they are fetched only to
-        // reproduce the browser flow/cookies and are not emitted as fake video links.
-        runCatching {
-            app.get(
-                "$SF21_ORIGIN/api/v1/info?id=$videoId",
-                headers = sf21ApiHeaders(),
-                referer = "$SF21_ORIGIN/",
-                timeout = 30L,
-            )
-        }
-        runCatching {
-            app.get(
-                "$SF21_ORIGIN/api/v1/video?id=$videoId&w=421&h=935&r=$sourceHost",
-                headers = sf21ApiHeaders(),
-                referer = "$SF21_ORIGIN/",
-                timeout = 30L,
-            )
-        }
 
         return emitted
     }
@@ -692,6 +705,8 @@ class Terbit21Provider : MainAPI() {
         return lower.contains(SF21_HOST) ||
             lower.contains(GDRIVE_HOST) ||
             lower.contains(STREAM121_HOST) ||
+            lower.contains("individualprofile.cyou") ||
+            lower.contains("brooklynvoyage.store") ||
             lower.startsWith(SOURCE_ORIGIN.lowercase(Locale.ROOT))
     }
 
@@ -703,6 +718,8 @@ class Terbit21Provider : MainAPI() {
             lower.contains(STREAM121_HOST) -> GDRIVE_ORIGIN
             lower.contains(GDRIVE_HOST) -> GDRIVE_ORIGIN
             lower.contains(SF21_HOST) -> SF21_ORIGIN
+            lower.contains("individualprofile.cyou") -> SF21_ORIGIN
+            lower.contains("brooklynvoyage.store") -> SF21_ORIGIN
             else -> getBaseUrl(this)
         }
     }
@@ -715,6 +732,12 @@ class Terbit21Provider : MainAPI() {
             lower.contains(STREAM121_HOST) -> mapOf(
                 "Accept" to "*/*",
                 "Origin" to GDRIVE_ORIGIN,
+                "User-Agent" to MOBILE_USER_AGENT,
+            )
+            lower.contains("individualprofile.cyou") || lower.contains("brooklynvoyage.store") -> mapOf(
+                "Accept" to "*/*",
+                "Origin" to SF21_ORIGIN,
+                "Referer" to "$SF21_ORIGIN/",
                 "User-Agent" to MOBILE_USER_AGENT,
             )
             else -> mapOf("Referer" to referer, "User-Agent" to MOBILE_USER_AGENT)
@@ -745,7 +768,7 @@ class Terbit21Provider : MainAPI() {
     }
 
     private fun String.isDirectMedia(): Boolean = isDirectM3u8() || isDirectVideo()
-    private fun String.isDirectM3u8(): Boolean = contains(".m3u8", true)
+    private fun String.isDirectM3u8(): Boolean = contains(".m3u8", true) || contains("cf-master", true) || contains("hlsplaylist.php", true)
     private fun String.isDirectVideo(): Boolean = contains(".mp4", true) || contains(".mkv", true)
 
     private fun String.isNoiseUrl(): Boolean {
@@ -770,6 +793,45 @@ class Terbit21Provider : MainAPI() {
             if (!name.equals(key, true)) null else URLDecoder.decode(part.substringAfter('=', ""), "UTF-8")
         }
     }.getOrNull()
+
+
+    private fun String.decryptSf21Payload(): String? = runCatching {
+        val cleanHex = filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        if (cleanHex.length < 32 || cleanHex.length % 2 != 0) return@runCatching null
+        val encrypted = ByteArray(cleanHex.length / 2) { index ->
+            cleanHex.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(SF21_AES_KEY.toByteArray(Charsets.UTF_8), "AES"),
+            IvParameterSpec(SF21_AES_IV.toByteArray(Charsets.UTF_8)),
+        )
+        String(cipher.doFinal(encrypted), Charsets.UTF_8).decodeHtml()
+    }.getOrNull()
+
+    private fun String.extractSf21PlaybackUrls(): List<String> {
+        val urls = linkedSetOf<String>()
+        SF21_JSON_URL_REGEX.findAll(this)
+            .map { it.groupValues.getOrNull(1).orEmpty().decodeHtml() }
+            .filter { candidate ->
+                candidate.contains(".m3u8", true) ||
+                    candidate.contains("cf-master", true) ||
+                    candidate.contains("hlsplaylist.php", true) ||
+                    candidate.isDirectVideo()
+            }
+            .forEach { urls.add(it) }
+        URL_REGEX.findAll(this)
+            .map { it.value.cleanUrl().decodeHtml() }
+            .filter { candidate ->
+                candidate.contains(".m3u8", true) ||
+                    candidate.contains("cf-master", true) ||
+                    candidate.contains("hlsplaylist.php", true) ||
+                    candidate.isDirectVideo()
+            }
+            .forEach { urls.add(it) }
+        return urls.toList()
+    }
 
     private fun getBaseUrl(url: String): String {
         return runCatching {
@@ -798,7 +860,11 @@ class Terbit21Provider : MainAPI() {
         private val GDRIVE_M3U8_REGEX =
             Regex("""https?://gdriveplayer\.io/hlsplaylist\.php\?[^'"<>\s]+\.m3u8[^'"<>\s]*""", RegexOption.IGNORE_CASE)
         private val HAR_MEDIA_REGEX =
-            Regex("""https?://(?:gdriveplayer\.io/hlsplaylist\.php\?[^'"<>\s]+\.m3u8[^'"<>\s]*|lowhls10\.stream121\.space/video/data/[^'"<>\s]+|[^'"<>\s]+\.(?:m3u8|mp4)(?:\?[^'"<>\s]*)?)""", RegexOption.IGNORE_CASE)
+            Regex("""https?://(?:gdriveplayer\.io/hlsplaylist\.php\?[^'"<>\s]+\.m3u8[^'"<>\s]*|lowhls10\.stream121\.space/video/data/[^'"<>\s]+|[^'"<>\s]+(?:\.(?:m3u8|mp4)|/cf-master\.[^'"<>\s]+\.txt)(?:\?[^'"<>\s]*)?)""", RegexOption.IGNORE_CASE)
+        private val SF21_JSON_URL_REGEX =
+            Regex("""(?i)\"(?:source|cf|file|url)\"\s*:\s*\"([^\"]+)\"""")
+        private const val SF21_AES_KEY = "kiemtienmua911ca"
+        private const val SF21_AES_IV = "1234567890oiuytr"
         private val URL_REGEX = Regex("""https?:\/\/[^\s'"<>\\]+""", RegexOption.IGNORE_CASE)
         private val YEAR_REGEX = Regex("""(?:19|20)\d{2}""")
         private val DURATION_REGEX = Regex("""(?i)(\d{1,3})\s*(?:min|menit|minutes|m)\b""")
