@@ -23,17 +23,25 @@ class WatchWrestling : MainAPI() {
             "Chrome/149.0.0.0 Mobile Safari/537.36"
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/" to "Wrestling",
-        "${mainUrl}/ufc41/" to "UFC",
-        "${mainUrl}/njpw51/" to "New Japan Pro Wrestling",
-        "${mainUrl}/roh24/" to "Ring Of Honor",
-        "${mainUrl}/aew65/" to "All Elite Wrestling",
-        "${mainUrl}/other-wrestling30/" to "Other Wrestling",
-        "${mainUrl}/impact-wrestlingss30/" to "Impact Wrestling",
+        "${mainUrl}/wwe" to "WWE",
+        "${mainUrl}/wwe-raw" to "WWE Raw",
+        "${mainUrl}/wwe-smackdown" to "WWE Smackdown",
+        "${mainUrl}/main-events" to "WWE Main Event",
+        "${mainUrl}/wwe-nxt-show" to "WWE NXT",
+        "${mainUrl}/wwe-ppv61" to "WWE PPV",
+        "${mainUrl}/wwe-totaldvas29" to "WWE Total Divas",
+        "${mainUrl}/impact-wrestlingss31" to "IMPACT Wrestling",
+        "${mainUrl}/ufc42" to "UFC",
+        "${mainUrl}/ufc-ppv" to "UFC PPV",
+        "${mainUrl}/njpw52" to "NJPW",
+        "${mainUrl}/roh25" to "ROH",
+        "${mainUrl}/aew66" to "AEW (All Elite Wrestling)",
+        "${mainUrl}/other-wrestling31" to "Other Wrestling",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}/page/$page/").document
+        val pageUrl = "${request.data.trimEnd('/')}/page/$page/"
+        val document = app.get(pageUrl).document
         val home = document.select("div.loop-content div.item").mapNotNull { it.toMainPageResult() }
 
         return newHomePageResponse(request.name, home)
