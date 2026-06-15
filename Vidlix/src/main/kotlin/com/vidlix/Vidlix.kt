@@ -56,8 +56,10 @@ class Vidlix : MainAPI() {
         TvType.NSFW
     )
 
+    private val browserUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
+
     private val siteHeaders = mapOf(
-        "User-Agent" to USER_AGENT,
+        "User-Agent" to browserUserAgent,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
         "Cache-Control" to "no-cache",
@@ -149,8 +151,8 @@ class Vidlix : MainAPI() {
         val duration = detailValue(document, "Durasi")?.durationToMinutes()
         val rating = detailValue(document, "Rating")?.substringBefore(" ")?.trim()?.takeIf { it.isNotBlank() }
         val jsProxyUrl = document.selectFirst("script[src*='js_proxy.php']")?.attr("src")?.let { absoluteUrl(it) }
-        val proxyDocument = jsProxyUrl?.let { fetchProxyDocument(it, url) }
-        val videoCandidates = proxyDocument?.let { extractProxyCandidates(it) }.orEmpty()
+        val proxySource = jsProxyUrl?.let { fetchProxySource(it, url) }
+        val videoCandidates = proxySource?.let { extractProxyCandidates(it, jsProxyUrl ?: mainUrl) }.orEmpty()
         val isSeries = isSeriesPage(document)
 
         return if (isSeries) {
@@ -240,9 +242,9 @@ class Vidlix : MainAPI() {
                 resolveCandidate(withVidlixReferer(proxyUrl, requestUrl), requestUrl, visited, subtitleCallback, callback)
             }
             requestUrl.contains("js_proxy.php") -> {
-                val proxyDocument = fetchProxyDocument(requestUrl, requestReferer) ?: return false
+                val proxySource = fetchProxySource(requestUrl, requestReferer) ?: return false
                 var found = false
-                extractProxyCandidates(proxyDocument).forEach { candidate ->
+                extractProxyCandidates(proxySource, requestUrl).forEach { candidate ->
                     if (resolveCandidate(withVidlixReferer(candidate.url, requestReferer), requestReferer, visited, subtitleCallback, callback)) found = true
                 }
                 found
@@ -534,26 +536,28 @@ class Vidlix : MainAPI() {
         }
     }
 
-    private suspend fun fetchProxyDocument(proxyUrl: String, referer: String): Document? {
-        val js = runCatching {
+    private suspend fun fetchProxySource(proxyUrl: String, referer: String): String? {
+        return runCatching {
             app.get(
                 proxyUrl,
                 headers = siteHeaders + mapOf(
-                    "Accept" to "*/*",
+                    "Accept" to "application/javascript,text/javascript,*/*;q=0.1",
                     "Sec-Fetch-Site" to "same-origin",
                     "Sec-Fetch-Mode" to "no-cors",
-                    "Sec-Fetch-Dest" to "script"
+                    "Sec-Fetch-Dest" to "script",
+                    "Sec-CH-UA-Mobile" to "?1",
+                    "Sec-CH-UA-Platform" to ""Android""
                 ),
                 referer = referer
             ).text
-        }.getOrNull() ?: return null
-        val html = unwrapDocumentWrite(js)
-        return Jsoup.parse("$html\n<script>$js</script>", proxyUrl)
+        }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
-    private fun extractProxyCandidates(document: Document): List<VideoCandidate> {
+    private fun extractProxyCandidates(proxySource: String, baseUrl: String): List<VideoCandidate> {
         val candidates = mutableListOf<VideoCandidate>()
-        val sourceHtml = document.html().htmlUnescape().unescapeJs()
+        val unwrappedHtml = unwrapDocumentWrite(proxySource)
+        val document = Jsoup.parse("$unwrappedHtml\n<script>$proxySource</script>", baseUrl)
+        val sourceHtml = "$proxySource\n$unwrappedHtml\n${document.html()}".htmlUnescape().unescapeJs()
 
         document.select("div.video-con[video], [video]").forEachIndexed { index, element ->
             val url = element.attr("video").trim().htmlUnescape()
@@ -617,22 +621,31 @@ class Vidlix : MainAPI() {
             searchIndex = arrayEnd + 1
 
             splitJsObjects(arrayBody).forEachIndexed { index, objectBody ->
-                val mediaUrl = jsObjectValue(objectBody, "src", "file", "url", "source")
-                    ?.takeIf { it.isPlayableCandidate() }
-                    ?.let { normalizeMediaUrl(it) }
-                    ?: return@forEachIndexed
-                val episodeName = jsObjectValue(objectBody, "name", "title") ?: "Episode ${index + 1}"
-                candidates.add(
-                    VideoCandidate(
-                        url = mediaUrl,
-                        name = episodeName,
-                        posterUrl = jsObjectValue(objectBody, "poster", "thumb")?.let { absoluteUrl(it) },
-                        episode = episodeName.extractEpisodeNumber() ?: (index + 1)
-                    )
-                )
+                jsObjectToVideoCandidate(objectBody, index)?.let { candidates.add(it) }
             }
         }
+
+        Regex("""\{([^{}]*?https?://(?:www\.)?vidlix\.net/media/[^{}]*?)\}""", RegexOption.IGNORE_CASE)
+            .findAll(sourceHtml)
+            .forEachIndexed { index, match ->
+                jsObjectToVideoCandidate(match.groupValues[1], index)?.let { candidates.add(it) }
+            }
+
         return candidates.distinctBy { it.url.substringBefore("#") }
+    }
+
+    private fun jsObjectToVideoCandidate(objectBody: String, index: Int): VideoCandidate? {
+        val mediaUrl = jsObjectValue(objectBody, "src", "file", "url", "source")
+            ?.takeIf { it.isPlayableCandidate() }
+            ?.let { normalizeMediaUrl(it) }
+            ?: return null
+        val episodeName = jsObjectValue(objectBody, "name", "title") ?: "Episode ${index + 1}"
+        return VideoCandidate(
+            url = mediaUrl,
+            name = episodeName.cleanEpisodeTitle(),
+            posterUrl = jsObjectValue(objectBody, "poster", "thumb")?.let { absoluteUrl(it) },
+            episode = episodeName.extractEpisodeNumber() ?: (index + 1)
+        )
     }
 
     private fun splitJsObjects(source: String): List<String> {
@@ -924,6 +937,14 @@ class Vidlix : MainAPI() {
             .trim()
     }
 
+    private fun String.cleanEpisodeTitle(): String {
+        val once = Regex("""(?i)^Ep\s+([0-9]+):\s*Ep\s+\1:\s*""")
+            .replace(trim()) { match -> "Ep ${match.groupValues[1]}: " }
+        return Regex("""(?i)^Episode\s+([0-9]+):\s*Episode\s+\1:\s*""")
+            .replace(once) { match -> "Episode ${match.groupValues[1]}: " }
+            .trim()
+    }
+
     private fun String.extractYear(): Int? {
         return Regex("(19|20)\\d{2}").find(this)?.value?.toIntOrNull()
     }
@@ -953,7 +974,7 @@ class Vidlix : MainAPI() {
         return mapOf(
             "Referer" to referer,
             "Origin" to (runCatching { URI(referer).let { "${it.scheme}://${it.host}" } }.getOrNull() ?: mainUrl),
-            "User-Agent" to USER_AGENT,
+            "User-Agent" to browserUserAgent,
             "Accept" to "*/*"
         )
     }
@@ -962,7 +983,7 @@ class Vidlix : MainAPI() {
         return mapOf(
             "Referer" to referer,
             "Origin" to mainUrl,
-            "User-Agent" to USER_AGENT,
+            "User-Agent" to browserUserAgent,
             "Accept" to "*/*"
         )
     }
