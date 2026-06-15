@@ -72,8 +72,12 @@ class AVTub : MainAPI() {
         return newSearchResponseList(results, hasNext = results.isNotEmpty())
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse>? =
-        search(query, 1).list
+    override suspend fun quickSearch(query: String): List<SearchResponse>? {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        return app.get("$mainUrl/?s=$encoded", headers = siteHeaders)
+            .document
+            .parseCards()
+    }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = siteHeaders).document
