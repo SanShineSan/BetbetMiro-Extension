@@ -78,24 +78,25 @@ class Vidlix : MainAPI() {
         "$mainUrl/tag/drama" to "Drama",
         "$mainUrl/tag/sci-fi" to "Sci-Fi",
         "$mainUrl/tag/comedy" to "Comedy",
-        "$mainUrl/tag/fantasy" to "Fantasy",
-        "$mainUrl/tag/anime" to "Anime"
+        "$mainUrl/tag/fantasy" to "Fantasy"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val list = if (request.data.startsWith("home:")) {
-            val document = app.get(mainUrl, headers = siteHeaders).document
-            val section = request.data.removePrefix("home:")
-            parseHomeSection(document, section)
+        val isHomeSection = request.data.startsWith("home:")
+        val document = if (isHomeSection) {
+            app.get(mainUrl, headers = siteHeaders).document
         } else {
-            val url = pagedUrl(request.data, page)
-            val document = app.get(url, headers = siteHeaders, referer = "$mainUrl/").document
-            parseCards(document, defaultTypeFor(request.name))
+            app.get(pagedUrl(request.data, page), headers = siteHeaders, referer = "$mainUrl/").document
+        }
+        val list = if (isHomeSection) {
+            parseHomeSection(document, request.data.removePrefix("home:"))
+        } else {
+            parseCategoryCards(document, defaultTypeFor(request.name))
         }
 
         return newHomePageResponse(
-            HomePageList(request.name, list, isHorizontalImages = true),
-            hasNext = list.isNotEmpty() && !request.data.startsWith("home:")
+            HomePageList(request.name, list, isHorizontalImages = false),
+            hasNext = !isHomeSection && hasNextPage(document, page)
         )
     }
 
@@ -455,27 +456,58 @@ class Vidlix : MainAPI() {
     }
 
     private fun parseHomeSection(document: Document, sectionTitle: String): List<SearchResponse> {
-        val header = document.select("h2.judulpop, h2.judulterbaru").firstOrNull { it.text().trim().equals(sectionTitle, true) }
-            ?: return parseCards(document, defaultTypeFor(sectionTitle))
+        val header = document.select("h2.judulpop, h2.judulterbaru").firstOrNull {
+            it.text().trim().equals(sectionTitle, true)
+        } ?: return parseCards(document, defaultTypeFor(sectionTitle), requirePoster = true)
+
         val html = buildString {
             var sibling = header.nextSibling()
             while (sibling != null) {
-                if (sibling is Element && sibling.tagName() == "h2" && sibling.classNames().any { it == "judulpop" || it == "judulterbaru" }) break
+                if (
+                    sibling is Element &&
+                    sibling.tagName() == "h2" &&
+                    sibling.classNames().any { it == "judulpop" || it == "judulterbaru" }
+                ) {
+                    break
+                }
                 append(sibling.toString())
                 sibling = sibling.nextSibling()
             }
         }
-        return parseCards(Jsoup.parse(html, mainUrl), defaultTypeFor(sectionTitle))
+
+        return parseCards(Jsoup.parse(html, mainUrl), defaultTypeFor(sectionTitle), requirePoster = true)
     }
 
-    private fun parseCards(document: Document, defaultType: TvType): List<SearchResponse> {
+    private fun parseCategoryCards(document: Document, defaultType: TvType): List<SearchResponse> {
         val seen = linkedSetOf<String>()
-        return document.select("a[href*=/post/], article:has(a[href*=/post/]), .post:has(a[href*=/post/]), .item:has(a[href*=/post/]), .video:has(a[href*=/post/]), .masonry:has(a[href*=/post/])")
-            .mapNotNull { it.toSearchResult(defaultType) }
+        return document
+            .select(".masonry .isi .featured-video:has(a[href*=/post/])")
+            .mapNotNull { it.toSearchResult(defaultType, requirePoster = true) }
             .filter { seen.add(it.url) }
     }
 
-    private fun Element.toSearchResult(defaultType: TvType): SearchResponse? {
+    private fun parseCards(
+        document: Document,
+        defaultType: TvType,
+        requirePoster: Boolean = false
+    ): List<SearchResponse> {
+        val seen = linkedSetOf<String>()
+        val cardSelectors = listOf(
+            "#bannerteras a.linkpop[href*=/post/]",
+            ".masonry .isi .featured-video:has(a[href*=/post/])",
+            ".featured-video:has(a[href*=/post/])",
+            "article:has(a[href*=/post/])",
+            ".post:has(a[href*=/post/])",
+            ".item:has(a[href*=/post/])",
+            ".video:has(a[href*=/post/])"
+        ).joinToString(", ")
+
+        return document.select(cardSelectors)
+            .mapNotNull { it.toSearchResult(defaultType, requirePoster) }
+            .filter { seen.add(it.url) }
+    }
+
+    private fun Element.toSearchResult(defaultType: TvType, requirePoster: Boolean = false): SearchResponse? {
         val anchor = when {
             tagName() == "a" && attr("href").contains("/post/") -> this
             else -> selectFirst("a[href*=/post/]")
@@ -490,6 +522,7 @@ class Vidlix : MainAPI() {
             ?: text.cleanCardText().ifBlank { null }
             ?: return null
         val poster = extractImageUrl(this) ?: extractImageUrl(anchor)
+        if (requirePoster && poster.isNullOrBlank()) return null
         val type = when {
             text.contains("Series", true) || title.contains("Season", true) || defaultType == TvType.TvSeries -> TvType.TvSeries
             else -> TvType.Movie
@@ -675,6 +708,21 @@ class Vidlix : MainAPI() {
 
     private fun defaultTypeFor(name: String): TvType {
         return if (name.contains("series", true) || name.contains("ongoing", true)) TvType.TvSeries else TvType.Movie
+    }
+
+    private fun hasNextPage(document: Document, currentPage: Int): Boolean {
+        val current = currentPage.coerceAtLeast(1)
+        return document.select("a[href]").any { anchor ->
+            val href = anchor.attr("href")
+            val label = anchor.text().trim()
+            val page = Regex("""(?:[?&]page=|/page/)(\d+)""", RegexOption.IGNORE_CASE)
+                .find(href)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: label.toIntOrNull()
+            page != null && page > current
+        }
     }
 
     private fun pagedUrl(base: String, page: Int): String {
