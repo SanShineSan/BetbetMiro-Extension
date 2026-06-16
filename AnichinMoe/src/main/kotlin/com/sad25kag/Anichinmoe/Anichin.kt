@@ -14,7 +14,7 @@ class Anichin : MainAPI() {
     companion object {
         var context: android.content.Context? = null
 
-        private const val MAX_TOP_LEVEL_CANDIDATES = 36
+        private const val MAX_TOP_LEVEL_CANDIDATES = 12
         private const val MAX_DOWNLOAD_CANDIDATES = 6
         private const val MAX_NESTED_CANDIDATES = 10
         private const val MAX_RESOLVE_DEPTH = 1
@@ -171,6 +171,7 @@ class Anichin : MainAPI() {
         val topLevelCandidates = candidates
             .mapNotNull { (url, label) -> normalizeAnyUrl(url, episodeUrl)?.let { it to label } }
             .filterNot { (url, _) -> isNoiseFrame(url) }
+            .filter { (url, label) -> isPrimaryPlaybackHost(url, label) }
             .distinctBy { it.first }
             .sortedWith(
                 compareBy<Pair<String, String>> { candidatePriority(it.first, it.second) }
@@ -207,6 +208,7 @@ class Anichin : MainAPI() {
                         ?.let { normalizeAnyUrl(it, episodeUrl) }
                 }
                 .filterNot { isNoiseFrame(it) }
+                .filter { isPrimaryPlaybackHost(it, "Download") }
                 .distinct()
                 .sortedBy { candidatePriority(it, "Download") }
                 .take(MAX_DOWNLOAD_CANDIDATES)
@@ -336,6 +338,7 @@ class Anichin : MainAPI() {
 
         val nestedCandidates = nested.asSequence()
             .filterNot { isNoiseFrame(it) }
+            .filter { isPrimaryPlaybackHost(it, label) }
             .distinct()
             .take(MAX_NESTED_CANDIDATES)
             .toList()
@@ -472,23 +475,24 @@ class Anichin : MainAPI() {
     }
 
     private fun shouldUseExtractor(url: String): Boolean {
-        val value = url.lowercase()
-        return supportedHosts.any { host -> value.contains(host) }
+        return isPrimaryPlaybackHost(url, "")
+    }
+
+    private fun isPrimaryPlaybackHost(url: String, label: String): Boolean {
+        val value = "$label $url".lowercase()
+        return value.contains("dailymotion.com") ||
+            value.contains("geo.dailymotion.com") ||
+            value.contains("dai.ly") ||
+            value.contains("ok.ru") ||
+            value.contains("odnoklassniki.ru")
     }
 
     private fun candidatePriority(url: String, label: String): Int {
         val value = "$label $url".lowercase()
         return when {
-            value.contains("ok.ru") || value.contains("odnoklassniki.ru") -> 0
-            value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") -> 1
-            value.contains("rumble.com") -> 2
-            value.contains("streamruby") || value.contains("rubyvidhub") -> 3
-            value.contains("vidguard") || value.contains("bembed.net") || value.contains("listeamed.net") || value.contains("vgfplay.com") -> 4
-            value.contains("dailymotion.com") || value.contains("geo.dailymotion.com") || value.contains("dai.ly") -> 5
-            value.contains("dood") || value.contains("d000d") -> 6
-            value.contains("filemoon") || value.contains("streamtape") || value.contains("mixdrop") || value.contains("mp4upload") -> 7
-            value.contains("mega.nz") || value.contains("terabox") || value.contains("onedrive") -> 90
-            else -> 20
+            value.contains("dailymotion.com") || value.contains("geo.dailymotion.com") || value.contains("dai.ly") -> 0
+            value.contains("ok.ru") || value.contains("odnoklassniki.ru") -> 1
+            else -> 99
         }
     }
 
@@ -568,25 +572,6 @@ class Anichin : MainAPI() {
         "dai.ly",
         "ok.ru",
         "odnoklassniki.ru",
-        "rumble.com",
-        "rubyvidhub.com",
-        "streamruby.com",
-        "streamruby.net",
-        "vidguard.to",
-        "bembed.net",
-        "listeamed.net",
-        "vgfplay.com",
-        "vidhide",
-        "filelions",
-        "streamwish",
-        "wishfast",
-        "dood",
-        "d000d",
-        "filemoon",
-        "streamtape",
-        "mixdrop",
-        "voe.sx",
-        "mp4upload",
     )
 
 

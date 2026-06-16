@@ -14,14 +14,5 @@ class AnichinProvider: Plugin() {
         registerExtractorAPI(Odnoklassniki())
         registerExtractorAPI(OkRuSSL())
         registerExtractorAPI(OkRuHTTP())
-        registerExtractorAPI(Rumble())
-        registerExtractorAPI(StreamRuby())
-        registerExtractorAPI(svilla())
-        registerExtractorAPI(svanila())
-        registerExtractorAPI(Vidguardto())
-        registerExtractorAPI(Vidguardto1())
-        registerExtractorAPI(Vidguardto2())
-        registerExtractorAPI(Vidguardto3())
-
     }
 }
