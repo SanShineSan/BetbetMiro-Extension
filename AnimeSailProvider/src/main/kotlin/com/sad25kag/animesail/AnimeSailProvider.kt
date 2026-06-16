@@ -37,8 +37,6 @@ class AnimeSailProvider : MainAPI() {
     override val hasQuickSearch = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    // DEBUG ONLY: cookie-warmed homepage test from Boss HAR.
-    // Do not commit, publish, or share this build because it contains session cookies.
     private val debugHarCookieHeader = "_as_ipin_tz=Asia/Jakarta; _as_ipin_lc=id; _as_ipin_ct=ID; _as_turnstile=c900bd78de007c90ed36f5f830c2d8ac322ee9efe5d6f2c69ee39cdcefc335b9"
     private val debugHarUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
     private val debugHarAcceptLanguage = "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -86,7 +84,6 @@ class AnimeSailProvider : MainAPI() {
         "$mainUrl/rilisan-anime-terbaru/" to "Ongoing Anime",
         "$mainUrl/rilisan-donghua-terbaru/" to "Ongoing Donghua",
         "$mainUrl/movie-terbaru/" to "Movie Terbaru",
-        "$mainUrl/daftar-anime/" to "Daftar Anime",
 
         "$mainUrl/genres/action/" to "Action",
         "$mainUrl/genres/adventure/" to "Adventure",
