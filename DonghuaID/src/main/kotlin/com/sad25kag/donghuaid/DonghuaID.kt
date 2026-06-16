@@ -157,35 +157,27 @@ class DonghuaID : MainAPI() {
             return true
         }
 
-        val candidates = collectPlayerCandidates(document, response.text, data)
-        for (candidate in candidates.take(80)) {
-            val playerUrl = candidate.decodeEmbedText().absoluteUrl(data) ?: continue
-            if (emitDirect(playerUrl, hostLabel(playerUrl), data)) continue
+        val countedCallback: (ExtractorLink) -> Unit = { link ->
+            emitted.add(link.url.substringBefore("#"))
+            callback.invoke(link)
+        }
 
-            val before = emitted.size
-            val countedCallback: (ExtractorLink) -> Unit = { link ->
-                emitted.add(link.url.substringBefore("#"))
-                callback.invoke(link)
-            }
-            runCatching { loadExtractor(playerUrl, data, subtitleCallback, countedCallback) }
-            if (emitted.size > before) continue
+        val candidates = collectSourcePlayerCandidates(document, data)
+        for (candidate in candidates) {
+            val playerUrl = candidate.url.decodeEmbedText().absoluteUrl(candidate.referer) ?: continue
+            if (emitDirect(playerUrl, candidate.label, candidate.referer)) continue
 
-            val playerReferer = if (playerUrl.contains("dailymotion", true)) "https://geo.dailymotion.com/" else data
-            val playerHtml = runCatching {
-                app.get(
-                    playerUrl,
-                    headers = siteHeaders + mapOf("Referer" to playerReferer, "Origin" to originOf(playerReferer)),
-                    referer = playerReferer,
-                ).text
-            }.getOrNull().orEmpty()
-            if (playerHtml.isBlank()) continue
+            val beforeExtractor = emitted.size
+            runCatching { loadExtractor(playerUrl, candidate.referer, subtitleCallback, countedCallback) }
+            val extractorEmitted = emitted.size > beforeExtractor
+            if (extractorEmitted) continue
+        }
 
-            val unpacked = runCatching { getAndUnpack(playerHtml) }.getOrNull().orEmpty()
-            val nested = collectUrlsFromText(playerHtml + "\n" + unpacked, playerUrl)
-            for (nestedUrl in nested.take(40)) {
-                if (emitDirect(nestedUrl, hostLabel(playerUrl), playerUrl)) continue
-                val fixedNested = nestedUrl.absoluteUrl(playerUrl) ?: continue
-                runCatching { loadExtractor(fixedNested, playerUrl, subtitleCallback, countedCallback) }
+        // Last fallback only: direct media already present on the same watch page.
+        // No host list, no manual host resolver, and no fetched-player-page scraping here.
+        if (emitted.isEmpty()) {
+            collectDirectMediaFromText(response.text, data).forEach { direct ->
+                emitDirect(direct, hostLabel(direct), data)
             }
         }
 
@@ -282,106 +274,69 @@ class DonghuaID : MainAPI() {
             .sortedByDescending { it.episode ?: -1 }
     }
 
-    private suspend fun collectPlayerCandidates(document: Document, html: String, referer: String): LinkedHashSet<String> {
-        val candidates = linkedSetOf<String>()
+    private data class PlayerCandidate(
+        val url: String,
+        val label: String? = null,
+        val referer: String,
+    )
 
-        document.select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-            node.attr("src").takeIf { it.isNotBlank() }?.let { addCandidateValue(it, referer, candidates) }
+    private fun collectSourcePlayerCandidates(document: Document, referer: String): LinkedHashSet<PlayerCandidate> {
+        val candidates = linkedSetOf<PlayerCandidate>()
+
+        fun add(rawUrl: String?, label: String? = null, candidateReferer: String = referer) {
+            val fixedUrl = rawUrl
+                ?.decodeEmbedText()
+                ?.absoluteUrl(candidateReferer)
+                ?.takeIf { it.isSourcePlayerUrl() || it.isDirectMediaLike() }
+                ?: return
+            candidates.add(PlayerCandidate(fixedUrl, label?.cleanText()?.takeIf { it.isNotBlank() }, candidateReferer))
         }
 
-        document.select("select.mirror option[value], .mirror option[value], .mobius option[value], option[data-index][value]").forEach { option ->
+        val playerRoots = document.select("#embed_holder, #pembed, .player-embed, .mobius, .mirror, .server, .servers, .player")
+        val scopedRoots = if (playerRoots.isNotEmpty()) playerRoots else document.select("body")
+
+        scopedRoots.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
+            val src = node.attr("src").ifBlank { node.attr("content") }
+            add(src, node.attr("title").ifBlank { hostLabel(src) })
+        }
+
+        document.select(".mobius option[value], select.mirror option[value], .mirror option[value], select option[value]").forEach { option ->
             val value = option.attr("value").trim()
             if (value.isBlank()) return@forEach
-            val label = option.text().cleanText()
-            addCandidateValue(value, referer, candidates)
-            decodeBase64(value)?.let { decoded ->
-                collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
-                Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-                    node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
-                }
-                if (label.isNotBlank()) candidates.add("#label:$label")
-            }
+            val label = option.text().cleanText().takeIf { it.isNotBlank() && !it.equals("Select Video Server", true) }
+            decodeServerOption(value, referer).forEach { decodedUrl -> add(decodedUrl, label) }
         }
 
-        val dataAttrs = listOf(
-            "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream", "data-content", "data-hash"
-        )
-        dataAttrs.forEach { attr ->
-            document.select("[$attr]").forEach { node ->
-                val value = node.attr(attr).trim()
-                if (value.isNotBlank()) addCandidateValue(value, referer, candidates)
-            }
-        }
-
-        collectAjaxPlayers(document, referer).forEach { candidates.add(it) }
-        collectUrlsFromText(html, referer).forEach { candidates.add(it) }
-        document.select("script").forEach { script ->
-            val scriptText = script.html()
-            val unpacked = runCatching { getAndUnpack(scriptText) }.getOrNull().orEmpty()
-            collectUrlsFromText(scriptText + "\n" + unpacked, referer).forEach { candidates.add(it) }
-        }
-        return candidates.filterNot { it.startsWith("#label:") }.toCollection(LinkedHashSet())
+        return candidates
     }
 
-    private fun addCandidateValue(value: String, referer: String, candidates: LinkedHashSet<String>) {
-        candidates.add(value)
-        value.decodeEmbedText().takeIf { it != value }?.let { decoded ->
-            candidates.add(decoded)
-            collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
-            Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-                node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
-            }
-        }
-        decodeBase64(value)?.takeIf { it.isNotBlank() }?.let { decoded ->
-            candidates.add(decoded)
-            collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
-            Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-                node.attr("src").takeIf { it.isNotBlank() }?.absoluteUrl(referer)?.let { candidates.add(it) }
-            }
-        }
-    }
-
-    private suspend fun collectAjaxPlayers(document: Document, referer: String): List<String> {
+    private fun decodeServerOption(value: String, referer: String): List<String> {
         val results = linkedSetOf<String>()
-        val nodes = document.select("[data-post][data-nume], [data-id][data-nume], [data-post][data-server], [data-episode][data-server]")
-        val actions = listOf("doo_player_ajax", "player_ajax", "ts_player_ajax", "donghuaid_player_ajax")
+        val variants = linkedSetOf<String>()
+        val clean = value.decodeEmbedText()
+        variants.add(clean)
+        decodeBase64(clean)?.let { variants.add(it.decodeEmbedText()) }
+        decodeBase64UrlSafe(clean)?.let { variants.add(it.decodeEmbedText()) }
 
-        for (node in nodes.take(12)) {
-            val post = node.attr("data-post").ifBlank { node.attr("data-id") }.ifBlank { node.attr("data-episode") }
-            val nume = node.attr("data-nume").ifBlank { node.attr("data-server") }.ifBlank { "1" }
-            val type = node.attr("data-type").ifBlank { "tv" }
-            if (post.isBlank()) continue
+        variants.forEach { decoded ->
+            decoded.absoluteUrl(referer)?.let { fixed ->
+                if (fixed.isSourcePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
+            }
 
-            for (action in actions) {
-                val text = runCatching {
-                    app.post(
-                        "$mainUrl/wp-admin/admin-ajax.php",
-                        data = mapOf("action" to action, "post" to post, "nume" to nume, "type" to type),
-                        headers = siteHeaders + mapOf(
-                            "Accept" to "application/json, text/javascript, */*; q=0.01",
-                            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                            "X-Requested-With" to "XMLHttpRequest",
-                            "Origin" to mainUrl,
-                            "Referer" to referer,
-                        ),
-                        referer = referer,
-                    ).text
-                }.getOrNull().orEmpty()
-                if (text.isNotBlank()) collectUrlsFromText(text, referer).forEach { results.add(it) }
+            val parsed = Jsoup.parse(decoded)
+            parsed.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
+                val src = node.attr("src").ifBlank { node.attr("content") }
+                src.absoluteUrl(referer)?.let { fixed ->
+                    if (fixed.isSourcePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
+                }
             }
         }
         return results.toList()
     }
 
-    private fun collectUrlsFromText(text: String, base: String): List<String> {
+    private fun collectDirectMediaFromText(text: String, base: String): List<String> {
         val normalized = text.decodeEmbedText()
         val urls = linkedSetOf<String>()
-        Regex("""<(?:iframe|embed|source|video)[^>]+(?:src|data-src)=['\"]([^'\"]+)['\"]""", RegexOption.IGNORE_CASE)
-            .findAll(normalized)
-            .forEach { urls.add(it.groupValues[1]) }
-        Regex("""(?:src|file|url|source|video|embed|iframe|data-url|data-src|data-file|data-player|link)\s*[:=]\s*['\"]([^'\"]+)['\"]""", RegexOption.IGNORE_CASE)
-            .findAll(normalized)
-            .forEach { urls.add(it.groupValues[1]) }
         Regex("""https?:\\?/\\?/[^'\"<>()\\\s]+""", RegexOption.IGNORE_CASE)
             .findAll(normalized)
             .map { it.value.replace("\\/", "/") }
@@ -390,9 +345,8 @@ class DonghuaID : MainAPI() {
             .findAll(normalized)
             .map { it.value.trimEnd(',', ';', ')') }
             .forEach { urls.add(it) }
-
         return urls.mapNotNull { it.absoluteUrl(base) }
-            .filter { it.isPlayableCandidate() }
+            .filter { it.isDirectMediaLike() }
             .distinct()
     }
 
@@ -480,6 +434,15 @@ class DonghuaID : MainAPI() {
             ?.takeIf { it.contains("<iframe", true) || it.contains("http", true) }
     }
 
+    private fun decodeBase64UrlSafe(value: String): String? {
+        val clean = value.trim().replace("\n", "").replace("\r", "")
+        if (clean.length < 12 || clean.any { it !in 'A'..'Z' && it !in 'a'..'z' && it !in '0'..'9' && it != '-' && it != '_' && it != '=' }) return null
+        val padded = clean.padEnd(clean.length + (4 - clean.length % 4) % 4, '=')
+        return runCatching { String(Base64.getUrlDecoder().decode(padded), Charsets.UTF_8) }
+            .getOrNull()
+            ?.takeIf { it.contains("<iframe", true) || it.contains("http", true) }
+    }
+
     private fun String.absoluteUrl(baseUrl: String = mainUrl): String? {
         val value = trim().trim('"', '\'').replace("\\/", "/")
         if (value.isBlank() || value.startsWith("javascript:", true) || value == "#" || value.startsWith("data:", true)) return null
@@ -508,13 +471,14 @@ class DonghuaID : MainAPI() {
         return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".m4s") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback") || value.contains("/stream/")
     }
 
-    private fun String.isPlayableCandidate(): Boolean {
-        val value = decodeEmbedText().lowercase(Locale.ROOT)
+    private fun String.isSourcePlayerUrl(): Boolean {
+        val value = decodeEmbedText().lowercase(Locale.ROOT).substringBefore("#")
+        if (!value.startsWith("http://") && !value.startsWith("https://")) return false
         if (isDirectMediaLike()) return true
-        if (!value.startsWith("http")) return false
-        return listOf(
-            "iframe", "embed", "player", "stream", "desustream", "ondesuhd", "maodrive", "vidhide", "filedon", "filemoon", "streamtape", "streamsb", "sbembed", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "ok.ru", "rumble", "dailymotion", "youtube", "short.icu", "abyssplayer", "hydrax", "turbovid", "turbosplayer", "cdndirector", "dmcdn", "ms.ok.ru", "cdn", "manifest"
-        ).any { value.contains(it) }
+        if (value.contains("google-analytics") || value.contains("googletagmanager") || value.contains("doubleclick")) return false
+        val path = value.substringBefore("?")
+        val assetExtensions = listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".woff", ".woff2", ".ttf", ".ico")
+        return assetExtensions.none { path.endsWith(it) }
     }
 
 
