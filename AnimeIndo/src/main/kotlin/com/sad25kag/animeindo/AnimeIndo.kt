@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
@@ -550,6 +551,88 @@ class AnimeIndo : MainAPI() {
             .forEach { addServerUrl(serverUrls, it.value) }
     }
 
+    private fun resolveXtwapChildUrl(baseUrl: String, childUrl: String): String {
+        val child = childUrl.trim().replace("&amp;", "&")
+        return when {
+            child.startsWith("http", true) -> child
+            child.startsWith("//") -> "https:$child"
+            child.startsWith("/") -> "https://xtwap.top$child"
+            else -> "https://xtwap.top/$child"
+        }
+    }
+
+    private fun parseQualityFromXtwap(text: String): Int {
+        return Regex("(?i)(?:q=|RESOLUTION=\\d+x)(\\d{3,4})p?")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: Qualities.Unknown.value
+    }
+
+    private fun emitXtwapM3u8Link(
+        name: String,
+        url: String,
+        refererUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val quality = parseQualityFromXtwap("$name $url")
+        callback(newExtractorLink("AnimeIndo", name, url, type = ExtractorLinkType.M3U8) {
+            this.quality = quality
+            this.referer = refererUrl
+        })
+    }
+
+    private suspend fun resolveXtwapLink(
+        fullUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val playerText = app.get(fullUrl, referer = fullUrl).text
+            .replace("\r", "")
+            .trim()
+
+        if (playerText.startsWith("#EXTM3U")) {
+            val lines = playerText.lines().map { it.trim() }.filter { it.isNotBlank() }
+            var emitted = false
+
+            lines.forEachIndexed { index, line ->
+                if (line.startsWith("#EXT-X-STREAM-INF", true)) {
+                    val nextLine = lines.drop(index + 1).firstOrNull { !it.startsWith("#") }
+                    if (!nextLine.isNullOrBlank()) {
+                        val playlistUrl = resolveXtwapChildUrl(fullUrl, nextLine)
+                        val quality = parseQualityFromXtwap("$line $playlistUrl")
+                        val label = if (quality > 0) "CEPAT ${quality}p" else "CEPAT"
+                        emitXtwapM3u8Link(label, playlistUrl, fullUrl, callback)
+                        emitted = true
+                    }
+                }
+            }
+
+            if (!emitted) {
+                val labelQuality = parseQualityFromXtwap(fullUrl)
+                val label = if (labelQuality > 0) "CEPAT ${labelQuality}p" else "CEPAT"
+                emitXtwapM3u8Link(label, fullUrl, fullUrl, callback)
+                emitted = true
+            }
+
+            return emitted
+        }
+
+        val filePath = Regex("""(?i)["']?file["']?\s*[:=]\s*["']([^"']+)""").find(playerText)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\/", "/")
+            ?.replace("&amp;", "&")
+
+        if (!filePath.isNullOrBlank()) {
+            val videoUrl = resolveXtwapChildUrl(fullUrl, filePath)
+            emitXtwapM3u8Link("CEPAT", videoUrl, fullUrl, callback)
+            return true
+        }
+
+        return false
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -605,14 +688,7 @@ class AnimeIndo : MainAPI() {
                 }
             } else if (fullUrl.contains("xtwap.top", true)) {
                 try {
-                    val playerHtml = app.get(fullUrl, referer = cleanData).text
-                    val filePath = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerHtml)?.groupValues?.getOrNull(1)
-                    if (!filePath.isNullOrBlank()) {
-                        val videoUrl = if (filePath.startsWith("/")) "https://xtwap.top$filePath" else filePath
-                        callback(newExtractorLink("AnimeIndo", "CEPAT", videoUrl) {
-                            this.quality = Qualities.P1080.value
-                            this.referer = fullUrl
-                        })
+                    if (resolveXtwapLink(fullUrl, callback)) {
                         found = true
                     }
                 } catch (_: Exception) {
