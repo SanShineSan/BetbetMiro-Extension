@@ -14,7 +14,7 @@ class Anichin : MainAPI() {
     companion object {
         var context: android.content.Context? = null
 
-        private const val MAX_TOP_LEVEL_CANDIDATES = 12
+        private const val MAX_TOP_LEVEL_CANDIDATES = 36
         private const val MAX_DOWNLOAD_CANDIDATES = 6
         private const val MAX_NESTED_CANDIDATES = 10
         private const val MAX_RESOLVE_DEPTH = 1
@@ -172,10 +172,16 @@ class Anichin : MainAPI() {
             .mapNotNull { (url, label) -> normalizeAnyUrl(url, episodeUrl)?.let { it to label } }
             .filterNot { (url, _) -> isNoiseFrame(url) }
             .distinctBy { it.first }
+            .sortedWith(
+                compareBy<Pair<String, String>> { candidatePriority(it.first, it.second) }
+                    .thenBy { it.second.lowercase() }
+                    .thenBy { it.first }
+            )
             .take(MAX_TOP_LEVEL_CANDIDATES)
 
         for ((url, label) in topLevelCandidates) {
             try {
+                val before = emitted.size
                 resolveVideoCandidate(
                     url = url,
                     label = label,
@@ -184,9 +190,12 @@ class Anichin : MainAPI() {
                     subtitleCallback = subtitleCallback,
                     callback = countedCallback,
                 )
+                if (emitted.size == before) {
+                    Log.d("Anichin", "Server produced no links, trying next: $label -> $url")
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
-                Log.w("Anichin", "Failed resolving server: $url", error)
+                Log.w("Anichin", "Failed resolving server, trying next: $label -> $url", error)
             }
         }
 
@@ -199,6 +208,7 @@ class Anichin : MainAPI() {
                 }
                 .filterNot { isNoiseFrame(it) }
                 .distinct()
+                .sortedBy { candidatePriority(it, "Download") }
                 .take(MAX_DOWNLOAD_CANDIDATES)
 
             for (url in downloadCandidates) {
@@ -465,6 +475,23 @@ class Anichin : MainAPI() {
         val value = url.lowercase()
         return supportedHosts.any { host -> value.contains(host) }
     }
+
+    private fun candidatePriority(url: String, label: String): Int {
+        val value = "$label $url".lowercase()
+        return when {
+            value.contains("ok.ru") || value.contains("odnoklassniki.ru") -> 0
+            value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") -> 1
+            value.contains("rumble.com") -> 2
+            value.contains("streamruby") || value.contains("rubyvidhub") -> 3
+            value.contains("vidguard") || value.contains("bembed.net") || value.contains("listeamed.net") || value.contains("vgfplay.com") -> 4
+            value.contains("dailymotion.com") || value.contains("geo.dailymotion.com") || value.contains("dai.ly") -> 5
+            value.contains("dood") || value.contains("d000d") -> 6
+            value.contains("filemoon") || value.contains("streamtape") || value.contains("mixdrop") || value.contains("mp4upload") -> 7
+            value.contains("mega.nz") || value.contains("terabox") || value.contains("onedrive") -> 90
+            else -> 20
+        }
+    }
+
 
     private fun shouldReadNestedPage(url: String): Boolean {
         val value = url.lowercase()
