@@ -6,6 +6,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -286,25 +287,40 @@ class DonghuaFilm : MainAPI() {
     private suspend fun collectPlayerCandidates(document: Document, html: String, referer: String): LinkedHashSet<String> {
         val candidates = linkedSetOf<String>()
 
-        document.select("iframe[src], embed[src], video[src], source[src]").forEach { node ->
-            node.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+        fun addCandidate(raw: String?, base: String = referer) {
+            raw?.decodeEmbedText()
+                ?.toAbsoluteUrl(base)
+                ?.takeIf { !it.isNoisePlayerCandidate() }
+                ?.let { candidates.add(it) }
         }
 
-        document.select("select option[value], .mirror option[value], .mobius option[value]").forEach { option ->
+        document.select("iframe[src], iframe[data-src], embed[src], embed[data-src], video[src], source[src]").forEach { node ->
+            addCandidate(node.attr("data-src").ifBlank { node.attr("src") }, referer)
+        }
+
+        document.select(".mobius option[value], select option[value], .mirror option[value], option[value]").forEach { option ->
             val value = option.attr("value").trim()
             if (value.isBlank()) return@forEach
-            candidates.add(value)
-            decodeBase64Value(value)?.let { decoded -> collectUrlsFromText(decoded, referer).forEach { candidates.add(it) } }
+            decodeServerValueVariants(value).forEach { decoded ->
+                collectUrlsFromTrustedPlayerHtml(decoded, referer).forEach { candidates.add(it) }
+                collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
+            }
+            addCandidate(value, referer)
         }
 
-        val dataAttrs = listOf("data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream", "data-content")
+        val dataAttrs = listOf(
+            "data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player",
+            "data-video", "data-file", "data-stream", "data-content", "data-value", "data-hash"
+        )
         dataAttrs.forEach { attr ->
             document.select("[$attr]").forEach { node ->
                 val value = node.attr(attr).trim()
-                if (value.isNotBlank()) {
-                    candidates.add(value)
-                    decodeBase64Value(value)?.let { decoded -> collectUrlsFromText(decoded, referer).forEach { candidates.add(it) } }
+                if (value.isBlank()) return@forEach
+                decodeServerValueVariants(value).forEach { decoded ->
+                    collectUrlsFromTrustedPlayerHtml(decoded, referer).forEach { candidates.add(it) }
+                    collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
                 }
+                addCandidate(value, referer)
             }
         }
 
@@ -362,10 +378,51 @@ class DonghuaFilm : MainAPI() {
         return urls.filter { it.isPotentialPlayer() }
     }
 
+    private fun collectUrlsFromTrustedPlayerHtml(text: String, base: String): List<String> {
+        val normalized = text.decodeEmbedText()
+        val urls = linkedSetOf<String>()
+        val document = Jsoup.parse(normalized, base)
+        document.select("iframe[src], iframe[data-src], embed[src], embed[data-src], source[src], video[src], a[href]").forEach { node ->
+            val raw = node.attr("data-src")
+                .ifBlank { node.attr("abs:src") }
+                .ifBlank { node.attr("src") }
+                .ifBlank { node.attr("abs:href") }
+                .ifBlank { node.attr("href") }
+                .trim()
+            raw.toAbsoluteUrl(base)?.takeIf { !it.isNoisePlayerCandidate() }?.let { urls.add(it) }
+        }
+        Regex("""<(?:iframe|embed|source|video)[^>]+(?:src|data-src)=['\"]([^'\"]+)['\"]""", RegexOption.IGNORE_CASE)
+            .findAll(normalized)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toAbsoluteUrl(base) }
+            .filterNot { it.isNoisePlayerCandidate() }
+            .forEach { urls.add(it) }
+        return urls.toList()
+    }
+
+    private fun decodeServerValueVariants(value: String): List<String> {
+        val clean = value.decodeEmbedText().trim().trim('"', '\'')
+        if (clean.isBlank()) return emptyList()
+        val variants = linkedSetOf(clean)
+        runCatching { URLDecoder.decode(clean, "UTF-8") }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { variants.add(it.decodeEmbedText()) }
+
+        val decoded = variants.toList().flatMap { candidate ->
+            val compact = candidate.trim().trim('"', '\'').replace(Regex("""\s+"""), "")
+            if (compact.length < 8) return@flatMap emptyList<String>()
+            val normalized = compact.replace('-', '+').replace('_', '/')
+            val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+            listOf(compact, padded).mapNotNull { raw ->
+                runCatching { base64Decode(raw).decodeEmbedText() }.getOrNull()?.takeIf { it.isNotBlank() }
+            }
+        }
+        variants.addAll(decoded)
+        return variants.toList()
+    }
+
     private fun decodeBase64Value(value: String): String? {
-        val clean = value.trim().trim('"', '\'')
-        if (clean.length < 12) return null
-        return runCatching { base64Decode(clean) }.getOrNull()?.takeIf { it.isNotBlank() }
+        return decodeServerValueVariants(value).drop(1).firstOrNull()
     }
 
     private fun Element.backgroundImageUrl(base: String = mainUrl): String? {
@@ -484,10 +541,21 @@ class DonghuaFilm : MainAPI() {
 
     private fun String.htmlUnescape(): String = Jsoup.parse(this).text()
 
-    private fun String.decodeEmbedText(): String = htmlUnescape()
+    private fun String.decodeEmbedText(): String = this
         .replace("\\/", "/")
         .replace("\\u002F", "/")
+        .replace("\\u003C", "<")
+        .replace("\\u003E", ">")
+        .replace("\\u0026", "&")
+        .replace("\\u003D", "=")
+        .replace("\\u0027", "'")
+        .replace("\\\"", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
         .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#039;", "'")
+        .replace("&#x27;", "'")
         .replace("&#038;", "&")
         .replace("&amp;", "&")
         .trim()
@@ -510,9 +578,26 @@ class DonghuaFilm : MainAPI() {
 
     private fun String.isPotentialPlayer(): Boolean {
         val value = lowercase(Locale.ROOT)
+        if (isNoisePlayerCandidate()) return false
         if (isDirectMediaLike()) return true
         return listOf(
-            "iframe", "embed", "player", "stream", "maodrive", "desustream", "ondesuhd", "vidhide", "filedon", "filemoon", "streamtape", "dood", "mp4upload", "blogger", "googlevideo", "sendvid", "rumble", "dailymotion", "youtube"
+            "iframe", "embed", "player", "stream", "maodrive", "desustream", "ondesuhd",
+            "vidhide", "filedon", "filemoon", "streamtape", "dood", "mp4upload", "blogger",
+            "googlevideo", "sendvid", "rumble", "dailymotion", "dai.ly", "geo.dailymotion",
+            "ok.ru", "odnoklassniki", "okru", "videoembed", "youtube", "streamwish",
+            "wishfast", "vidguard", "mixdrop", "voe", "streamruby", "streamsb", "sbembed",
+            "sbrapid", "playersb", "fembed", "femax", "abyss", "lulustream", "lulu"
+        ).any { value.contains(it) }
+    }
+
+    private fun String.isNoisePlayerCandidate(): Boolean {
+        val value = lowercase(Locale.ROOT)
+        if (value.isBlank()) return true
+        return listOf(
+            "javascript:", "about:blank", "data:image", "googlesyndication", "doubleclick",
+            "google-analytics", "googletagmanager", "facebook.com/plugins", "histats", "/ads/",
+            "banner", ".css", ".js", ".jpg", ".jpeg", ".png", ".gif", ".webp",
+            ".svg", ".ico", ".woff", ".ttf"
         ).any { value.contains(it) }
     }
 
