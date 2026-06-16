@@ -1,24 +1,34 @@
 package com.sad25kag.Animexin
 
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Animexin : MainAPI() {
-    override var mainUrl              = "https://animexin.dev"
-    override var name                 = "Animexin"
-    override val hasMainPage          = true
-    override var lang                 = "id"
-    override val hasDownloadSupport   = true
-    override val supportedTypes       = setOf(TvType.Movie, TvType.Anime)
+    override var mainUrl = "https://animexin.dev"
+    override var name = "Animexin"
+    override val hasMainPage = true
+    override var lang = "id"
+    override val hasDownloadSupport = true
+    override val supportedTypes = setOf(TvType.Movie, TvType.Anime)
+
+    private val siteHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.7,en;q=0.5",
+        "Referer" to "$mainUrl/"
+    )
 
     override val mainPage = mainPageOf(
         "anime/?status=ongoing&order=update" to "Recently Updated",
         "anime/?status=ongoing&order=popular" to "Popular",
         "anime/?" to "Donghua",
-        "anime/?status=&type=movie&page=" to "Movies",
+        "anime/?status=&type=movie" to "Movies",
         "genres/action/" to "Action",
         "genres/adventure/" to "Adventure",
         "genres/demon/" to "Demon",
@@ -30,13 +40,8 @@ class Animexin : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val link = if (request.data.contains("genres")) {
-            "$mainUrl/${request.data}page/$page"
-        } else {
-            "$mainUrl/${request.data}&page=$page"
-        }
-
-        val document = app.get(link).documentLarge
+        val link = buildPagedUrl(request.data, page)
+        val document = app.get(link, headers = siteHeaders, referer = "$mainUrl/").documentLarge
         val home = document.select("div.listupd > article").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(
@@ -45,29 +50,31 @@ class Animexin : MainAPI() {
                 list = home,
                 isHorizontalImages = false
             ),
-            hasNext = document.select("a.next, li.next a").isNotEmpty()
+            hasNext = document.select("a.next[href], li.next a[href], link[rel=next]").isNotEmpty()
         )
     }
 
+    private fun buildPagedUrl(data: String, page: Int): String {
+        val clean = data.trimStart('/')
+        return if (clean.startsWith("genres/")) {
+            "$mainUrl/${clean.trimEnd('/')}/page/$page/"
+        } else {
+            val base = "$mainUrl/$clean"
+            val separator = if (base.contains("?")) "&" else "?"
+            "$base${separator}page=$page"
+        }
+    }
 
     private fun inferTvType(title: String, href: String, cardText: String = ""): TvType {
         val haystack = "$title $href $cardText".lowercase()
-        return if (
-            haystack.contains("/anime/?type=movie") ||
-            haystack.contains(" movie") ||
-            haystack.contains("movie ")
-        ) {
-            TvType.Movie
-        } else {
-            TvType.Anime
-        }
+        return if (haystack.contains("movie")) TvType.Movie else TvType.Anime
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
         val cardText = text()
         if (cardText.contains("Upcoming", true)) return null
 
-        val anchor = selectFirst("div.bsx > a, a[href]") ?: return null
+        val anchor = selectFirst("div.bsx > a[href], a[href]") ?: return null
         val title = anchor.attr("title").ifBlank { anchor.text() }.trim()
         val href = fixUrlNull(anchor.attr("href")) ?: return null
         if (title.isBlank() || !isContentUrl(href)) return null
@@ -91,70 +98,16 @@ class Animexin : MainAPI() {
             path.startsWith("page/") ||
             path.startsWith("az-list") ||
             path.startsWith("release-date") ||
-            path.startsWith("bookmark")
+            path.startsWith("bookmark") ||
+            path.startsWith("author/") ||
+            path.startsWith("wp-")
         ) return false
 
-        return path.contains("-episode-", true) || !path.contains("/")
+        return !path.contains("/")
     }
 
     private fun sameContentUrl(first: String, second: String): Boolean {
         return first.substringBefore("?").trimEnd('/') == second.substringBefore("?").trimEnd('/')
-    }
-
-    private fun extractEpisodeList(document: org.jsoup.nodes.Document, poster: String): List<Episode> {
-        val episodeRegex = Regex("(\\d+)")
-        return document.select(
-            "div.eplister > ul > li, .eplister li, .episodelist li, ul li"
-        ).mapNotNull { info ->
-            val anchor = info.selectFirst("a[href]") ?: return@mapNotNull null
-            val href = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
-            if (!href.contains("-episode-", true)) return@mapNotNull null
-
-            val posterEpisode = info.selectFirst("a img, img")?.attr("src").orEmpty()
-            val epText = info.selectFirst("div.epl-num, .epl-num, a span")?.text()?.ifBlank { anchor.text() } ?: anchor.text()
-            val epnum = episodeRegex.find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: Regex("episode-(\\d+)", RegexOption.IGNORE_CASE).find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
-            newEpisode(href) {
-                this.episode = epnum
-                this.name = epnum?.let { "Episode $it" } ?: epText
-                this.posterUrl = posterEpisode.ifBlank { poster }
-            }
-        }.distinctBy { it.data }.sortedBy { it.episode ?: Int.MAX_VALUE }
-    }
-
-    private fun extractMoviePlayData(document: org.jsoup.nodes.Document, detailUrl: String): String {
-        val detailSlug = detailUrl.substringBefore("?").trimEnd('/').substringAfterLast('/').lowercase()
-        val scopedAnchors = document.select(
-            "div.eplister a[href], .eplister a[href], .episodelist a[href], .episodios a[href], .epcheck a[href], .bixbox.bxcl a[href], .bxcl a[href], article.post a[href], .postbody a[href]"
-        )
-
-        val candidates = scopedAnchors.mapNotNull { anchor ->
-            val href = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
-            if (!href.startsWith(mainUrl, true)) return@mapNotNull null
-            if (sameContentUrl(href, detailUrl) || !isContentUrl(href)) return@mapNotNull null
-
-            val text = listOf(anchor.text(), anchor.parent()?.text(), href)
-                .joinToString(" ") { it.orEmpty() }
-                .lowercase()
-            val score = listOf(
-                text.contains("episode movie"),
-                text.contains("eps movie"),
-                text.contains(" movie"),
-                text.contains("subtitle"),
-                text.contains("sub"),
-                text.contains(detailSlug)
-            ).count { it }
-
-            if (score <= 0) return@mapNotNull null
-            score to href
-        }
-
-        return candidates.sortedByDescending { it.first }
-            .map { it.second }
-            .distinct()
-            .firstOrNull()
-            ?: detailUrl
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
@@ -171,12 +124,13 @@ class Animexin : MainAPI() {
 
         val searchUrls = listOf(
             "$mainUrl/?s=$encodedQuery",
-            "$mainUrl/page/$page/?s=$encodedQuery"
+            "$mainUrl/page/$page/?s=$encodedQuery",
+            "$mainUrl/anime/?s=$encodedQuery&page=$page"
         ).distinct()
 
         searchUrls.forEach { url ->
             runCatching {
-                app.get(url).documentLarge
+                app.get(url, headers = siteHeaders, referer = "$mainUrl/").documentLarge
                     .select("div.listupd > article")
                     .mapNotNull { it.toSearchResult() }
                     .filter { it.matchesQuery() }
@@ -184,51 +138,72 @@ class Animexin : MainAPI() {
             }
         }
 
-        if (results.isEmpty()) {
-            val fallbackPages = if (page <= 1) 1..3 else page..page
-            fallbackPages.forEach { fallbackPage ->
-                runCatching {
-                    app.get("$mainUrl/anime/?status=&order=latest&page=$fallbackPage").documentLarge
-                        .select("div.listupd > article")
-                        .mapNotNull { it.toSearchResult() }
-                        .filter { it.matchesQuery() }
-                        .forEach { results.add(it) }
-                }
-            }
-        }
-
         return results.toList().toNewSearchResponseList()
     }
 
-    @Suppress("SuspiciousIndentation")
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).documentLarge
+        val document = app.get(url, headers = siteHeaders, referer = "$mainUrl/").documentLarge
         val title = document.selectFirst("h1.entry-title")?.text()?.trim().orEmpty()
         val poster = document.select("div.thumb img").attr("src").ifEmpty {
             document.selectFirst("meta[property=og:image]")?.attr("content")?.trim().orEmpty()
         }
         val description = document.selectFirst("div.entry-content")?.text()?.trim()
-        val type = document.selectFirst(".spe")?.text().orEmpty()
-        val tvtag = if (type.contains("Movie", true)) TvType.Movie else TvType.TvSeries
+        val infoText = document.selectFirst(".spe")?.text().orEmpty()
+        val episodes = extractEpisodes(document, poster)
+        val isMovie = infoText.contains("Movie", true)
 
-        return if (tvtag == TvType.TvSeries) {
-            val episodes = extractEpisodeList(document, poster)
-
-            if (episodes.isEmpty()) {
-                throw ErrorLoadingException("No episodes found")
-            }
-
+        return if (!isMovie && episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = poster
                 this.plot = description
             }
         } else {
-            val movieData = extractMoviePlayData(document, url)
+            val movieData = extractWatchPage(document, url) ?: episodes.firstOrNull()?.data ?: url
             newMovieLoadResponse(title, url, TvType.Movie, movieData) {
                 this.posterUrl = poster
                 this.plot = description
             }
         }
+    }
+
+    private fun extractEpisodes(document: Document, poster: String): List<Episode> {
+        val episodeRegex = Regex("(\\d+)")
+        return document.select(
+            "div.eplister > ul > li, .eplister li, .episodelist li"
+        ).mapNotNull { info ->
+            val anchor = info.selectFirst("a[href]") ?: return@mapNotNull null
+            val href = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
+            if (!href.startsWith(mainUrl, true) || !href.contains("episode", true) || !isContentUrl(href)) return@mapNotNull null
+
+            val posterEpisode = info.selectFirst("a img, img")?.attr("src").orEmpty()
+            val epText = info.selectFirst("div.epl-num, .epl-num, a span")?.text()?.ifBlank { anchor.text() } ?: anchor.text()
+            val epnum = episodeRegex.find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: Regex("episode-?(\\d+)", RegexOption.IGNORE_CASE).find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+            newEpisode(href) {
+                this.episode = epnum
+                this.name = epnum?.let { "Episode $it" } ?: epText.ifBlank { "Episode" }
+                this.posterUrl = posterEpisode.ifBlank { poster }
+            }
+        }
+            .distinctBy { it.data.substringBefore("?").trimEnd('/') }
+            .sortedBy { it.episode ?: Int.MAX_VALUE }
+    }
+
+    private fun extractWatchPage(document: Document, detailUrl: String): String? {
+        val scopedAnchors = document.select(
+            "div.eplister > ul > li a[href], .eplister li a[href], .episodelist li a[href], .bixbox.bxcl li a[href]"
+        )
+        val fallbackAnchors = if (scopedAnchors.isNotEmpty()) scopedAnchors else document.select(
+            "article.post a[href], .postbody a[href], .entry-content a[href]"
+        )
+
+        return fallbackAnchors.asSequence()
+            .mapNotNull { anchor -> fixUrlNull(anchor.attr("href")) }
+            .filter { href -> href.startsWith(mainUrl, true) }
+            .filter { href -> isContentUrl(href) && !sameContentUrl(href, detailUrl) }
+            .distinct()
+            .firstOrNull()
     }
 
     override suspend fun loadLinks(
@@ -238,354 +213,307 @@ class Animexin : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = data.takeIf { it.startsWith("http", true) } ?: fixUrl(data)
-        val visitedPages = linkedSetOf<String>()
-        val candidates = linkedSetOf<String>()
-        val candidateReferers = linkedMapOf<String, String>()
-        val ajaxRequests = linkedSetOf<String>()
+        val response = app.get(pageUrl, headers = siteHeaders, referer = "$mainUrl/")
+        val document = response.document
+        val candidates = linkedMapOf<String, String>()
+        val directLinks = linkedMapOf<String, String>()
+        val emitted = linkedSetOf<String>()
         var found = false
 
         val safeCallback: (ExtractorLink) -> Unit = { link ->
-            found = true
-            callback(link)
-        }
-
-        fun originOf(url: String): String {
-            return Regex("""^(https?://[^/]+)""").find(url)?.groupValues?.getOrNull(1) ?: mainUrl
-        }
-
-        fun isDirectMedia(url: String): Boolean {
-            val lower = url.lowercase().substringBefore("#")
-            return lower.contains(".m3u8") ||
-                lower.contains(".mp4") ||
-                lower.contains(".webm") ||
-                lower.contains(".mkv") ||
-                lower.contains("videoplayback") ||
-                lower.contains("r_file=chunklist.m3u8") ||
-                lower.contains("r_type=video") ||
-                lower.contains("r_type=application%2fvnd.apple.mpegurl") ||
-                lower.contains("/hls-vod/") ||
-                lower.contains("/manifest/video/") ||
-                lower.contains("/cdn/manifest/")
-        }
-
-        fun shouldFollowInternal(url: String): Boolean {
-            val lower = url.lowercase()
-            if (!lower.startsWith(mainUrl.lowercase())) return false
-            return lower.contains("player") ||
-                lower.contains("embed") ||
-                lower.contains("ajax") ||
-                lower.contains("wp-admin") ||
-                lower.contains("wp-content") ||
-                lower.contains("stream") ||
-                lower.contains("subtitle") ||
-                lower.contains("-sub") ||
-                lower.contains("episode") ||
-                lower.contains("movie")
-        }
-
-        fun isNoiseUrl(url: String): Boolean {
-            val lower = url.lowercase()
-            return listOf(
-                "googletagmanager.com",
-                "google-analytics.com",
-                "doubleclick.net",
-                "googlesyndication.com",
-                "googleapis.com",
-                "gstatic.com",
-                "2mdn.net",
-                "histats.com",
-                "dtscout.com",
-                "dtscdn.com",
-                "dtssrv.com",
-                "mrktmtrcs.net",
-                "yandex.ru",
-                "chatbro.com",
-                "cloudflare-ech.com",
-                "gravatar.com",
-                "clientservices.googleapis.com",
-                "safebrowsing.googleapis.com",
-                "update.googleapis.com"
-            ).any { lower.contains(it) }
-        }
-
-        fun isExternalEmbedOrPlayer(url: String): Boolean {
-            val lower = url.lowercase()
-            if (!lower.startsWith("http") || lower.startsWith(mainUrl.lowercase()) || isNoiseUrl(lower)) return false
-            return lower.contains("/embed") ||
-                lower.contains("player") ||
-                lower.contains("videoembed") ||
-                lower.contains("/hls-vod/") ||
-                lower.contains("playlist.m3u8") ||
-                lower.contains("manifest") ||
-                lower.contains("/video/")
-        }
-
-        fun isPlaybackCandidate(url: String, trusted: Boolean): Boolean {
-            val lower = url.lowercase()
-            if (!lower.startsWith("http") || isNoiseUrl(lower)) return false
-            if (isDirectMedia(lower)) return true
-            if (shouldFollowInternal(lower)) return true
-            if (trusted && !lower.startsWith(mainUrl.lowercase())) return true
-            return isExternalEmbedOrPlayer(lower)
-        }
-
-        fun shouldScanPage(url: String): Boolean {
-            val lower = url.lowercase()
-            if (isDirectMedia(lower) || isNoiseUrl(lower)) return false
-            return shouldFollowInternal(lower) || isExternalEmbedOrPlayer(lower)
-        }
-
-        fun normalizeUrl(raw: String?, baseUrl: String = mainUrl): String? {
-            var url = raw?.trim()
-                ?.trim('"', '\'', '`')
-                ?.replace("&amp;", "&")
-                ?.replace("\\/", "/")
-                ?.replace("\\u0026", "&")
-                ?.replace("\\u002F", "/")
-                ?.replace("%3A", ":")
-                ?.replace("%2F", "/")
-                ?.substringBefore("\\\"")
-                ?.substringBefore("\"")
-                ?.substringBefore("'")
-                ?.takeIf { it.isNotBlank() }
-                ?: return null
-
-            if (url.startsWith("//")) url = "https:$url"
-            if (url.startsWith("/")) url = originOf(baseUrl) + url
-            if (!url.startsWith("http", true)) return null
-            return url
-        }
-
-        fun rememberCandidate(url: String, referer: String, trusted: Boolean = false) {
-            if (!isPlaybackCandidate(url, trusted)) return
-            candidates.add(url)
-            candidateReferers.putIfAbsent(url, referer)
-        }
-
-        fun addRumbleHlsFromEmbed(url: String) {
-            val id = Regex("""rumble\.com/embed/v([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
-                .find(url)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?: return
-            val playlist = "https://rumble.com/hls-vod/$id/playlist.m3u8?u=0&b=0"
-            rememberCandidate(playlist, "https://rumble.com/", true)
-        }
-
-        fun decodeCandidate(value: String): String? {
-            val cleaned = value.trim().replace("\n", "").replace("\r", "")
-            if (cleaned.length < 8 || !cleaned.matches(Regex("^[A-Za-z0-9+/=_%.-]+$"))) return null
-            return runCatching { base64Decode(cleaned) }.getOrNull()
-                ?.takeIf { decoded ->
-                    decoded != value && (
-                        decoded.contains("http", true) ||
-                            decoded.contains("iframe", true) ||
-                            decoded.contains("video", true) ||
-                            decoded.contains("source", true)
-                        )
-                }
-        }
-
-        lateinit var addCandidate: (String?, String, Boolean) -> Unit
-
-        fun addFromText(text: String?, referer: String, trusted: Boolean = false) {
-            val body = text ?: return
-            listOf(
-                Regex("""https?://[^"'\\< >\n\r\t]+"""),
-                Regex("""https?:\\/\\/[^"'\\< >\n\r\t]+"""),
-                Regex("""(?<!:)//[A-Za-z0-9][^"'\\< >\n\r\t]+"""),
-                Regex("""(?i)(?:src|data-src|data-video|data-url|data-file|data-link|data-embed|data-player|data-content|embed_url|file|url)["']?\s*[:=]\s*["']([^"']+)["']""")
-            ).forEach { regex ->
-                regex.findAll(body).forEach { match ->
-                    val value = match.groupValues.getOrNull(1).takeIf { !it.isNullOrBlank() } ?: match.value
-                    addCandidate(value, referer, trusted)
-                }
-            }
-        }
-
-        fun addAjaxRequest(post: String?, nume: String?, type: String?) {
-            val cleanPost = post?.trim()?.takeIf { it.isNotBlank() } ?: return
-            val cleanNume = nume?.trim()?.takeIf { it.isNotBlank() } ?: "1"
-            val cleanType = type?.trim()?.takeIf { it.isNotBlank() }
-            val types = if (cleanType != null) listOf(cleanType) else listOf("movie", "tv", "episode")
-            types.forEach { ajaxRequests.add("$cleanPost|$cleanNume|$it") }
-        }
-
-        fun addFromDocument(doc: org.jsoup.nodes.Document, referer: String, trusted: Boolean = true) {
-            doc.select("iframe[src], iframe[data-src], embed[src], video[src], source[src]").forEach { element ->
-                addCandidate(element.attr("src"), referer, true)
-                addCandidate(element.attr("data-src"), referer, true)
-            }
-
-            doc.select("a[href]").forEach { element ->
-                addCandidate(element.attr("href"), referer, false)
-            }
-
-            doc.select("[data-src], [data-video], [data-url], [data-file], [data-link], [data-embed], [data-player], [data-content], [data-hash]").forEach { element ->
-                addCandidate(element.attr("data-src"), referer, trusted)
-                addCandidate(element.attr("data-video"), referer, trusted)
-                addCandidate(element.attr("data-url"), referer, trusted)
-                addCandidate(element.attr("data-file"), referer, trusted)
-                addCandidate(element.attr("data-link"), referer, trusted)
-                addCandidate(element.attr("data-embed"), referer, trusted)
-                addCandidate(element.attr("data-player"), referer, trusted)
-                addCandidate(element.attr("data-content"), referer, trusted)
-                addCandidate(element.attr("data-hash"), referer, trusted)
-            }
-
-            doc.select(".mobius option[value], #mobius option[value], select.mirror option[value], select option[value], option[value]").forEach { option ->
-                addCandidate(option.attr("value"), referer, true)
-                addCandidate(option.attr("data-src"), referer, true)
-                addCandidate(option.attr("data-url"), referer, true)
-                addCandidate(option.attr("data-file"), referer, true)
-                addAjaxRequest(
-                    option.attr("data-post").ifBlank { option.attr("data-id") },
-                    option.attr("data-nume").ifBlank { option.attr("data-server") }.ifBlank { option.attr("data-index") },
-                    option.attr("data-type")
-                )
-            }
-
-            doc.select("[data-post][data-nume], [data-id][data-nume], [data-post][data-server], [data-episode][data-server], .dooplay_player_option, .server_option, .mirror li, .mobius li").forEach { element ->
-                val post = element.attr("data-post").ifBlank { element.attr("data-id") }.ifBlank { element.attr("data-episode") }
-                val nume = element.attr("data-nume").ifBlank { element.attr("data-server") }.ifBlank { element.attr("data-index") }
-                val type = element.attr("data-type")
-                addAjaxRequest(post, nume, type)
-            }
-        }
-
-        addCandidate = candidate@{ raw: String?, referer: String, trusted: Boolean ->
-            val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return@candidate
-
-            if (value.contains("<iframe", true) || value.contains("<video", true) || value.contains("<source", true)) {
-                val parsed = Jsoup.parse(value)
-                addFromDocument(parsed, referer, true)
-                addFromText(value, referer, true)
-            }
-
-            decodeCandidate(value)?.let { decoded -> addCandidate(decoded, referer, true) }
-
-            normalizeUrl(value, referer)?.let { url ->
-                rememberCandidate(url, referer, trusted)
-                addRumbleHlsFromEmbed(url)
-            }
-        }
-
-        suspend fun scanPage(url: String, referer: String, trusted: Boolean = false) {
-            val normalized = normalizeUrl(url, referer) ?: return
-            if (isDirectMedia(normalized) || !visitedPages.add(normalized)) return
-
-            val responseText = runCatching {
-                app.get(
-                    normalized,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer" to referer,
-                        "Origin" to originOf(referer)
-                    ),
-                    referer = referer
-                ).text
-            }.getOrNull() ?: return
-
-            val parsed = Jsoup.parse(responseText, normalized)
-            addFromDocument(parsed, normalized, trusted)
-            addFromText(responseText, normalized, false)
-        }
-
-        suspend fun scanAjaxPlayers(referer: String) {
-            val actions = listOf("doo_player_ajax", "player_ajax", "ts_player_ajax")
-            ajaxRequests.toList().take(36).forEach { raw ->
-                val parts = raw.split("|")
-                val post = parts.getOrNull(0).orEmpty()
-                val nume = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "1"
-                val type = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: "movie"
-                actions.forEach { action ->
-                    val responseText = runCatching {
-                        app.post(
-                            "$mainUrl/wp-admin/admin-ajax.php",
-                            data = mapOf(
-                                "action" to action,
-                                "post" to post,
-                                "nume" to nume,
-                                "type" to type
-                            ),
-                            headers = mapOf(
-                                "User-Agent" to USER_AGENT,
-                                "Accept" to "application/json, text/javascript, */*; q=0.01",
-                                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                                "X-Requested-With" to "XMLHttpRequest",
-                                "Origin" to mainUrl,
-                                "Referer" to referer
-                            ),
-                            referer = referer
-                        ).text
-                    }.getOrNull().orEmpty()
-
-                    if (responseText.isNotBlank()) {
-                        addCandidate(responseText, referer, true)
-                        addFromText(responseText, referer, true)
-                        Jsoup.parse(responseText).let { addFromDocument(it, referer, true) }
-                    }
-                }
-            }
-        }
-
-        scanPage(pageUrl, mainUrl, true)
-
-        candidates.toList()
-            .filter { shouldFollowInternal(it) }
-            .filterNot { it.substringBefore("?").trimEnd('/') == pageUrl.substringBefore("?").trimEnd('/') }
-            .take(10)
-            .forEach { internalPlayer -> scanPage(internalPlayer, pageUrl, true) }
-
-        scanAjaxPlayers(pageUrl)
-
-        candidates.toList()
-            .filter { shouldScanPage(it) }
-            .filterNot { visitedPages.contains(it.substringBefore("?").trimEnd('/')) }
-            .take(16)
-            .forEach { player -> scanPage(player, candidateReferers[player] ?: pageUrl, true) }
-
-        scanAjaxPlayers(pageUrl)
-
-        candidates.toList()
-            .filter { isDirectMedia(it) }
-            .distinct()
-            .forEach { link ->
-                val referer = candidateReferers[link] ?: pageUrl
-                val linkType = if (link.contains("m3u8", true) || link.contains("mpegurl", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                callback(
-                    newExtractorLink(name, name, link, linkType) {
-                        this.referer = referer
-                        this.quality = getQualityFromName(link)
-                        this.headers = mapOf(
-                            "User-Agent" to USER_AGENT,
-                            "Referer" to referer,
-                            "Origin" to originOf(referer),
-                            "Range" to "bytes=0-"
-                        )
-                    }
-                )
+            if (emitted.add(link.url.substringBefore("#"))) {
                 found = true
+                callback(link)
             }
+        }
 
-        candidates.toList()
-            .filterNot { isDirectMedia(it) }
-            .filter { isPlaybackCandidate(it, true) }
-            .distinct()
-            .forEach { link ->
+        fun addCandidate(raw: String?, label: String?, baseUrl: String = pageUrl) {
+            val normalized = normalizeUrl(raw, baseUrl) ?: return
+            if (isNoiseUrl(normalized)) return
+            if (isDirectMedia(normalized)) {
+                directLinks.putIfAbsent(normalized, label.orEmpty())
+            } else {
+                candidates.putIfAbsent(normalized, label.orEmpty())
+                addRumbleHls(normalized)?.let { hls -> directLinks.putIfAbsent(hls, label.orEmpty().ifBlank { "Rumble" }) }
+            }
+        }
+
+        fun collectFromHtml(html: String, label: String?, baseUrl: String) {
+            if (html.isBlank()) return
+            val parsed = Jsoup.parse(html, baseUrl)
+            parsed.select("iframe[src], iframe[data-src], embed[src], video[src], source[src]").forEach { element ->
+                addCandidate(element.attr("src"), label, baseUrl)
+                addCandidate(element.attr("data-src"), label, baseUrl)
+            }
+            collectUrlsFromText(html).forEach { addCandidate(it, label, baseUrl) }
+        }
+
+        document.select("iframe[src], iframe[data-src], embed[src], video[src], source[src]").forEach { element ->
+            addCandidate(element.attr("src"), "Direct iframe", pageUrl)
+            addCandidate(element.attr("data-src"), "Direct iframe", pageUrl)
+        }
+
+        document.select(".mobius option[value], #mobius option[value], select.mirror option[value], .mirror option[value]").forEach { option ->
+            val label = option.text().cleanText().takeIf { it.isNotBlank() && !it.contains("Select", true) }
+            val value = option.attr("value").trim()
+            if (value.isBlank()) return@forEach
+
+            decodeBase64Html(value)?.let { decoded -> collectFromHtml(decoded, label, pageUrl) }
+            addCandidate(value, label, pageUrl)
+        }
+
+        collectAjaxPlayers(document, pageUrl).forEach { ajaxHtml -> collectFromHtml(ajaxHtml, "AJAX", pageUrl) }
+
+        directLinks.forEach { (link, label) ->
+            emitDirect(link, label, pageUrl, safeCallback)
+        }
+
+        candidates.forEach { (link, label) ->
+            runCatching {
+                loadExtractor(
+                    link,
+                    referer = pageUrl,
+                    subtitleCallback = subtitleCallback,
+                    callback = safeCallback
+                )
+            }
+            if (!found && shouldScanExternalPlayer(link)) {
                 runCatching {
-                    loadExtractor(
+                    app.get(
                         link,
-                        referer = candidateReferers[link] ?: pageUrl,
-                        subtitleCallback = subtitleCallback,
-                        callback = safeCallback
-                    )
+                        headers = siteHeaders + mapOf(
+                            "Referer" to pageUrl,
+                            "Origin" to originOf(pageUrl)
+                        ),
+                        referer = pageUrl
+                    ).text
+                }.getOrNull()?.let { playerHtml ->
+                    val nestedDirect = linkedMapOf<String, String>()
+                    val nestedCandidates = linkedMapOf<String, String>()
+                    collectUrlsFromText(playerHtml).forEach { raw ->
+                        val url = normalizeUrl(raw, link)
+                        if (url != null && !isNoiseUrl(url)) {
+                            if (isDirectMedia(url)) nestedDirect.putIfAbsent(url, label) else nestedCandidates.putIfAbsent(url, label)
+                        }
+                    }
+                    Jsoup.parse(playerHtml, link).select("iframe[src], iframe[data-src], embed[src], video[src], source[src]").forEach { element ->
+                        listOf(element.attr("src"), element.attr("data-src")).forEach { raw ->
+                            val url = normalizeUrl(raw, link)
+                            if (url != null && !isNoiseUrl(url)) {
+                                if (isDirectMedia(url)) nestedDirect.putIfAbsent(url, label) else nestedCandidates.putIfAbsent(url, label)
+                            }
+                        }
+                    }
+                    nestedDirect.forEach { (nested, nestedLabel) -> emitDirect(nested, nestedLabel, link, safeCallback) }
+                    nestedCandidates.forEach { (nested, _) ->
+                        runCatching {
+                            loadExtractor(
+                                nested,
+                                referer = link,
+                                subtitleCallback = subtitleCallback,
+                                callback = safeCallback
+                            )
+                        }
+                    }
                 }
             }
+        }
 
         return found
     }
+
+    private suspend fun collectAjaxPlayers(document: Document, referer: String): List<String> {
+        val requests = linkedSetOf<String>()
+        document.select("[data-post][data-nume], [data-id][data-nume], [data-post][data-server], [data-episode][data-server]").forEach { element ->
+            val post = element.attr("data-post").ifBlank { element.attr("data-id") }.ifBlank { element.attr("data-episode") }
+            val nume = element.attr("data-nume").ifBlank { element.attr("data-server") }.ifBlank { "1" }
+            val type = element.attr("data-type").ifBlank { "tv" }
+            if (post.isNotBlank()) requests.add("$post|$nume|$type")
+        }
+
+        val actions = listOf("doo_player_ajax", "player_ajax", "ts_player_ajax")
+        return requests.take(12).flatMap { request ->
+            val parts = request.split("|")
+            val post = parts.getOrNull(0).orEmpty()
+            val nume = parts.getOrNull(1).orEmpty().ifBlank { "1" }
+            val type = parts.getOrNull(2).orEmpty().ifBlank { "tv" }
+            actions.mapNotNull { action ->
+                runCatching {
+                    app.post(
+                        "$mainUrl/wp-admin/admin-ajax.php",
+                        data = mapOf(
+                            "action" to action,
+                            "post" to post,
+                            "nume" to nume,
+                            "type" to type
+                        ),
+                        headers = siteHeaders + mapOf(
+                            "Accept" to "application/json, text/javascript, */*; q=0.01",
+                            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "Origin" to mainUrl,
+                            "Referer" to referer
+                        ),
+                        referer = referer
+                    ).text
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+            }
+        }
+    }
+
+    private fun emitDirect(
+        link: String,
+        label: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val linkType = if (link.contains("m3u8", true) || link.contains("mpegurl", true)) {
+            ExtractorLinkType.M3U8
+        } else {
+            ExtractorLinkType.VIDEO
+        }
+        callback(
+            newExtractorLink(name, listOf(name, label).filter { it.isNotBlank() }.joinToString(" - "), link, linkType) {
+                this.referer = referer
+                this.quality = getQualityFromName(label.ifBlank { link })
+                this.headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to referer,
+                    "Origin" to originOf(referer),
+                    "Range" to "bytes=0-"
+                )
+            }
+        )
+    }
+
+    private fun decodeBase64Html(value: String): String? {
+        val clean = value.trim().replace("\n", "").replace("\r", "")
+        if (clean.length < 12 || !clean.matches(Regex("^[A-Za-z0-9+/=]+$"))) return null
+        return runCatching { base64Decode(clean) }
+            .getOrNull()
+            ?.takeIf { decoded -> decoded.contains("iframe", true) || decoded.contains("http", true) || decoded.contains("video", true) }
+    }
+
+    private fun collectUrlsFromText(text: String): List<String> {
+        val decoded = decodeText(text)
+        val urls = linkedSetOf<String>()
+        Regex("""https?:\\?/\\?/[^'\"<>()\\\s]+""", RegexOption.IGNORE_CASE)
+            .findAll(decoded)
+            .map { it.value.replace("\\/", "/") }
+            .forEach { urls.add(it) }
+        Regex("""https?://[^'"<>()\s]+""", RegexOption.IGNORE_CASE)
+            .findAll(decoded)
+            .map { it.value.trimEnd(',', ';', ')') }
+            .forEach { urls.add(it) }
+        Regex("""(?<!:)//[A-Za-z0-9][^'"<>()\s]+""", RegexOption.IGNORE_CASE)
+            .findAll(decoded)
+            .map { it.value.trimEnd(',', ';', ')') }
+            .forEach { urls.add(it) }
+        return urls.toList()
+    }
+
+    private fun normalizeUrl(raw: String?, baseUrl: String = mainUrl): String? {
+        var value = raw?.trim()
+            ?.trim('"', '\'', '`')
+            ?.replace("&amp;", "&")
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&")
+            ?.replace("\\u002F", "/")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        value = decodeText(value)
+        if (value.startsWith("//")) return "https:$value"
+        if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
+        if (value.startsWith("/")) return originOf(baseUrl) + value
+        if (!value.contains("/")) return null
+        return runCatching { URI(baseUrl).resolve(value).toString() }.getOrNull()?.takeIf { it.startsWith("http", true) }
+    }
+
+    private fun decodeText(raw: String): String {
+        var value = raw
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("\\/", "/")
+        repeat(2) {
+            value = runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
+        }
+        return value.trim()
+    }
+
+    private fun addRumbleHls(url: String): String? {
+        val id = Regex("""rumble\.com/embed/v([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return null
+        return "https://rumble.com/hls-vod/$id/playlist.m3u8?u=0&b=0"
+    }
+
+    private fun isDirectMedia(url: String): Boolean {
+        val lower = url.lowercase().substringBefore("#")
+        return lower.contains(".m3u8") ||
+            lower.contains(".mp4") ||
+            lower.contains(".webm") ||
+            lower.contains(".mkv") ||
+            lower.contains("videoplayback") ||
+            lower.contains("r_file=chunklist.m3u8") ||
+            lower.contains("r_type=application%2fvnd.apple.mpegurl") ||
+            lower.contains("/hls-vod/") ||
+            lower.contains("/manifest/video/") ||
+            lower.contains("/cdn/manifest/")
+    }
+
+    private fun shouldScanExternalPlayer(url: String): Boolean {
+        val lower = url.lowercase()
+        if (!lower.startsWith("http") || lower.startsWith(mainUrl.lowercase()) || isNoiseUrl(lower) || isDirectMedia(lower)) return false
+        return lower.contains("/embed") ||
+            lower.contains("player") ||
+            lower.contains("videoembed") ||
+            lower.contains("rumble.com") ||
+            lower.contains("odysee.com") ||
+            lower.contains("d.tube")
+    }
+
+    private fun isNoiseUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return listOf(
+            "googletagmanager.com",
+            "google-analytics.com",
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googleapis.com",
+            "gstatic.com",
+            "2mdn.net",
+            "histats.com",
+            "dtscout.com",
+            "dtscdn.com",
+            "dtssrv.com",
+            "mrktmtrcs.net",
+            "yandex.ru",
+            "chatbro.com",
+            "cloudflare-ech.com",
+            "gravatar.com",
+            "clientservices.googleapis.com",
+            "safebrowsing.googleapis.com",
+            "update.googleapis.com"
+        ).any { lower.contains(it) }
+    }
+
+    private fun originOf(url: String): String {
+        return runCatching {
+            val uri = URI(url)
+            "${uri.scheme}://${uri.host}"
+        }.getOrDefault(mainUrl)
+    }
+
+    private fun String.cleanText(): String = Jsoup.parse(this).text()
+        .replace("\u00a0", " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
 
     private fun Element.getsrcAttribute(): String {
         val src = attr("src")

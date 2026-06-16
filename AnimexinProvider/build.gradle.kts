@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 13
+version = 14
 
 cloudstream {
     description = "Animexin — Streaming Donghua Subtitle Indonesia"
