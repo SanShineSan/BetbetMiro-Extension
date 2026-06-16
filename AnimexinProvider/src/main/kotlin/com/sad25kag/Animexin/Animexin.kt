@@ -240,6 +240,7 @@ class Animexin : MainAPI() {
         val pageUrl = data.takeIf { it.startsWith("http", true) } ?: fixUrl(data)
         val visitedPages = linkedSetOf<String>()
         val candidates = linkedSetOf<String>()
+        val candidateReferers = linkedMapOf<String, String>()
         val ajaxRequests = linkedSetOf<String>()
         var found = false
 
@@ -248,41 +249,8 @@ class Animexin : MainAPI() {
             callback(link)
         }
 
-        fun isKnownPlayer(url: String): Boolean {
-            val lower = url.lowercase()
-            return listOf(
-                "dailymotion.com",
-                "geo.dailymotion.com",
-                "dmcdn.net",
-                "dai.ly",
-                "odysee.com",
-                "lbry.tv",
-                "mega.nz",
-                "rumble.com",
-                "dood",
-                "ok.ru",
-                "my.mail.ru",
-                "streamwish",
-                "wishfast",
-                "filelions",
-                "vidhide",
-                "vidhidepro",
-                "vidguard",
-                "streamtape",
-                "mixdrop",
-                "mp4upload",
-                "yourupload",
-                "uqload",
-                "krakenfiles",
-                "abyss",
-                "filemoon",
-                "lulustream",
-                "voe.sx",
-                ".m3u8",
-                ".mp4",
-                ".webm",
-                ".mkv"
-            ).any { lower.contains(it) }
+        fun originOf(url: String): String {
+            return Regex("""^(https?://[^/]+)""").find(url)?.groupValues?.getOrNull(1) ?: mainUrl
         }
 
         fun isDirectMedia(url: String): Boolean {
@@ -291,10 +259,16 @@ class Animexin : MainAPI() {
                 lower.contains(".mp4") ||
                 lower.contains(".webm") ||
                 lower.contains(".mkv") ||
-                lower.contains("videoplayback")
+                lower.contains("videoplayback") ||
+                lower.contains("r_file=chunklist.m3u8") ||
+                lower.contains("r_type=video") ||
+                lower.contains("r_type=application%2fvnd.apple.mpegurl") ||
+                lower.contains("/hls-vod/") ||
+                lower.contains("/manifest/video/") ||
+                lower.contains("/cdn/manifest/")
         }
 
-        fun shouldFollow(url: String): Boolean {
+        fun shouldFollowInternal(url: String): Boolean {
             val lower = url.lowercase()
             if (!lower.startsWith(mainUrl.lowercase())) return false
             return lower.contains("player") ||
@@ -309,7 +283,59 @@ class Animexin : MainAPI() {
                 lower.contains("movie")
         }
 
-        fun normalizeUrl(raw: String?): String? {
+        fun isNoiseUrl(url: String): Boolean {
+            val lower = url.lowercase()
+            return listOf(
+                "googletagmanager.com",
+                "google-analytics.com",
+                "doubleclick.net",
+                "googlesyndication.com",
+                "googleapis.com",
+                "gstatic.com",
+                "2mdn.net",
+                "histats.com",
+                "dtscout.com",
+                "dtscdn.com",
+                "dtssrv.com",
+                "mrktmtrcs.net",
+                "yandex.ru",
+                "chatbro.com",
+                "cloudflare-ech.com",
+                "gravatar.com",
+                "clientservices.googleapis.com",
+                "safebrowsing.googleapis.com",
+                "update.googleapis.com"
+            ).any { lower.contains(it) }
+        }
+
+        fun isExternalEmbedOrPlayer(url: String): Boolean {
+            val lower = url.lowercase()
+            if (!lower.startsWith("http") || lower.startsWith(mainUrl.lowercase()) || isNoiseUrl(lower)) return false
+            return lower.contains("/embed") ||
+                lower.contains("player") ||
+                lower.contains("videoembed") ||
+                lower.contains("/hls-vod/") ||
+                lower.contains("playlist.m3u8") ||
+                lower.contains("manifest") ||
+                lower.contains("/video/")
+        }
+
+        fun isPlaybackCandidate(url: String, trusted: Boolean): Boolean {
+            val lower = url.lowercase()
+            if (!lower.startsWith("http") || isNoiseUrl(lower)) return false
+            if (isDirectMedia(lower)) return true
+            if (shouldFollowInternal(lower)) return true
+            if (trusted && !lower.startsWith(mainUrl.lowercase())) return true
+            return isExternalEmbedOrPlayer(lower)
+        }
+
+        fun shouldScanPage(url: String): Boolean {
+            val lower = url.lowercase()
+            if (isDirectMedia(lower) || isNoiseUrl(lower)) return false
+            return shouldFollowInternal(lower) || isExternalEmbedOrPlayer(lower)
+        }
+
+        fun normalizeUrl(raw: String?, baseUrl: String = mainUrl): String? {
             var url = raw?.trim()
                 ?.trim('"', '\'', '`')
                 ?.replace("&amp;", "&")
@@ -325,13 +351,25 @@ class Animexin : MainAPI() {
                 ?: return null
 
             if (url.startsWith("//")) url = "https:$url"
-            if (url.startsWith("/")) url = "$mainUrl$url"
+            if (url.startsWith("/")) url = originOf(baseUrl) + url
             if (!url.startsWith("http", true)) return null
             return url
         }
 
-        fun originOf(url: String): String {
-            return Regex("""^(https?://[^/]+)""").find(url)?.groupValues?.getOrNull(1) ?: mainUrl
+        fun rememberCandidate(url: String, referer: String, trusted: Boolean = false) {
+            if (!isPlaybackCandidate(url, trusted)) return
+            candidates.add(url)
+            candidateReferers.putIfAbsent(url, referer)
+        }
+
+        fun addRumbleHlsFromEmbed(url: String) {
+            val id = Regex("""rumble\.com/embed/v([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+                .find(url)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?: return
+            val playlist = "https://rumble.com/hls-vod/$id/playlist.m3u8?u=0&b=0"
+            rememberCandidate(playlist, "https://rumble.com/", true)
         }
 
         fun decodeCandidate(value: String): String? {
@@ -348,9 +386,9 @@ class Animexin : MainAPI() {
                 }
         }
 
-        lateinit var addCandidate: (String?) -> Unit
+        lateinit var addCandidate: (String?, String, Boolean) -> Unit
 
-        fun addFromText(text: String?) {
+        fun addFromText(text: String?, referer: String, trusted: Boolean = false) {
             val body = text ?: return
             listOf(
                 Regex("""https?://[^"'\\< >\n\r\t]+"""),
@@ -360,7 +398,7 @@ class Animexin : MainAPI() {
             ).forEach { regex ->
                 regex.findAll(body).forEach { match ->
                     val value = match.groupValues.getOrNull(1).takeIf { !it.isNullOrBlank() } ?: match.value
-                    addCandidate(value)
+                    addCandidate(value, referer, trusted)
                 }
             }
         }
@@ -373,23 +411,38 @@ class Animexin : MainAPI() {
             types.forEach { ajaxRequests.add("$cleanPost|$cleanNume|$it") }
         }
 
-        fun addFromDocument(doc: org.jsoup.nodes.Document) {
-            doc.select("iframe[src], iframe[data-src], embed[src], video[src], source[src], a[href]").forEach { element ->
-                addCandidate(element.attr("src"))
-                addCandidate(element.attr("data-src"))
-                addCandidate(element.attr("href"))
+        fun addFromDocument(doc: org.jsoup.nodes.Document, referer: String, trusted: Boolean = true) {
+            doc.select("iframe[src], iframe[data-src], embed[src], video[src], source[src]").forEach { element ->
+                addCandidate(element.attr("src"), referer, true)
+                addCandidate(element.attr("data-src"), referer, true)
+            }
+
+            doc.select("a[href]").forEach { element ->
+                addCandidate(element.attr("href"), referer, false)
             }
 
             doc.select("[data-src], [data-video], [data-url], [data-file], [data-link], [data-embed], [data-player], [data-content], [data-hash]").forEach { element ->
-                addCandidate(element.attr("data-src"))
-                addCandidate(element.attr("data-video"))
-                addCandidate(element.attr("data-url"))
-                addCandidate(element.attr("data-file"))
-                addCandidate(element.attr("data-link"))
-                addCandidate(element.attr("data-embed"))
-                addCandidate(element.attr("data-player"))
-                addCandidate(element.attr("data-content"))
-                addCandidate(element.attr("data-hash"))
+                addCandidate(element.attr("data-src"), referer, trusted)
+                addCandidate(element.attr("data-video"), referer, trusted)
+                addCandidate(element.attr("data-url"), referer, trusted)
+                addCandidate(element.attr("data-file"), referer, trusted)
+                addCandidate(element.attr("data-link"), referer, trusted)
+                addCandidate(element.attr("data-embed"), referer, trusted)
+                addCandidate(element.attr("data-player"), referer, trusted)
+                addCandidate(element.attr("data-content"), referer, trusted)
+                addCandidate(element.attr("data-hash"), referer, trusted)
+            }
+
+            doc.select(".mobius option[value], #mobius option[value], select.mirror option[value], select option[value], option[value]").forEach { option ->
+                addCandidate(option.attr("value"), referer, true)
+                addCandidate(option.attr("data-src"), referer, true)
+                addCandidate(option.attr("data-url"), referer, true)
+                addCandidate(option.attr("data-file"), referer, true)
+                addAjaxRequest(
+                    option.attr("data-post").ifBlank { option.attr("data-id") },
+                    option.attr("data-nume").ifBlank { option.attr("data-server") }.ifBlank { option.attr("data-index") },
+                    option.attr("data-type")
+                )
             }
 
             doc.select("[data-post][data-nume], [data-id][data-nume], [data-post][data-server], [data-episode][data-server], .dooplay_player_option, .server_option, .mirror li, .mobius li").forEach { element ->
@@ -400,31 +453,33 @@ class Animexin : MainAPI() {
             }
         }
 
-        addCandidate = candidate@{ raw: String? ->
+        addCandidate = candidate@{ raw: String?, referer: String, trusted: Boolean ->
             val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return@candidate
 
             if (value.contains("<iframe", true) || value.contains("<video", true) || value.contains("<source", true)) {
                 val parsed = Jsoup.parse(value)
-                addFromDocument(parsed)
-                addFromText(value)
+                addFromDocument(parsed, referer, true)
+                addFromText(value, referer, true)
             }
 
-            decodeCandidate(value)?.let { decoded -> addCandidate(decoded) }
+            decodeCandidate(value)?.let { decoded -> addCandidate(decoded, referer, true) }
 
-            normalizeUrl(value)?.let { url ->
-                if (isKnownPlayer(url) || shouldFollow(url)) candidates.add(url)
+            normalizeUrl(value, referer)?.let { url ->
+                rememberCandidate(url, referer, trusted)
+                addRumbleHlsFromEmbed(url)
             }
         }
 
-        suspend fun scanPage(url: String, referer: String) {
-            val normalized = normalizeUrl(url) ?: return
-            if (!visitedPages.add(normalized)) return
+        suspend fun scanPage(url: String, referer: String, trusted: Boolean = false) {
+            val normalized = normalizeUrl(url, referer) ?: return
+            if (isDirectMedia(normalized) || !visitedPages.add(normalized)) return
 
             val responseText = runCatching {
                 app.get(
                     normalized,
                     headers = mapOf(
                         "User-Agent" to USER_AGENT,
+                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                         "Referer" to referer,
                         "Origin" to originOf(referer)
                     ),
@@ -433,20 +488,8 @@ class Animexin : MainAPI() {
             }.getOrNull() ?: return
 
             val parsed = Jsoup.parse(responseText, normalized)
-            addFromDocument(parsed)
-            addFromText(responseText)
-
-            parsed.select(".mobius option, #mobius option, select.mirror option, select option, option").forEach { option ->
-                addCandidate(option.attr("value"))
-                addCandidate(option.attr("data-src"))
-                addCandidate(option.attr("data-url"))
-                addCandidate(option.attr("data-file"))
-                addAjaxRequest(
-                    option.attr("data-post").ifBlank { option.attr("data-id") },
-                    option.attr("data-nume").ifBlank { option.attr("data-server") }.ifBlank { option.attr("value") },
-                    option.attr("data-type")
-                )
-            }
+            addFromDocument(parsed, normalized, trusted)
+            addFromText(responseText, normalized, false)
         }
 
         suspend fun scanAjaxPlayers(referer: String) {
@@ -479,59 +522,65 @@ class Animexin : MainAPI() {
                     }.getOrNull().orEmpty()
 
                     if (responseText.isNotBlank()) {
-                        addCandidate(responseText)
-                        addFromText(responseText)
-                        Jsoup.parse(responseText).let { addFromDocument(it) }
+                        addCandidate(responseText, referer, true)
+                        addFromText(responseText, referer, true)
+                        Jsoup.parse(responseText).let { addFromDocument(it, referer, true) }
                     }
                 }
             }
         }
 
-        scanPage(pageUrl, mainUrl)
+        scanPage(pageUrl, mainUrl, true)
 
         candidates.toList()
-            .filter { shouldFollow(it) }
+            .filter { shouldFollowInternal(it) }
             .filterNot { it.substringBefore("?").trimEnd('/') == pageUrl.substringBefore("?").trimEnd('/') }
-            .take(8)
-            .forEach { internalPlayer -> scanPage(internalPlayer, pageUrl) }
+            .take(10)
+            .forEach { internalPlayer -> scanPage(internalPlayer, pageUrl, true) }
 
         scanAjaxPlayers(pageUrl)
 
         candidates.toList()
-            .filter { shouldFollow(it) }
+            .filter { shouldScanPage(it) }
             .filterNot { visitedPages.contains(it.substringBefore("?").trimEnd('/')) }
-            .take(8)
-            .forEach { internalPlayer -> scanPage(internalPlayer, pageUrl) }
+            .take(16)
+            .forEach { player -> scanPage(player, candidateReferers[player] ?: pageUrl, true) }
 
         scanAjaxPlayers(pageUrl)
 
-        candidates
-            .filter { isKnownPlayer(it) }
+        candidates.toList()
+            .filter { isDirectMedia(it) }
+            .distinct()
+            .forEach { link ->
+                val referer = candidateReferers[link] ?: pageUrl
+                val linkType = if (link.contains("m3u8", true) || link.contains("mpegurl", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                callback(
+                    newExtractorLink(name, name, link, linkType) {
+                        this.referer = referer
+                        this.quality = getQualityFromName(link)
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to referer,
+                            "Origin" to originOf(referer),
+                            "Range" to "bytes=0-"
+                        )
+                    }
+                )
+                found = true
+            }
+
+        candidates.toList()
+            .filterNot { isDirectMedia(it) }
+            .filter { isPlaybackCandidate(it, true) }
             .distinct()
             .forEach { link ->
                 runCatching {
-                    if (isDirectMedia(link)) {
-                        val linkType = if (link.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        callback(
-                            newExtractorLink(name, name, link, linkType) {
-                                this.referer = pageUrl
-                                this.quality = getQualityFromName(link)
-                                this.headers = mapOf(
-                                    "User-Agent" to USER_AGENT,
-                                    "Referer" to pageUrl,
-                                    "Origin" to originOf(pageUrl)
-                                )
-                            }
-                        )
-                        found = true
-                    } else {
-                        loadExtractor(
-                            link,
-                            referer = pageUrl,
-                            subtitleCallback = subtitleCallback,
-                            callback = safeCallback
-                        )
-                    }
+                    loadExtractor(
+                        link,
+                        referer = candidateReferers[link] ?: pageUrl,
+                        subtitleCallback = subtitleCallback,
+                        callback = safeCallback
+                    )
                 }
             }
 
