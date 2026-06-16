@@ -7,11 +7,11 @@ import java.util.Base64
 import java.util.Locale
 
 object DGSUtils {
-    const val USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+    const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
 
     val siteHeaders = mapOf(
         "User-Agent" to USER_AGENT,
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Referer" to "${DGSSeeds.MAIN_URL}/"
     )
 
@@ -19,16 +19,28 @@ object DGSUtils {
 
     fun playerHeaders(referer: String): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Referer" to referer
     ).filterValues { it.isNotBlank() }
 
-    fun videoHeaders(referer: String): Map<String, String> = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Accept" to "*/*",
-        "Origin" to originOf(referer).orEmpty(),
-        "Referer" to referer
-    ).filterValues { it.isNotBlank() }
+    fun videoHeaders(referer: String): Map<String, String> = videoHeaders("", referer)
+
+    fun videoHeaders(mediaUrl: String, referer: String): Map<String, String> {
+        val origin = originOf(referer).orEmpty()
+        val mediaHost = runCatching { URI(mediaUrl).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
+        val refererHeader = when {
+            mediaHost == "stream.deepgoretube.site" && origin.isNotBlank() -> "$origin/"
+            referer.isNotBlank() -> referer
+            origin.isNotBlank() -> "$origin/"
+            else -> "${DGSSeeds.MAIN_URL}/"
+        }
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "*/*",
+            "Origin" to origin,
+            "Referer" to refererHeader
+        ).filterValues { it.isNotBlank() }
+    }
 
     fun cleanText(value: String?): String {
         return value.orEmpty()
@@ -43,9 +55,16 @@ object DGSUtils {
         val cleaned = value
             .replace("\\/", "/")
             .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#x22;", "\"")
+            .replace("&#039;", "'")
+            .replace("&#x27;", "'")
+            .replace("&apos;", "'")
             .replace("\\u0026", "&")
             .replace("\\u003d", "=")
             .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
             .replace("\\\"", "\"")
         return runCatching { URLDecoder.decode(cleaned, "UTF-8") }.getOrDefault(cleaned)
     }
@@ -93,7 +112,7 @@ object DGSUtils {
         val lower = url.lowercase(Locale.ROOT).substringBefore('#')
         return listOf(
             "/home", "/category/", "/categories/", "/tag/", "/tags/", "/search", "/latest", "/popular",
-            "/members", "/channels", "/playlist", "/playlists", "/pornstars", "/models", "/page/"
+            "/members", "/channels", "/playlist", "/playlists", "/pornstars", "/models", "/page/", "/liked"
         ).any { lower.contains(it) }
     }
 

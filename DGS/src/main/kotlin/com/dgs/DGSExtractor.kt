@@ -25,7 +25,7 @@ object DGSExtractor {
 
     private val iframeRegex = Regex("""(?i)<iframe[^>]+src=['\"]([^'\"]+)['\"]""")
     private val keyValueMediaRegex = Regex(
-        """(?i)[\"']?(?:file|src|source|sources|url|hls|playlist|video|videoUrl|hlsUrl|mp4|embed_url)[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']"""
+        """(?i)[\"']?(?:contentUrl|videoUrl|hlsUrl|embed_url|file|src|source|sources|url|hls|playlist|video|mp4)[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']"""
     )
     private val quotedMediaRegex = Regex(
         """(?i)['\"]((?:https?:)?//[^'\"<>\s\\]+?(?:\.m3u8|\.mp4|googlevideo\.com/[^'\"<>\s\\]+|videoplayback[^'\"<>\s\\]*)(?:\?[^'\"<>\s\\]*)?)['\"]"""
@@ -65,10 +65,6 @@ object DGSExtractor {
         val normalizedPage = absoluteUrl(referer, pageUrl) ?: return false
         if (isPseudoUrl(normalizedPage) || !seenPages.add(normalizedPage)) return false
 
-        val emitLink: (ExtractorLink) -> Unit = { link ->
-            if (seenLinks.add(link.url)) callback(link)
-        }
-
         val document = runCatching {
             app.get(normalizedPage, headers = DGSUtils.playerHeaders(referer), referer = referer).document
         }.getOrNull() ?: return false
@@ -76,22 +72,23 @@ object DGSExtractor {
         collectSubtitles(normalizedPage, document, subtitleCallback)
 
         extractMedia(normalizedPage, normalizedPage, document).forEach { media ->
-            if (emitMedia(providerName, media.name, media.url, media.referer, seenLinks, emitLink)) return true
+            if (emitMedia(providerName, media.name, media.url, media.referer, seenLinks, callback)) return true
         }
 
         extractServers(normalizedPage, document)
             .filter { isLikelyPlayerServer(it.url) }
             .distinctBy { it.url }
             .forEach { server ->
-                if (resolveServer(providerName, server, seenPages, seenLinks, subtitleCallback, emitLink, 0)) return true
+                if (resolveServer(providerName, server, seenPages, seenLinks, subtitleCallback, callback, 0)) return true
             }
 
+        val beforeFallback = seenLinks.size
         val fallback = runCatching {
             loadExtractor(normalizedPage, normalizedPage, subtitleCallback) { link ->
                 if (seenLinks.add(link.url)) callback(link)
             }
         }.getOrDefault(false)
-        if (fallback) return true
+        if (fallback && seenLinks.size > beforeFallback) return true
 
         return false
     }
@@ -113,12 +110,13 @@ object DGSExtractor {
             if (emitMedia(providerName, server.name, normalizedServer, server.referer, seenLinks, callback)) return true
         }
 
+        val beforeExtractor = seenLinks.size
         runCatching {
             loadExtractor(normalizedServer, server.referer, subtitleCallback) { link ->
                 if (seenLinks.add(link.url)) callback(link)
             }
         }
-        if (seenLinks.isNotEmpty()) return true
+        if (seenLinks.size > beforeExtractor) return true
 
         if (!seenPages.add(normalizedServer)) return false
         val embedText = runCatching {
@@ -164,14 +162,14 @@ object DGSExtractor {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (isPseudoUrl(url)) return false
-        val headers = videoHeaders(referer)
+        val headers = videoHeaders(url, referer)
 
         if (url.contains(".m3u8", true) || isLikelyHlsCandidate(url)) {
             val generated = runCatching {
                 generateM3u8(
                     source = providerName,
                     streamUrl = url,
-                    referer = referer,
+                    referer = headers["Referer"] ?: referer,
                     headers = headers
                 )
             }.getOrDefault(emptyList())
@@ -186,7 +184,7 @@ object DGSExtractor {
             if (seenLinks.add(url)) {
                 callback(
                     newExtractorLink(providerName, name.ifBlank { "$providerName HLS" }, url, ExtractorLinkType.M3U8) {
-                        this.referer = referer
+                        this.referer = headers["Referer"] ?: referer
                         this.quality = qualityFromText(url)
                         this.headers = headers
                     }
@@ -199,7 +197,7 @@ object DGSExtractor {
             if (seenLinks.add(url)) {
                 callback(
                     newExtractorLink(providerName, name.ifBlank { "$providerName MP4" }, url, ExtractorLinkType.VIDEO) {
-                        this.referer = referer
+                        this.referer = headers["Referer"] ?: referer
                         this.quality = qualityFromText(url).let { if (it == Qualities.Unknown.value) Qualities.Unknown.value else it }
                         this.headers = headers
                     }
@@ -270,6 +268,20 @@ object DGSExtractor {
         document.select("video[src], video source[src], source[src]").forEachIndexed { index, source ->
             val url = absoluteUrl(pageUrl, source.attr("src")) ?: return@forEachIndexed
             if (!isPseudoUrl(url)) media.add(DGSMedia("Source ${index + 1}", url, referer))
+        }
+
+        document.select("video-js[data-settings], [data-settings]").forEachIndexed { index, element ->
+            val settings = normalizedHtml(element.attr("data-settings"))
+            extractMediaFromText(pageUrl, referer, settings).forEach { item ->
+                media.add(item.copy(name = "Player ${index + 1}"))
+            }
+        }
+
+        document.select("script[type=application/ld+json], script").forEachIndexed { index, script ->
+            val scriptText = script.html().ifBlank { script.data() }.ifBlank { script.toString() }
+            extractMediaFromText(pageUrl, referer, scriptText).forEach { item ->
+                media.add(item.copy(name = "Script ${index + 1}"))
+            }
         }
 
         media.addAll(extractMediaFromText(pageUrl, referer, raw))
@@ -345,9 +357,16 @@ object DGSExtractor {
         return text
             .replace("\\/", "/")
             .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#x22;", "\"")
+            .replace("&#039;", "'")
+            .replace("&#x27;", "'")
+            .replace("&apos;", "'")
             .replace("\\u0026", "&")
             .replace("\\u003d", "=")
             .replace("\\u003a", ":")
+            .replace("\\u002f", "/")
             .replace("\\\"", "\"")
     }
 

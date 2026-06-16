@@ -24,13 +24,13 @@ object DGSParser {
         val results = linkedSetOf<SearchResponse>()
 
         document.select(
-            ".video, .video-item, .thumb, .thumb-block, .item, .post, .card, .grid-item, article, li:has(a[href])"
+            ".post-item article.video, article.video, .video, .video-item, .thumb, .thumb-block, .item, .post, .card, .grid-item, article, li:has(a[href])"
         ).forEach { element ->
             parseCard(api, element)?.let { results.add(it) }
         }
 
         if (results.size < 4) {
-            document.select("a[href]:has(img), a[href]:has(picture), a[href]:has(noscript)").forEach { anchor ->
+            document.select("a[href*='/video/']:has(img), a[href]:has(img), a[href]:has(picture), a[href]:has(noscript)").forEach { anchor ->
                 parseAnchorCard(api, anchor)?.let { results.add(it) }
             }
         }
@@ -42,9 +42,10 @@ object DGSParser {
     }
 
     private fun parseCard(api: MainAPI, element: Element): SearchResponse? {
-        val link = element.selectFirst("a[href*='/video/']")
+        val link = element.selectFirst("a.post-permalink[href*='/video/']")
+            ?: element.selectFirst("a[href*='/video/']")
             ?: element.selectFirst("a[href]:has(img)")
-            ?: element.selectFirst("h2 a[href], h3 a[href], .title a[href], .name a[href], a[href]")
+            ?: element.selectFirst("h2 a[href], h3 a[href], .post-title a[href], .title a[href], .name a[href], a[href]")
             ?: return null
 
         val href = absoluteUrl(api.mainUrl, link.attr("href")) ?: return null
@@ -53,9 +54,9 @@ object DGSParser {
         val poster = posterFromElement(api, element, link)
         val rawTitle = link.attr("title")
             .ifBlank { link.attr("aria-label") }
+            .ifBlank { element.selectFirst("h2.post-title a, h1.post-title, h2, h3, .post-title, .title, .name")?.text().orEmpty() }
             .ifBlank { element.selectFirst("img")?.attr("alt").orEmpty() }
             .ifBlank { element.selectFirst("img")?.attr("title").orEmpty() }
-            .ifBlank { element.selectFirst(".title, .name, h2, h3")?.text().orEmpty() }
             .ifBlank { link.text() }
             .ifBlank { titleFromSlug(href) }
 
@@ -74,6 +75,7 @@ object DGSParser {
         val title = cleanTitle(
             anchor.attr("title")
                 .ifBlank { anchor.attr("aria-label") }
+                .ifBlank { anchor.parents().select("h2.post-title a, h3.post-title a, .post-title a").firstOrNull()?.text().orEmpty() }
                 .ifBlank { anchor.selectFirst("img")?.attr("alt").orEmpty() }
                 .ifBlank { anchor.text() }
         ).ifBlank { titleFromSlug(href) }
@@ -147,14 +149,14 @@ object DGSParser {
 
     suspend fun parseLoadResponse(api: MainAPI, url: String, document: Document): LoadResponse? {
         val title = cleanTitle(
-            document.selectFirst("h1, h1.title, .video-title, .entry-title, meta[property=og:title]")?.let {
+            document.selectFirst("h1.post-title, h1, h1.title, .video-title, .entry-title, meta[property=og:title]")?.let {
                 if (it.tagName().equals("meta", true)) it.attr("content") else it.text()
             } ?: document.title()
         ).ifBlank { titleFromSlug(url) }
 
         val poster = posterFromDocument(api, document)
         val plot = cleanText(
-            document.selectFirst(".description, .desc, .video-description, .entry-content, .about, meta[name=description]")?.let {
+            document.selectFirst(".post-content, .description, .desc, .video-description, .entry-content, .about, meta[name=description]")?.let {
                 if (it.tagName().equals("meta", true)) it.attr("content") else it.text()
             }
         )
