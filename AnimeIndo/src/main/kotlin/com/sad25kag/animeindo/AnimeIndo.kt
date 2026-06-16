@@ -570,7 +570,7 @@ class AnimeIndo : MainAPI() {
             ?: Qualities.Unknown.value
     }
 
-    private fun emitXtwapM3u8Link(
+    private suspend fun emitXtwapM3u8Link(
         name: String,
         url: String,
         refererUrl: String,
