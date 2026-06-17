@@ -1,4 +1,4 @@
-package com.DramaIndo
+package com.sad25kag
 
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin

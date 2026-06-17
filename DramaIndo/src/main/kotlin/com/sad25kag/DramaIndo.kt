@@ -1,4 +1,4 @@
-package com.DramaIndo
+package com.sad25kag
 
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
@@ -20,11 +20,9 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.amap
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.util.concurrent.atomic.AtomicInteger
 
 class DramaIndo : MainAPI() {
     override var mainUrl = "https://dramaindo.my"
@@ -146,23 +144,23 @@ class DramaIndo : MainAPI() {
     ): Boolean {
         val document = app.get(data, referer = mainUrl).document
         val links = document.extractPlayableLinks()
-        val callbackCount = AtomicInteger(0)
+        var callbackCount = 0
 
-        links.amap { source ->
+        for (source in links) {
             if (source.url.isDramaIndoStreamHost()) {
                 DramaIndoStreamResolver.resolve(source.name, source.url, data) { link ->
-                    callbackCount.incrementAndGet()
+                    callbackCount++
                     callback(link)
                 }
             } else {
                 loadExtractor(source.url, data, subtitleCallback) { link ->
-                    callbackCount.incrementAndGet()
+                    callbackCount++
                     callback(link)
                 }
             }
         }
 
-        return callbackCount.get() > 0
+        return callbackCount > 0
     }
 
     private fun buildArchiveUrl(path: String, page: Int): String {

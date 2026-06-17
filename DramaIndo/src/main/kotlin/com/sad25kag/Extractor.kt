@@ -1,4 +1,4 @@
-package com.DramaIndo
+package com.sad25kag
 
 import com.google.gson.JsonParser
 import com.lagradost.cloudstream3.SubtitleFile
