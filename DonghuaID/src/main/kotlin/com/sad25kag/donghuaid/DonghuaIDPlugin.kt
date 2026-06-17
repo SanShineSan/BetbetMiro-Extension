@@ -20,5 +20,10 @@ class DonghuaIDPlugin : Plugin() {
         registerExtractorAPI(DonghuaIDAbyssPlayer())
         registerExtractorAPI(DonghuaIDVidhideVip())
         registerExtractorAPI(DonghuaIDVectorX())
+        registerExtractorAPI(DonghuaIDFileLionsCallistanise())
+        registerExtractorAPI(DonghuaIDFileLionsTo())
+        registerExtractorAPI(DonghuaIDFileLionsLive())
+        registerExtractorAPI(DonghuaIDFileLionsSite())
+        registerExtractorAPI(DonghuaIDFileLionsOnline())
     }
 }

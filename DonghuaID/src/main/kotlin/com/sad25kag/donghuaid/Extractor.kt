@@ -236,6 +236,112 @@ class DonghuaIDVectorX : DonghuaIDGenericPlayerExtractor() {
     override var mainUrl = "https://vectorx.top"
 }
 
+
+open class DonghuaIDFileLions : ExtractorApi() {
+    override var name = "FileLions"
+    override var mainUrl = "https://callistanise.com"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val embedUrl = url.toFileLionsEmbedUrl()
+        val origin = embedUrl.originUrl()
+        val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Origin" to origin,
+            "Referer" to embedUrl,
+        )
+        val emitted = linkedSetOf<String>()
+
+        suspend fun emitFromText(rawText: String, baseUrl: String) {
+            collectDirectMedia(rawText, baseUrl).forEach { mediaUrl ->
+                val key = mediaUrl.substringBefore("#")
+                if (!emitted.add(key)) return@forEach
+                when {
+                    mediaUrl.contains(".m3u8", true) -> M3u8Helper.generateM3u8(name, mediaUrl, embedUrl).forEach(callback)
+                    else -> callback(
+                        newExtractorLink(name, name, mediaUrl, ExtractorLinkType.VIDEO) {
+                            this.referer = embedUrl
+                            this.quality = getQualityFromName(mediaUrl)
+                            this.headers = headers + mapOf("Referer" to embedUrl)
+                        }
+                    )
+                }
+            }
+        }
+
+        val html = runCatching {
+            app.get(embedUrl, headers = headers, referer = referer ?: "https://donghuaid.live/").text
+        }.getOrNull().orEmpty().decodePlayerText()
+
+        emitFromText(html, embedUrl)
+        if (emitted.isNotEmpty()) return
+
+        val dlUrls = linkedSetOf<String>()
+        Regex("""["']([^"']*/dl\?[^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .mapNotNull { it.groupValues[1].decodePlayerText().toAbsoluteUrl(embedUrl) }
+            .forEach { dlUrls.add(it) }
+
+        val fileCode = embedUrl.fileLionsCode()
+        if (!fileCode.isNullOrBlank()) {
+            Regex("""(?:hash|hash_str)\s*[:=]\s*["']?([A-Za-z0-9_-]+-\d+-[A-Fa-f0-9]+)""", RegexOption.IGNORE_CASE)
+                .findAll(html)
+                .map { it.groupValues[1] }
+                .distinct()
+                .forEach { hash ->
+                    dlUrls.add("$origin/dl?op=view&file_code=$fileCode&hash=$hash&embed=1&referer=donghuaid.live&adb=0&hls4=1")
+                }
+        }
+
+        for (dlUrl in dlUrls.take(6)) {
+            val dlText = runCatching {
+                app.get(dlUrl, headers = headers + mapOf("Accept" to "*/*"), referer = embedUrl).text
+            }.getOrNull().orEmpty().decodePlayerText()
+            emitFromText(dlText, embedUrl)
+            if (emitted.isNotEmpty()) return
+        }
+
+        collectNestedPlayerUrls(html, embedUrl)
+            .filterNot { it.normalizedKey() == embedUrl.normalizedKey() }
+            .distinctBy { it.normalizedKey() }
+            .take(8)
+            .forEach { nestedUrl ->
+                runCatching { loadExtractor(nestedUrl, embedUrl, subtitleCallback, callback) }
+            }
+    }
+}
+
+class DonghuaIDFileLionsCallistanise : DonghuaIDFileLions() {
+    override var name = "FileLions"
+    override var mainUrl = "https://callistanise.com"
+}
+
+class DonghuaIDFileLionsTo : DonghuaIDFileLions() {
+    override var name = "FileLionsTo"
+    override var mainUrl = "https://filelions.to"
+}
+
+class DonghuaIDFileLionsLive : DonghuaIDFileLions() {
+    override var name = "FileLionsLive"
+    override var mainUrl = "https://filelions.live"
+}
+
+class DonghuaIDFileLionsSite : DonghuaIDFileLions() {
+    override var name = "FileLionsSite"
+    override var mainUrl = "https://filelions.site"
+}
+
+class DonghuaIDFileLionsOnline : DonghuaIDFileLions() {
+    override var name = "FileLionsOnline"
+    override var mainUrl = "https://filelions.online"
+}
+
 open class DonghuaIDGenericPlayerExtractor : ExtractorApi() {
     override var name = "DonghuaIDPlayer"
     override var mainUrl = "https://donghuaid.live"
@@ -368,6 +474,30 @@ private fun String.toAbsoluteUrl(baseUrl: String): String? {
     if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
     return runCatching { URI(baseUrl).resolve(value).toString() }.getOrNull()
 }
+
+private fun String.toFileLionsEmbedUrl(): String {
+    val clean = decodePlayerText()
+    val code = clean.fileLionsCode()
+    if (code.isNullOrBlank()) return clean
+    val origin = clean.originUrl()
+    return "$origin/embed/$code"
+}
+
+private fun String.fileLionsCode(): String? {
+    val clean = decodePlayerText().substringBefore("?").substringBefore("#")
+    Regex("""/(?:embed|v|f|d)/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+        .find(clean)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.let { return it }
+    return null
+}
+
+private fun String.originUrl(): String = runCatching {
+    val uri = URI(this)
+    "${uri.scheme}://${uri.host}"
+}.getOrDefault("https://donghuaid.live")
+
 
 private fun String.isDirectMediaLike(): Boolean {
     val value = lowercase(Locale.ROOT).substringBefore("#")
