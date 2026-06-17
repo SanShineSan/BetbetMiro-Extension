@@ -139,7 +139,7 @@ class DonghuaID : MainAPI() {
             }
         }
 
-        fun emitDirect(rawUrl: String, label: String?, referer: String): Boolean {
+        suspend fun emitDirect(rawUrl: String, label: String?, referer: String): Boolean {
             val finalUrl = rawUrl.normalizePlayerUrl(referer)?.takeIf { it.isDirectMediaLike() } ?: return false
             if (!emitted.add(finalUrl.substringBefore("#"))) return true
             val linkName = listOfNotNull(name, label?.cleanText()?.takeIf { it.isNotBlank() }).joinToString(" - ")

@@ -1,8 +1,8 @@
-version = 9
+version = 10
 
 cloudstream {
     description = "DonghuaID - Download dan streaming donghua subtitle Indonesia"
-    authors = listOf("sad25kag")
+    authors = listOf("BetbetMiro")
     status = 1
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")
     language = "id"
