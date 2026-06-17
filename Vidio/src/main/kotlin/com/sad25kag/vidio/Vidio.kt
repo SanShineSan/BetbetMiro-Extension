@@ -1,4 +1,4 @@
-package com.Vidio
+package com.sad25kag.vidio
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -60,7 +60,7 @@ class Vidio : MainAPI() {
                 val separator = if (action.contains("?")) "&" else "?"
                 fixVidioUrl(action) + separator + parameter + "=" + URLEncoder.encode(query, "UTF-8")
             }
-            ?: return emptyList()
+            ?: return emptyList<SearchResponse>().toNewSearchResponseList()
 
         return getVidioDocument(searchUrl).extractCards().toNewSearchResponseList()
     }
@@ -96,13 +96,14 @@ class Vidio : MainAPI() {
                 return newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, sectionItems) {
                     this.posterUrl = poster
                     this.plot = description
-                }
+                    }
             }
         }
 
         return newMovieLoadResponse(title, pageUrl, TvType.Movie, pageUrl) {
             this.posterUrl = poster
             this.plot = description
+            this.tags = tags
         }
     }
 
@@ -222,9 +223,9 @@ class Vidio : MainAPI() {
 
         val episodes = (anchorEpisodes + jsonEpisodes)
             .distinctBy { it.data.substringBefore('?') }
-            .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name })
+            .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name.orEmpty() })
 
-        val nonTrailer = episodes.filterNot { it.name.contains("trailer", ignoreCase = true) }
+        val nonTrailer = episodes.filterNot { it.name.orEmpty().contains("trailer", ignoreCase = true) }
         return nonTrailer.ifEmpty { episodes.ifEmpty { pageUrl.takeIf { it.contains("/watch/") }?.let { listOf(newEpisode(it)) } ?: emptyList() } }
     }
 
