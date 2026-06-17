@@ -226,7 +226,7 @@ object DrakorKitaResolver {
                         newExtractorLink(
                             providerName,
                             providerName,
-                            url = fixed,
+                            fixed,
                             ExtractorLinkType.M3U8
                         ) {
                             this.referer = referer
@@ -240,7 +240,7 @@ object DrakorKitaResolver {
                         newExtractorLink(
                             providerName,
                             providerName,
-                            url = fixed,
+                            fixed,
                             ExtractorLinkType.VIDEO
                         ) {
                             this.referer = referer
@@ -364,6 +364,7 @@ object DrakorKitaResolver {
         val urlRegex = Regex("""https?://[^'"\\\s<>]+|//[^'"\s<>]+""")
         urlRegex.findAll(normalized).forEach { match ->
             val fixed = normalizeUrl(match.value, mainUrl)
+                .trimEnd(',', '.', ';', ')', ']', '}')
             if (isPlayableOrEmbed(fixed)) results.add(fixed)
         }
         return results.toList()

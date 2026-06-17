@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 3
+version = 4
 
 cloudstream {
     description = "DrakorKita - drama Korea, series, dan movie subtitle Indonesia"

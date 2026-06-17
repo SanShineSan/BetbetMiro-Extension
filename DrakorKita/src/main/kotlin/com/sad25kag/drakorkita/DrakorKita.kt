@@ -17,6 +17,7 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -33,7 +34,7 @@ class DrakorKita : MainAPI() {
     override val hasMainPage = true
     override var lang = "id"
     override val hasDownloadSupport = false
-    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
+    override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
 
     private val sourceHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 16; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36",
@@ -108,7 +109,9 @@ class DrakorKita : MainAPI() {
             .distinctBy { it.data }
             .sortedBy { it.episode ?: Int.MAX_VALUE }
 
+        val infoText = document.select("ul.anf").text()
         val isSeries = apiEpisodes.size > 1 ||
+            infoText.contains("Type : TV Series", ignoreCase = true) ||
             title.contains("Season", ignoreCase = true) ||
             title.contains(Regex("""Episode\s+\d+\s*-\s*\d+""", RegexOption.IGNORE_CASE))
 
@@ -126,7 +129,7 @@ class DrakorKita : MainAPI() {
                 } ?: emptyList()
             }
 
-            newTvSeriesLoadResponse(cleanTitle, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(cleanTitle, url, TvType.AsianDrama, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
@@ -223,12 +226,34 @@ class DrakorKita : MainAPI() {
     private fun Document.toSearchResults(sectionName: String): List<SearchResponse> {
         val type = when {
             sectionName.contains("movie", ignoreCase = true) -> TvType.Movie
-            else -> TvType.TvSeries
+            else -> TvType.AsianDrama
         }
 
-        return select("a[href*=/detail/]")
+        return selectCardsForSection(sectionName)
             .mapNotNull { it.toSearchResult(type) }
             .distinctBy { it.url }
+    }
+
+    private fun Document.selectCardsForSection(sectionName: String): List<Element> {
+        val keyword = when {
+            sectionName.contains("eps", ignoreCase = true) -> "Eps Terbaru"
+            else -> null
+        }
+
+        val sectionRow = keyword?.let { key ->
+            select("h4.heading1").firstOrNull { heading ->
+                heading.text().contains(key, ignoreCase = true)
+            }?.let { heading ->
+                var sibling = heading.nextElementSibling()
+                while (sibling != null && !sibling.classNames().contains("row")) {
+                    sibling = sibling.nextElementSibling()
+                }
+                sibling
+            }
+        }
+
+        val selector = "a.poster[href*=/detail/], .card a[href*=/detail/], a[href*=/detail/]"
+        return (sectionRow ?: this).select(selector).toList()
     }
 
     private fun Element.toSearchResult(defaultType: TvType): SearchResponse? {
@@ -236,45 +261,67 @@ class DrakorKita : MainAPI() {
         if (href.isBlank() || !href.contains("/detail/")) return null
 
         val image = selectFirst("img")
-        val rawTitle = attr("title")
+        val rawTitle = selectFirst(".titit")?.let { titleNode ->
+            titleNode.ownText().trim().ifBlank {
+                Jsoup.parse(titleNode.html().substringBefore("<br")).text().trim()
+            }
+        }.orEmpty()
             .ifBlank { image?.attr("alt").orEmpty() }
+            .ifBlank { attr("title") }
             .ifBlank { text() }
         val title = cleanCardTitle(rawTitle)
         if (title.isBlank()) return null
 
-        val poster = image?.let {
+        val rawPoster = image?.let {
             it.attr("data-src")
                 .ifBlank { it.attr("data-lazy-src") }
-                .ifBlank { it.attr("src") }
                 .ifBlank { it.attr("data-original") }
+                .ifBlank { it.attr("src") }
                 .ifBlank { it.attr("srcset").substringBefore(" ") }
-        }?.let(::fixUrlNull)
+        }.orEmpty()
+        val poster = rawPoster
+            .takeIf { it.isNotBlank() && !it.contains("/svg/", ignoreCase = true) }
+            ?.let(::fixUrlNull)
 
+        if (defaultType == TvType.Movie && poster == null) return null
+
+        val detectionText = listOf(rawTitle, attr("title"), text()).joinToString(" ")
         val detectedType = when {
-            rawTitle.contains(Regex("""\bE\d+(/\d+|\s*END)?\b""", RegexOption.IGNORE_CASE)) -> TvType.TvSeries
-            rawTitle.contains("EPS", ignoreCase = true) -> TvType.TvSeries
-            rawTitle.contains("Season", ignoreCase = true) -> TvType.TvSeries
-            rawTitle.contains("WEB", ignoreCase = true) -> TvType.Movie
-            else -> defaultType
+            detectionText.contains(Regex("""\bE\d+(/\d+|\s*END)?\b""", RegexOption.IGNORE_CASE)) -> TvType.AsianDrama
+            detectionText.contains(Regex("""Episode\s+\d+""", RegexOption.IGNORE_CASE)) -> TvType.AsianDrama
+            detectionText.contains("Season", ignoreCase = true) -> TvType.AsianDrama
+            defaultType == TvType.Movie -> TvType.Movie
+            else -> TvType.AsianDrama
         }
 
-        return newMovieSearchResponse(title, fixUrl(href), detectedType) {
-            posterUrl = poster
+        return if (detectedType == TvType.Movie) {
+            newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                posterUrl = poster
+            }
+        } else {
+            newTvSeriesSearchResponse(title, fixUrl(href), detectedType) {
+                posterUrl = poster
+            }
         }
     }
 
     private fun Document.pickTitle(): String {
-        return selectFirst("h1")?.text()?.trim()
+        return selectFirst("h1[itemprop=headline]")?.text()?.trim()
             ?: selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: selectFirst("title")?.text()?.trim()
             ?: title().substringBefore(" - ").trim()
     }
 
     private fun cleanDetailTitle(raw: String): String {
         return raw
             .substringBefore(" - DrakorKita")
+            .replace(Regex("""^\s*Nonton\s+""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""^\s*Streaming\s+Drama\s+Korea\s+""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""^\s*Drama\s+Korea\s+""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+\[Episode\s+\d+\s*-\s*\d+\].*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+(WEB-DL|WEBRip|HDRip|BluRay|HDTV).*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+(1080p|720p|480p|2160p).*""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+Sub(title)?\s+Indo(nesia)?.*""", RegexOption.IGNORE_CASE), "")
             .trim()
     }
 
@@ -286,14 +333,19 @@ class DrakorKita : MainAPI() {
     }
 
     private fun Document.pickDescription(): String? {
-        return selectFirst("meta[name=description]")?.attr("content")?.trim()
-            ?: selectFirst(".synopsis, .sinopsis, .description, .entry-content, .post-content")?.text()?.trim()
+        return select(".sinopsis .desc-wrap p, .sinopsis p, .mv-description .desc-wrap p")
+            .joinToString("\n") { it.text().trim() }
+            .trim()
+            .ifBlank {
+                selectFirst("meta[name=description]")?.attr("content")?.trim().orEmpty()
+            }
+            .ifBlank { null }
     }
 
     private fun Document.pickTags(): List<String> {
-        return select("a[href*=/genre/], a[href*=genre=], a[href*=media_type]")
+        return select("ol.breadcrumb a[href*=genre=], .animefull a[href*=genre=]")
             .map { it.text().trim() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && !it.equals("Home", ignoreCase = true) }
             .distinct()
     }
 
@@ -440,6 +492,11 @@ class DrakorKita : MainAPI() {
     private fun cleanCardTitle(raw: String): String {
         return raw.trim()
             .replace(Regex("""^\d{1,2}:\d{2}(:\d{2})?\s*"""), "")
+            .replace(Regex("""^\s*Nonton\s+Drama\s+Korea\s+""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""^\s*Streaming\s+Drama\s+Korea\s+""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""^\s*Nonton\s+""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+Subtitle\s+Indonesia.*""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+Sub\s+Indo.*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+(1080p|720p|480p|2160p).*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+diperbarui\s*:.*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s+E\d+(/\d+|\s*END)?.*""", RegexOption.IGNORE_CASE), "")
