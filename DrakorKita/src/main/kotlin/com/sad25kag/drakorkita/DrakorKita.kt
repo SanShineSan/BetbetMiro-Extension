@@ -110,7 +110,7 @@ class DrakorKita : MainAPI() {
 
         val isSeries = apiEpisodes.size > 1 ||
             title.contains("Season", ignoreCase = true) ||
-            Regex("""Episode\s+\d+\s*-\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(title)
+            title.contains(Regex("""Episode\s+\d+\s*-\s*\d+""", RegexOption.IGNORE_CASE))
 
         return if (isSeries) {
             val episodes = if (apiEpisodes.isNotEmpty()) {
@@ -232,7 +232,7 @@ class DrakorKita : MainAPI() {
     }
 
     private fun Element.toSearchResult(defaultType: TvType): SearchResponse? {
-        val href = absHref("href").ifBlank { DrakorKitaResolver.normalizeUrl(attr("href"), mainUrl) }
+        val href = attr("abs:href").ifBlank { DrakorKitaResolver.normalizeUrl(attr("href"), mainUrl) }
         if (href.isBlank() || !href.contains("/detail/")) return null
 
         val image = selectFirst("img")
@@ -251,7 +251,7 @@ class DrakorKita : MainAPI() {
         }?.let(::fixUrlNull)
 
         val detectedType = when {
-            Regex("""\bE\d+(/\d+|\s*END)?\b""", RegexOption.IGNORE_CASE).containsMatchIn(rawTitle) -> TvType.TvSeries
+            rawTitle.contains(Regex("""\bE\d+(/\d+|\s*END)?\b""", RegexOption.IGNORE_CASE)) -> TvType.TvSeries
             rawTitle.contains("EPS", ignoreCase = true) -> TvType.TvSeries
             rawTitle.contains("Season", ignoreCase = true) -> TvType.TvSeries
             rawTitle.contains("WEB", ignoreCase = true) -> TvType.Movie
@@ -388,7 +388,7 @@ class DrakorKita : MainAPI() {
             matches.forEach { (movieId, tag) ->
                 val mediaType = if (
                     title.contains("Season", ignoreCase = true) ||
-                    Regex("""Episode\s+\d+\s*-\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(title)
+                    title.contains(Regex("""Episode\s+\d+\s*-\s*\d+""", RegexOption.IGNORE_CASE))
                 ) "tv" else "movie"
                 val config = ApiConfig(
                     detailUrl = detailUrl,

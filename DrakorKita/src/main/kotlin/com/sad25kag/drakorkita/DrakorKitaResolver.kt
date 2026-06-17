@@ -6,13 +6,13 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.JsUnpacker
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.base64Decode
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLEncoder
+import java.util.Base64
 
 object DrakorKitaResolver {
     data class ApiPayload(
@@ -72,7 +72,7 @@ object DrakorKitaResolver {
             val direct = normalizeUrl(raw, mainUrl)
             if (isPlayableOrEmbed(direct)) candidates.add(direct)
 
-            runCatching { base64Decode(raw) }.getOrNull()?.let { decoded ->
+            decodeBase64(raw)?.let { decoded ->
                 val decodedDoc = Jsoup.parse(decoded)
                 decodedDoc.select("iframe[src], embed[src], video[src], source[src], a[href]").forEach { element ->
                     val url = normalizeUrl(
@@ -114,34 +114,14 @@ object DrakorKitaResolver {
         val candidates = linkedSetOf<String>()
         val cApiHost = payload.cApiHost.trimEnd('/')
 
-        var episodeId = payload.episodeId
-        var serverXid = payload.serverXid
-
-        if (episodeId.isBlank()) {
-            val episodeJson = apiGetJson(
-                url = "$cApiHost/episode_mob.php" +
-                    "?is_mob=${payload.isMob}" +
-                    "&is_uc=${payload.isUc}" +
-                    "&movie_id=${encode(payload.movieId)}" +
-                    "&tag=${encode(payload.tag)}" +
-                    "&c=${encode(payload.c)}" +
-                    "&t=${encode(payload.t)}" +
-                    "&ver=${encode(payload.ver)}",
-                headers = ajaxHeaders,
-                referer = payload.detailUrl
-            )
-            episodeId = episodeJson?.optString("first_ep_id").orEmpty()
-            serverXid = episodeJson?.optString("server_xid").orEmpty()
-        }
-
-        val serverJson = if (episodeId.isNotBlank()) {
+        val serverJson = if (payload.episodeId.isNotBlank()) {
             apiGetJson(
                 url = "$cApiHost/server_mob.php" +
                     "?is_mob=${payload.isMob}" +
                     "&is_uc=${payload.isUc}" +
-                    "&episode_id=${encode(episodeId)}" +
+                    "&episode_id=${encode(payload.episodeId)}" +
                     "&tag=${encode(payload.tag)}" +
-                    "&server_xid=${encode(serverXid)}" +
+                    "&server_xid=${encode(payload.serverXid)}" +
                     "&c=${encode(payload.c)}" +
                     "&t=${encode(payload.t)}" +
                     "&ver=${encode(payload.ver)}",
@@ -153,8 +133,8 @@ object DrakorKitaResolver {
         }
 
         val serverData = serverJson?.optJSONObject("data") ?: JSONObject()
-        episodeId = serverData.optString("id").ifBlank { episodeId }
-        val serverId = serverData.optString("server_id").ifBlank { serverXid }
+        val episodeId = serverData.optString("id").ifBlank { payload.episodeId }
+        val serverId = serverData.optString("server_id").ifBlank { payload.serverXid }
         val tag = serverData.optString("tag").ifBlank { payload.tag }
         val quality = serverData.optString("qua").ifBlank { "web" }
         val res = serverData.optString("res").ifBlank { "1080" }
@@ -299,6 +279,18 @@ object DrakorKitaResolver {
 
         candidates.forEach { resolve(it, pageUrl, 0) }
         return handled
+    }
+
+
+    private fun decodeBase64(value: String): String? {
+        val normalized = value.trim()
+        if (normalized.isBlank()) return null
+        val padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '=')
+        return runCatching {
+            String(Base64.getDecoder().decode(padded))
+        }.getOrElse {
+            runCatching { String(Base64.getUrlDecoder().decode(padded)) }.getOrNull()
+        }
     }
 
     private suspend fun apiGetJson(
