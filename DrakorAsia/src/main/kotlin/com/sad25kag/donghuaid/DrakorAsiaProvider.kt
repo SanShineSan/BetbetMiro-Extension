@@ -165,7 +165,6 @@ class DrakorAsiaProvider : MainAPI() {
                 newTvSeriesSearchResponse(title, url, TvType.AsianDrama) {
                     posterUrl = poster
                     this.year = year
-                    if (ep != null) addSub(ep)
                 }
             }
         }.distinctBy { it.url.substringBefore('?').trimEnd('/') }
@@ -275,7 +274,6 @@ class DrakorAsiaProvider : MainAPI() {
             newTvSeriesSearchResponse(title, href, TvType.AsianDrama) {
                 posterUrl = poster
                 this.year = year
-                if (ep != null) addSub(ep)
             }
         }
     }

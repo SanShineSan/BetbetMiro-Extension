@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.base64Decode
+import android.util.Base64
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.MediaType.Companion.toMediaType
@@ -142,7 +142,7 @@ internal object DrakorAsiaExtractor {
             .distinctBy { it.url.substringBefore('#') }
     }
 
-    internal fun emitDirect(
+    internal suspend fun emitDirect(
         source: String,
         name: String,
         url: String,
@@ -206,7 +206,9 @@ internal object DrakorAsiaExtractor {
 
     private fun decodeOption(value: String): String? {
         val cleaned = value.replace(Regex("\\s+"), "")
-        return runCatching { base64Decode(cleaned) }.getOrNull()
+        return runCatching {
+            String(Base64.decode(cleaned, Base64.DEFAULT), Charsets.UTF_8)
+        }.getOrNull()
     }
 
     private fun normalizeUrl(url: String, referer: String): String {
