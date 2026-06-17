@@ -27,8 +27,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.httpsify
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.json.JSONObject
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
@@ -200,121 +198,96 @@ class SaveFilm21 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = data.toAbsoluteUrl(mainUrl) ?: data
-        val response = runCatching {
-            app.get(pageUrl, headers = baseHeaders, referer = mainUrl)
-        }.getOrNull() ?: return false
-        val document = response.document
-        val directBase = getBaseUrl(response.url.ifBlank { pageUrl })
-        val visited = linkedSetOf<String>()
         var emitted = false
+        val visited = linkedSetOf<String>()
 
-        for (element in document.select("track[src], a[href*='.srt'], a[href*='.vtt'], a[href*='.ass']")) {
-            val sub = element.firstAttr("src", "href").toAbsoluteUrl(pageUrl)
-            if (sub != null && sub.isSubtitleUrl()) subtitleCallback(newSubtitleFile("Indonesian", sub))
-        }
+        val serverUrls = listOf(
+            pageUrl.substringBefore("?"),
+            "${pageUrl.substringBefore("?")}?player=2",
+            "${pageUrl.substringBefore("?")}?player=3",
+            "${pageUrl.substringBefore("?")}?player=4",
+            "${pageUrl.substringBefore("?")}?player=5"
+        )
 
-        val muviproId = document.selectFirst("div#muvipro_player_content_id, [id=muvipro_player_content_id]")?.attr("data-id")
-        if (!muviproId.isNullOrBlank()) {
-            for (tab in document.select("div.tab-content-ajax[id], [class*=tab-content-ajax][id]")) {
-                val tabId = tab.attr("id")
-                if (tabId.isBlank()) continue
-                val ajaxDocument = runCatching {
-                    app.post(
-                        "$directBase/wp-admin/admin-ajax.php",
-                        data = mapOf(
-                            "action" to "muvipro_player_content",
-                            "tab" to tabId,
-                            "post_id" to muviproId
-                        ),
-                        headers = ajaxHeaders(pageUrl),
-                        referer = pageUrl
-                    ).document
-                }.getOrNull()
-                if (ajaxDocument != null) {
-                    for (candidate in collectCandidates(ajaxDocument.html(), pageUrl)) {
-                        if (resolveCandidate(candidate, pageUrl, visited, subtitleCallback, callback)) emitted = true
+        for (serverUrl in serverUrls) {
+            val response = runCatching {
+                app.get(serverUrl, headers = baseHeaders, referer = mainUrl)
+            }.getOrNull() ?: continue
+            val document = response.document
+            val html = response.text
+
+            val playerUrls = mutableListOf<String>()
+
+            document.select("a[href*='sf21.'], a[href*='vidplayer'], a[href*='rpmvid'], a[href*='mplay'], a[href*='nontonfree']").forEach { el ->
+                el.attr("href").toAbsoluteUrl(serverUrl)?.let { playerUrls.add(it) }
+            }
+
+            val playerRegex = Regex("""(https?://[^\s"'<>]+(?:vidplayer|rpmvid|mplay|nontonfree|sf21)[^\s"'<>]*)""", RegexOption.IGNORE_CASE)
+            playerRegex.findAll(html).forEach { match ->
+                match.groupValues.getOrNull(1)?.cleanHtml()?.let { playerUrls.add(it) }
+            }
+
+            document.select("iframe[src], iframe[data-src]").forEach { el ->
+                el.firstAttr("src", "data-src").toAbsoluteUrl(serverUrl)?.let { playerUrls.add(it) }
+            }
+
+            document.select("video source[src], source[src]").forEach { el ->
+                el.attr("src").toAbsoluteUrl(serverUrl)?.let { playerUrls.add(it) }
+            }
+
+            document.select("track[src], a[href*='.srt'], a[href*='.vtt']").forEach { el ->
+                val sub = el.firstAttr("src", "href").toAbsoluteUrl(serverUrl)
+                if (sub != null && sub.isSubtitleUrl()) subtitleCallback(newSubtitleFile("Indonesian", sub))
+            }
+
+            for (rawUrl in playerUrls.distinct()) {
+                if (!visited.add(rawUrl)) continue
+                if (rawUrl.isDirectVideoUrl()) {
+                    emitDirect(rawUrl, serverUrl, callback)
+                    emitted = true
+                    continue
+                }
+                if (rawUrl.isSubtitleUrl()) {
+                    subtitleCallback(newSubtitleFile("Indonesian", rawUrl))
+                    continue
+                }
+                var extractorEmitted = false
+                runCatching {
+                    loadExtractor(rawUrl, serverUrl, subtitleCallback) { link ->
+                        extractorEmitted = true
+                        emitted = true
+                        callback(link)
+                    }
+                }
+                if (!extractorEmitted) {
+                    val playerResponse = runCatching {
+                        app.get(rawUrl, headers = baseHeaders + mapOf("Referer" to serverUrl), referer = serverUrl, timeout = 15000L)
+                    }.getOrNull() ?: continue
+                    val playerHtml = playerResponse.text
+                    val directRegex = Regex("""["'](https?://[^"']+\.(?:m3u8|mp4|webm)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE)
+                    directRegex.findAll(playerHtml).forEach { m ->
+                        val direct = m.groupValues.getOrNull(1)?.cleanHtml() ?: return@forEach
+                        if (visited.add(direct)) {
+                            emitDirect(direct, rawUrl, callback)
+                            emitted = true
+                        }
+                    }
+                    val iframeRegex = Regex("""<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    iframeRegex.findAll(playerHtml).forEach { m ->
+                        val nested = m.groupValues.getOrNull(1)?.cleanHtml()?.toAbsoluteUrl(rawUrl) ?: return@forEach
+                        if (visited.add(nested) && !nested.isNoiseUrl()) {
+                            runCatching {
+                                loadExtractor(nested, rawUrl, subtitleCallback) { link ->
+                                    emitted = true
+                                    callback(link)
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        for (option in document.select(".dooplay_player_option, li[data-post][data-nume], [data-post][data-nume][data-type]")) {
-            val post = option.attr("data-post")
-            val nume = option.attr("data-nume")
-            val type = option.attr("data-type").ifBlank { "movie" }
-            if (post.isBlank() || nume.isBlank()) continue
-            val body = runCatching {
-                app.post(
-                    "$directBase/wp-admin/admin-ajax.php",
-                    data = mapOf(
-                        "action" to "doo_player_ajax",
-                        "post" to post,
-                        "nume" to nume,
-                        "type" to type
-                    ),
-                    headers = ajaxHeaders(pageUrl),
-                    referer = pageUrl
-                ).text
-            }.getOrNull().orEmpty()
-            for (candidate in extractFromAjaxBody(body)) {
-                if (resolveCandidate(candidate, pageUrl, visited, subtitleCallback, callback)) emitted = true
-            }
-        }
-
-        val visibleSelector = "ul.muvipro-player-tabs li a[href], .muvipro-player-tabs a[href], .gmr-embed-responsive iframe[src], iframe[src], iframe[data-src], video source[src], source[src], .gmr-download-list a[href], a[href*='.mp4'], a[href*='.m3u8']"
-        for (element in document.select(visibleSelector)) {
-            val candidate = element.firstAttr("src", "data-src", "href")
-            if (resolveCandidate(candidate, pageUrl, visited, subtitleCallback, callback)) emitted = true
-        }
-
-        val html = response.text.ifBlank { document.html() }
-        for (candidate in collectCandidates(html, pageUrl)) {
-            if (resolveCandidate(candidate, pageUrl, visited, subtitleCallback, callback)) emitted = true
-        }
-
-        return emitted
-    }
-
-    private suspend fun resolveCandidate(
-        raw: String?,
-        referer: String,
-        visited: MutableSet<String>,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-        depth: Int = 0
-    ): Boolean {
-        val url = raw.toAbsoluteUrl(referer) ?: return false
-        if (url.isNoiseUrl() || !visited.add(url)) return false
-        if (url.isSubtitleUrl()) {
-            subtitleCallback(newSubtitleFile("Indonesian", url))
-            return true
-        }
-        if (url.isDirectVideoUrl()) {
-            emitDirect(url, referer, callback)
-            return true
-        }
-
-        var emitted = false
-        runCatching {
-            loadExtractor(url, referer, subtitleCallback) { link ->
-                emitted = true
-                callback(link)
-            }
-        }
-
-        if (emitted || depth >= 2 || url.isExternalHost()) return emitted
-
-        val response = runCatching {
-            app.get(url, headers = baseHeaders + mapOf("Referer" to referer), referer = referer, timeout = 15000L)
-        }.getOrNull() ?: return emitted
-        val contentType = response.headers["Content-Type"].orEmpty().lowercase(Locale.ROOT)
-        if (contentType.startsWith("video/") || contentType.contains("mpegurl") || contentType.contains("dash")) {
-            emitDirect(url, referer, callback)
-            return true
-        }
-        for (candidate in collectCandidates(response.text, url)) {
-            if (resolveCandidate(candidate, url, visited, subtitleCallback, callback, depth + 1)) emitted = true
-        }
         return emitted
     }
 
@@ -346,7 +319,8 @@ class SaveFilm21 : MainAPI() {
         val href = anchor.attr("href").toAbsoluteUrl(mainUrl) ?: return null
         if (!isContentUrl(href)) return null
         val container = anchor.bestContainer()
-        val image = container.selectFirst("img[data-src], img[data-original], img[data-lazy-src], img[data-wpfc-original-src], img[src], img[srcset]") ?: anchor.selectFirst("img")
+        val image = container.selectFirst("img[data-src], img[data-original], img[data-lazy-src], img[data-wpfc-original-src], img[src]:not([src^='data:'])")
+            ?: anchor.selectFirst("img[data-src], img[data-original], img[src]:not([src^='data:'])")
         val title = listOf(
             container.selectFirst("h1, h2, h3, .entry-title, .title, .name")?.text(),
             anchor.attr("aria-label"),
@@ -379,58 +353,38 @@ class SaveFilm21 : MainAPI() {
 
     private fun parseEpisodes(document: Document, baseUrl: String): List<Episode> {
         val episodes = linkedMapOf<String, Episode>()
-        val selector = "div.vid-episodes a[href], div.gmr-listseries a[href], .episode-list a[href], .episodes a[href], .eplister li a[href], [class*=episode] a[href], [id*=episode] a[href], [class*=season] a[href], [id*=season] a[href]"
+        val selector = listOf(
+            "a[href*='/eps/']",
+            "div.vid-episodes a[href]",
+            "div.gmr-listseries a[href]",
+            ".episode-list a[href]",
+            ".episodes a[href]",
+            ".eplister li a[href]",
+            "[class*=episode] a[href]",
+            "[id*=episode] a[href]",
+            "[class*=season] a[href]",
+            "[id*=season] a[href]"
+        ).joinToString(",")
+
         document.select(selector).forEachIndexed { index, element ->
             val href = element.attr("href").toAbsoluteUrl(mainUrl) ?: return@forEachIndexed
             if (!isContentUrl(href) || contentKey(href) == contentKey(baseUrl)) return@forEachIndexed
-            val rawName = cleanText(element.text()).ifBlank { element.attr("title") }.ifBlank { "Episode ${index + 1}" }
+            val rawName = cleanText(
+                element.text().ifBlank { element.attr("title") }
+            ).ifBlank { "Episode ${index + 1}" }
             if (rawName.contains("trailer", true) || rawName.contains("download", true)) return@forEachIndexed
             val episodeNumber = Regex("""(?i)(?:episode|eps|ep)\s*(\d+)""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Regex("""\b(\d{1,4})\b""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
             val seasonNumber = Regex("""(?i)(?:season|s)\s*(\d+)""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: Regex("""(?i)/eps/[^/]+-season-(\d+)-""").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
             episodes[contentKey(href)] = newEpisode(href).apply {
                 name = rawName
                 episode = episodeNumber
                 season = seasonNumber
-                posterUrl = element.selectFirst("img")?.imageUrl(mainUrl)
+                posterUrl = element.selectFirst("img[data-src], img[src]:not([src^='data:'])")?.imageUrl(mainUrl)
             }
         }
         return episodes.values.sortedWith(compareBy<Episode> { it.season ?: 0 }.thenBy { it.episode ?: Int.MAX_VALUE })
-    }
-
-    private fun collectCandidates(source: String, baseUrl: String): List<String> {
-        val out = linkedSetOf<String>()
-        val bodies = mutableListOf(source.cleanHtml())
-        decodeBase64(source)?.let { bodies.add(it.cleanHtml()) }
-        Regex("""atob\(["']([^"']+)["']\)""", RegexOption.IGNORE_CASE).findAll(source).forEach { match ->
-            decodeBase64(match.groupValues.getOrNull(1))?.let { bodies.add(it.cleanHtml()) }
-        }
-        for (body in bodies) {
-            for (regex in candidatePatterns) {
-                regex.findAll(body).forEach { match ->
-                    match.groupValues.getOrNull(1)?.unescapeCandidate()?.toAbsoluteUrl(baseUrl)?.let(out::add)
-                }
-            }
-            val document = runCatching { Jsoup.parse(body) }.getOrNull() ?: continue
-            for (element in document.select("iframe[src], iframe[data-src], source[src], video source[src], track[src], a[href]")) {
-                element.firstAttr("src", "data-src", "href").toAbsoluteUrl(baseUrl)?.let(out::add)
-            }
-        }
-        return out.filterNot { it.isNoiseUrl() }
-    }
-
-    private fun extractFromAjaxBody(body: String): List<String> {
-        if (body.isBlank()) return emptyList()
-        val out = linkedSetOf<String>()
-        runCatching {
-            val json = JSONObject(body)
-            listOf("embed_url", "embed", "html", "iframe", "url", "player", "data").forEach { key ->
-                json.optString(key).takeIf { it.isNotBlank() }?.let(out::add)
-            }
-        }
-        decodeBase64(body)?.let(out::add)
-        out.addAll(collectCandidates(body, mainUrl))
-        return out.toList()
     }
 
     private fun buildPageUrl(data: String, page: Int): String {
@@ -451,7 +405,7 @@ class SaveFilm21 : MainAPI() {
         val value = "$url $title $text"
         return when {
             episodeCount > 1 -> TvType.TvSeries
-            url.contains("/tv/", true) -> TvType.TvSeries
+            url.contains("/tv/", true) || url.contains("/eps/", true) -> TvType.TvSeries
             value.contains("TV Show", true) || value.contains("Series", true) || value.contains("Season", true) -> TvType.TvSeries
             else -> TvType.Movie
         }
@@ -459,17 +413,8 @@ class SaveFilm21 : MainAPI() {
 
     private fun findPoster(document: Document, baseUrl: String): String? {
         return document.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }?.toAbsoluteUrl(baseUrl)
+            ?: document.selectFirst("figure.pull-left img[data-src], figure.pull-left img[src]:not([src^='data:']), .poster img[data-src], .thumb img[data-src], .content-thumbnail img[data-src], img[itemprop=image][data-src], article img[data-src]")?.imageUrl(baseUrl)
             ?: document.selectFirst("figure.pull-left img, .poster img, .thumb img, .content-thumbnail img, img[itemprop=image], article img")?.imageUrl(baseUrl)
-    }
-
-    private fun ajaxHeaders(referer: String): Map<String, String> {
-        return baseHeaders + mapOf(
-            "Referer" to referer,
-            "Origin" to getBaseUrl(referer),
-            "X-Requested-With" to "XMLHttpRequest",
-            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-            "Accept" to "application/json, text/javascript, */*; q=0.01"
-        )
     }
 
     private fun Element.bestContainer(): Element {
@@ -488,9 +433,16 @@ class SaveFilm21 : MainAPI() {
     }
 
     private fun Element.imageUrl(baseUrl: String): String? {
-        val srcSet = attr("srcset").split(" ").firstOrNull()?.takeIf { it.isNotBlank() }
-        val raw = firstAttr("data-src", "data-original", "data-lazy-src", "data-wpfc-original-src", "src") ?: srcSet
-        return raw?.toAbsoluteUrl(baseUrl)?.fixImageQuality()
+        val candidates = listOf(
+            attr("data-src"),
+            attr("data-original"),
+            attr("data-lazy-src"),
+            attr("data-wpfc-original-src"),
+            attr("src").takeUnless { it.startsWith("data:") },
+            attr("srcset").split(" ").firstOrNull()?.takeIf { it.isNotBlank() }
+        )
+        val raw = candidates.firstOrNull { !it.isNullOrBlank() } ?: return null
+        return raw.toAbsoluteUrl(baseUrl)?.fixImageQuality()
     }
 
     private fun Element.styleImage(baseUrl: String): String? {
@@ -501,11 +453,11 @@ class SaveFilm21 : MainAPI() {
     }
 
     private fun Element.findNearbyImage(baseUrl: String): String? {
-        return parent()?.selectFirst("img")?.imageUrl(baseUrl)
+        return parent()?.selectFirst("img[data-src], img[src]:not([src^='data:'])")?.imageUrl(baseUrl)
     }
 
     private fun String?.toAbsoluteUrl(baseUrl: String): String? {
-        val raw = this?.trim()?.trim('"', '\'', ' ', '\n', '\r', '\t')?.unescapeCandidate()?.takeIf { it.isNotBlank() } ?: return null
+        val raw = this?.trim()?.trim('"', '\'', ' ', '\n', '\r', '\t')?.cleanHtml()?.takeIf { it.isNotBlank() } ?: return null
         val decoded = decodeBase64(raw)?.takeIf { it.startsWith("http", true) || it.startsWith("//") || it.startsWith("/") }
         val candidate = decoded ?: raw
         val fixed = when {
@@ -513,7 +465,6 @@ class SaveFilm21 : MainAPI() {
             candidate.startsWith("http://", true) || candidate.startsWith("https://", true) -> candidate
             candidate.startsWith("/") -> getBaseUrl(baseUrl).trimEnd('/') + candidate
             candidate.startsWith("?") -> baseUrl.substringBefore("?") + candidate
-            candidate.startsWith("iframe", true) || candidate.startsWith("<") -> collectCandidates(candidate, baseUrl).firstOrNull()
             else -> runCatching { URI(baseUrl).resolve(candidate).toString() }.getOrNull()
         } ?: return null
         return httpsify(fixed)
@@ -532,11 +483,13 @@ class SaveFilm21 : MainAPI() {
     private fun cleanTitle(value: String?): String {
         return cleanText(value)
             .replace(Regex("(?i)^download\\s+streaming\\s+film\\s+"), "")
+            .replace(Regex("(?i)^download\\s+nonton\\s+"), "")
             .replace(Regex("(?i)\\s+subtitle\\s+indonesia.*$"), "")
             .replace(Regex("(?i)^nonton\\s+"), "")
             .replace(Regex("(?i)^tonton\\s+"), "")
             .substringBefore(" - Savefilm21")
             .substringBefore(" - SaveFilm21")
+            .substringBefore(" \u2013 SaveFilm21")
             .trim()
     }
 
@@ -558,10 +511,6 @@ class SaveFilm21 : MainAPI() {
             .replace("\\u003d", "=")
             .replace("\\u002F", "/")
             .replace("\\u003A", ":")
-    }
-
-    private fun String.unescapeCandidate(): String {
-        return cleanHtml().trim()
     }
 
     private fun String.fixImageQuality(): String {
@@ -591,7 +540,7 @@ class SaveFilm21 : MainAPI() {
         if (!host.contains("savefilm21info.com")) return false
         val path = uri.path.orEmpty().trim('/').lowercase(Locale.ROOT)
         if (path.isBlank()) return false
-        if (path.matches(Regex("""(?:page/\d+|genre/.+|country/.+|year/.+|category/.+|tag/.+|author/.+|search/.+|tv)"""))) return false
+        if (path.matches(Regex("""(?:page/\d+|genre/.+|country/.+|year/.+|category/.+|tag/.+|author/.+|search/.+|tv|quality/.+|network/.+|director/.+|cast/.+)"""))) return false
         if (path.contains("wp-content") || path.contains("wp-admin") || path.contains("pasang-iklan")) return false
         return !url.isNoiseUrl()
     }
@@ -608,17 +557,20 @@ class SaveFilm21 : MainAPI() {
         return contains(Regex("""(?i)\.(srt|vtt|ass)(?:\?|$)"""))
     }
 
-    private fun String.isExternalHost(): Boolean {
-        val host = runCatching { URI(this).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
-        return host.isNotBlank() && !host.contains("savefilm21info.com")
-    }
-
     private fun String.isNoiseUrl(): Boolean {
         val value = lowercase(Locale.ROOT)
-        return value.contains("youtube.com") || value.contains("youtu.be") || value.contains("facebook.com") || value.contains("twitter.com") ||
-            value.contains("instagram.com") || value.contains("telegram") || value.contains("/wp-content/") || value.contains("/wp-json/") ||
-            value.endsWith(".jpg") || value.endsWith(".jpeg") || value.endsWith(".png") || value.endsWith(".webp") || value.endsWith(".gif") ||
-            value.startsWith("javascript:") || value.startsWith("mailto:") || value.startsWith("#") || value.contains("pasang-iklan")
+        return value.contains("youtube.com") || value.contains("youtu.be") ||
+            value.contains("facebook.com") || value.contains("twitter.com") ||
+            value.contains("instagram.com") || value.contains("telegram") ||
+            value.contains("api.whatsapp") || value.contains("t.me/share") ||
+            value.contains("/wp-content/") || value.contains("/wp-json/") ||
+            value.contains("/wp-admin/") ||
+            value.endsWith(".jpg") || value.endsWith(".jpeg") ||
+            value.endsWith(".png") || value.endsWith(".webp") || value.endsWith(".gif") ||
+            value.startsWith("javascript:") || value.startsWith("mailto:") ||
+            value.startsWith("#") || value.startsWith("data:") ||
+            value.contains("pasang-iklan") || value.contains("slot") ||
+            value.contains("campaign.") || value.contains("bit.ly")
     }
 
     private val cardSelector = listOf(
@@ -633,13 +585,4 @@ class SaveFilm21 : MainAPI() {
         ".film",
         ".post"
     ).joinToString(",")
-
-    private val candidatePatterns = listOf(
-        Regex("""<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""(?:data-src|data-embed|data-video|data-url|data-link|data-file)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""(?:file|src|source|video|videoUrl|video_url|hls\d*|url|embed|embed_url|embed_frame_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?:)?//[^"']+(?:\.m3u8|\.mp4|\.webm|\.mpd)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?:)?//[^"']*(?:gdriveplayer\.(?:io|to|me)|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|streamlare|filelions|gdplayer|abyss|pixeldrain|krakenfiles)[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video|dl)[^"']*)["']""", RegexOption.IGNORE_CASE)
-    )
 }
