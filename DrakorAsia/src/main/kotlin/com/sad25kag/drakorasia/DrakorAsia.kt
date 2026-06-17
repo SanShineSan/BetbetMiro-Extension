@@ -27,8 +27,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -36,10 +34,6 @@ import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 class DrakorAsia : MainAPI() {
     override var mainUrl = "https://www.drakorasia.eu.org"
@@ -79,7 +73,8 @@ class DrakorAsia : MainAPI() {
     private val nonSeriesLabels = genreLabels + setOf(
         "Eps. TV", "TV", "Movie", "Series", "Completed", "CompletedTV", "Ongoing",
         "South Korea", "Thailand", "China", "Japan", "Netflix", "Disney+", "GMM 25",
-        "Channel 3", "Viu", "TVING", "ENA", "jTBC", "KBS2", "MBC", "SBS", "tvN"
+        "Channel 3", "Viu", "TVING", "ENA", "jTBC", "KBS2", "MBC", "SBS", "tvN",
+        "0-9", "0–9", "0 - 9", name, "drakorasia"
     )
 
     override val mainPage = mainPageOf(
@@ -160,13 +155,7 @@ class DrakorAsia : MainAPI() {
         val poster = readPoster(metadataDocument, seriesTitle) ?: readPoster(document, seriesTitle)
         val plot = readPlot(metadataDocument, seriesTitle) ?: readPlot(document, seriesTitle)
 
-        val episodes = seriesLabel?.let { label ->
-            fetchFeed(label, 1, EPISODE_LIMIT)
-                .filter { it.isEpisodePost() || it.title.contains("Episode", true) }
-                .mapIndexedNotNull { index, post -> post.toEpisode(label, index + 1) }
-                .distinctBy { it.data }
-                .sortedBy { it.episode ?: Int.MAX_VALUE }
-        }.orEmpty()
+        val episodes = readEpisodes(document, title, seriesTitle, fixedUrl)
 
         return if (episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(seriesTitle, fixedUrl, TvType.AsianDrama, episodes) {
@@ -176,8 +165,9 @@ class DrakorAsia : MainAPI() {
             }
         } else {
             val movieTitle = title.cleanTitle()
+            val playableData = pickPlayableData(document, fixedUrl, movieTitle)
             val tvType = if (tags.any { it.equals("Movie", true) } || movieTitle.contains("Movie", true)) TvType.Movie else TvType.AsianDrama
-            newMovieLoadResponse(movieTitle, fixedUrl, tvType, fixedUrl) {
+            newMovieLoadResponse(movieTitle, fixedUrl, tvType, playableData) {
                 posterUrl = poster
                 this.plot = plot
                 this.tags = tags
@@ -185,14 +175,195 @@ class DrakorAsia : MainAPI() {
         }
     }
 
-    private fun parseCards(document: Document): List<SearchResponse> {
-        val results = linkedMapOf<String, SearchResponse>()
+    private suspend fun readEpisodes(
+        document: Document,
+        pageTitle: String,
+        seriesTitle: String,
+        currentUrl: String
+    ): List<Episode> {
+        val posts = linkedMapOf<String, BloggerPost>()
+        val labels = linkedSetOf<String>()
+        readSeriesLabel(document, pageTitle, currentUrl)?.let(labels::add)
+        seriesTitle.takeIf { it.isNotBlank() }?.let(labels::add)
+        cleanEpisodeTitle(pageTitle).takeIf { it.isNotBlank() }?.let(labels::add)
+        currentUrl.slugTitle().takeIf { it.isNotBlank() }?.let(labels::add)
 
-        document.select("article.post, article.hentry, .blog-posts .hentry, .post-outer, .grid-post, .related-post, .item-post")
-            .forEach { element ->
-                element.toSearchResult()?.let { results[it.url] = it }
+        labels.forEach { label ->
+            fetchFeed(label, 1, EPISODE_LIMIT)
+                .filter { it.isEpisodePost() || it.title.contains("Episode", true) }
+                .forEach { posts[it.url] = it }
+        }
+
+        if (posts.isEmpty()) {
+            labels.forEach { label ->
+                fetchSearchFeed(label)
+                    .filter { it.isEpisodePost() || it.title.contains("Episode", true) || it.url.isEpisodeUrlFor(seriesTitle) }
+                    .forEach { posts[it.url] = it }
+            }
+        }
+
+        val fromFeed = posts.values
+            .mapIndexedNotNull { index, post -> post.toEpisode(seriesTitle, index + 1) }
+
+        val fromAnchors = document.select("a[href*='.html']")
+            .mapNotNull { anchor ->
+                val href = normalizeUrl(anchor.attr("abs:href").ifBlank { anchor.attr("href") }, currentUrl)
+                if (!isValidContentUrl(href) || href.equals(currentUrl.substringBefore('?'), true)) return@mapNotNull null
+                val anchorText = anchor.text().cleanTitle()
+                if (!href.isEpisodeUrlFor(seriesTitle) && !anchorText.contains("Episode", true)) return@mapNotNull null
+                val ep = extractEpisodeNumber(anchorText, href) ?: return@mapNotNull null
+                newEpisode(href) {
+                    name = "Episode ${ep.toString().padStart(2, '0')}"
+                    episode = ep
+                }
             }
 
+        return (fromFeed + fromAnchors)
+            .distinctBy { it.data }
+            .sortedBy { it.episode ?: Int.MAX_VALUE }
+    }
+
+    private suspend fun pickPlayableData(document: Document, currentUrl: String, title: String): String {
+        if (extractPlayerCandidates(document, currentUrl).any { it.isPlayableCandidate() }) return currentUrl
+        return findWatchUrls(document, currentUrl, title).firstOrNull() ?: currentUrl
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val pageUrl = normalizeUrl(data)
+        val visitedCandidates = linkedSetOf<String>()
+        val visitedPages = linkedSetOf<String>()
+        val emittedLinks = linkedSetOf<String>()
+        var emittedCount = 0
+
+        val countedCallback: (ExtractorLink) -> Unit = { link ->
+            val key = link.url.substringBefore("#")
+            if (emittedLinks.add(key)) {
+                emittedCount++
+                callback.invoke(link)
+            }
+        }
+
+        suspend fun processPage(url: String, referer: String): Document? {
+            val fixedPage = normalizeUrl(url, referer)
+            if (!fixedPage.startsWith("http", true) || !visitedPages.add(fixedPage.substringBefore("#"))) return null
+            val document = runCatching {
+                app.get(withMobileParam(fixedPage), headers = headers, referer = referer).document
+            }.getOrNull() ?: return null
+
+            extractPlayerCandidates(document, fixedPage)
+                .filter { it.isPlayableCandidate() }
+                .forEach { candidate ->
+                    resolveCandidate(candidate, fixedPage, visitedCandidates, subtitleCallback, countedCallback)
+                }
+            return document
+        }
+
+        val firstDocument = processPage(pageUrl, mainUrl)
+
+        if (emittedCount == 0 && firstDocument != null && pageUrl.startsWith(mainUrl, true)) {
+            val title = readTitle(firstDocument, pageUrl)
+            findWatchUrls(firstDocument, pageUrl, cleanEpisodeTitle(title))
+                .take(6)
+                .forEach { watchUrl ->
+                    processPage(watchUrl, pageUrl)
+                }
+        }
+
+        return emittedCount > 0
+    }
+
+    private fun extractPlayerCandidates(document: Document, pageUrl: String): Set<String> {
+        val candidates = linkedSetOf<String>()
+        collectCandidates(document.html(), pageUrl, candidates)
+        document.select("iframe[src], embed[src], video[src], video source[src], option[value], .mobius option[value], select option[value], .mirror option[value], [data-url], [data-src], [data-link], [data-href], [data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream]")
+            .forEach { element ->
+                listOf("src", "value", "data-url", "data-src", "data-link", "data-href", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream").forEach attrs@{ attr ->
+                    val raw = element.attr(attr).trim()
+                    if (raw.isBlank() || raw == "#" || raw.startsWith("javascript", true)) return@attrs
+                    val decoded = decodePayload(raw)
+                    collectCandidates(decoded, pageUrl, candidates)
+                    Jsoup.parse(decoded).select("iframe[src], embed[src], video[src], video source[src]").forEach { nested ->
+                        listOf("src").forEach { nestedAttr ->
+                            normalizeUrl(nested.attr(nestedAttr), pageUrl)
+                                .takeIf { it.startsWith("http", true) }
+                                ?.let(candidates::add)
+                        }
+                    }
+                    if (decoded.startsWith("http", true)) candidates.add(decoded)
+                    else normalizeUrl(decoded, pageUrl).takeIf { it.startsWith("http", true) }?.let(candidates::add)
+                }
+            }
+        return candidates
+    }
+
+    private suspend fun findWatchUrls(document: Document, currentUrl: String, title: String): List<String> {
+        val urls = linkedSetOf<String>()
+        val baseSlug = currentUrl.substringBefore('?').substringAfterLast('/').substringBeforeLast('.')
+        document.select("a[href*='.html']").forEach { anchor ->
+            val href = normalizeUrl(anchor.attr("abs:href").ifBlank { anchor.attr("href") }, currentUrl)
+            if (!isValidContentUrl(href)) return@forEach
+            if (href.equals(currentUrl.substringBefore('?'), true)) return@forEach
+            val text = anchor.text().cleanTitle()
+            val slug = href.substringBefore('?').substringAfterLast('/').substringBeforeLast('.')
+            val looksLikeWatch = slug.contains("episode", true) ||
+                slug.startsWith("$baseSlug-episode", true) ||
+                text.contains("Episode", true) ||
+                text.contains("Nonton", true) ||
+                text.contains("Watch", true) ||
+                text.contains("Play", true)
+            if (looksLikeWatch) urls.add(href)
+        }
+
+        val labels = linkedSetOf<String>()
+        readSeriesLabel(document, title, currentUrl)?.let(labels::add)
+        title.cleanTitle().takeIf { it.isNotBlank() }?.let(labels::add)
+        currentUrl.slugTitle().takeIf { it.isNotBlank() }?.let(labels::add)
+
+        labels.forEach { label ->
+            fetchFeed(label, 1, EPISODE_LIMIT)
+                .filter { it.isEpisodePost() || it.title.contains("Episode", true) }
+                .forEach { urls.add(it.url) }
+        }
+
+        if (urls.isEmpty()) {
+            labels.forEach { label ->
+                fetchSearchFeed(label)
+                    .filter { it.isEpisodePost() || it.title.contains("Episode", true) || it.url.isEpisodeUrlFor(label) }
+                    .forEach { urls.add(it.url) }
+            }
+        }
+
+        return urls.toList().sortedWith(compareBy<String> { extractEpisodeNumber(it, it) ?: Int.MAX_VALUE }.thenBy { it })
+    }
+
+    private suspend fun resolveCandidate(
+        candidate: String,
+        referer: String,
+        visited: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val url = candidate.replace("\\/", "/").trim().trim('"', '\'', ',', ';')
+        if (!url.startsWith("http", true)) return false
+        if (!visited.add(url.substringBefore("#"))) return false
+
+        if (url.isDownloadCandidate() || url.isDirectMedia()) {
+            emitDirect(url, referer, callback, if (url.isDownloadCandidate()) "Download" else null)
+            return true
+        }
+
+        return loadExtractor(url, referer, subtitleCallback, callback)
+    }
+
+    private fun parseCards(document: Document): List<SearchResponse> {
+        val results = linkedMapOf<String, SearchResponse>()
+        document.select("article.post, article.hentry, .blog-posts .hentry, .post-outer, .grid-post, .related-post, .item-post")
+            .forEach { element -> element.toSearchResult()?.let { results[it.url] = it } }
         return results.values.toList()
     }
 
@@ -213,126 +384,15 @@ class DrakorAsia : MainAPI() {
 
         val poster = fixUrlNull(selectFirst("img")?.imageAttr()?.fixBloggerImage())
         val isMovie = href.contains("/movie/", true) || title.contains("Movie", true)
-
-        return if (isMovie) {
-            newMovieSearchResponse(title, href, TvType.Movie) { posterUrl = poster }
-        } else {
-            newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { posterUrl = poster }
-        }
-    }
-
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val pageUrl = normalizeUrl(data)
-        val visitedCandidates = linkedSetOf<String>()
-        val emittedLinks = linkedSetOf<String>()
-        var emittedCount = 0
-
-        val countedCallback: (ExtractorLink) -> Unit = { link ->
-            val key = link.url.substringBefore("#")
-            if (emittedLinks.add(key)) {
-                emittedCount++
-                callback.invoke(link)
-            }
-        }
-
-        val document = app.get(withMobileParam(pageUrl), headers = headers, referer = mainUrl).document
-        val candidates = linkedSetOf<String>()
-        collectCandidates(document.html(), pageUrl, candidates)
-        document.select("iframe[src], embed[src], video[src], video source[src], a[href], option[value], [data-url], [data-src], [data-link], [data-href], [data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream]").forEach { element ->
-            listOf("src", "href", "value", "data-url", "data-src", "data-link", "data-href", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream").forEach attrs@{ attr ->
-                val raw = element.attr(attr).trim()
-                if (raw.isBlank() || raw == "#" || raw.startsWith("javascript", true)) return@attrs
-                val decoded = decodePayload(raw)
-                collectCandidates(decoded, pageUrl, candidates)
-                if (decoded.startsWith("http", true)) candidates.add(decoded)
-                else normalizeUrl(decoded, pageUrl).takeIf { it.startsWith("http", true) }?.let(candidates::add)
-            }
-        }
-
-        candidates.filter { it.isPlayableCandidate() }.forEach { candidate ->
-            resolveCandidate(candidate, pageUrl, visitedCandidates, subtitleCallback, countedCallback)
-        }
-
-        return emittedCount > 0
-    }
-
-    private suspend fun resolveCandidate(
-        candidate: String,
-        referer: String,
-        visited: MutableSet<String>,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-        depth: Int = 0
-    ): Boolean {
-        val url = candidate.replace("\\/", "/").trim().trim('"', '\'', ',', ';')
-        if (!url.startsWith("http", true)) return false
-        if (!visited.add(url.substringBefore("#"))) return false
-
-        if (url.isDownloadCandidate()) {
-            emitDirect(url, referer, callback, "Download")
-            return true
-        }
-
-        url.toAbyssPlayerUrl()?.let { abyssUrl ->
-            if (resolveAbyssPlayer(abyssUrl, referer, callback)) return true
-            abyssUrl.toAbyssToUrl()?.let { abyssToUrl ->
-                if (resolveAbyssPlayer(abyssToUrl, referer, callback)) return true
-            }
-            var found = loadExtractor(abyssUrl, referer, subtitleCallback, callback)
-            if (!found && abyssUrl != url) {
-                found = loadExtractor(url, referer, subtitleCallback, callback)
-            }
-            return found
-        }
-
-        if (url.isAbyssPlayerPage()) {
-            if (resolveAbyssPlayer(url, referer, callback)) return true
-            url.toAbyssToUrl()?.let { abyssToUrl ->
-                if (resolveAbyssPlayer(abyssToUrl, referer, callback)) return true
-            }
-        }
-
-        return when {
-            url.isDirectMedia() -> {
-                emitDirect(url, referer, callback)
-                true
-            }
-            url.contains("blogger.com/video.g", true) || url.contains("blogspot.com", true) || url.contains("googlevideo.com", true) -> {
-                var found = false
-                if (url.contains("googlevideo.com", true)) {
-                    emitDirect(url, referer, callback)
-                    found = true
-                }
-                if (depth < 2) {
-                    val body = runCatching { app.get(url, headers = headers, referer = referer).text }.getOrNull()
-                    body?.let {
-                        val nested = linkedSetOf<String>()
-                        collectCandidates(it, url, nested)
-                        nested.filter { item -> item.isPlayableCandidate() }.forEach { item ->
-                            if (resolveCandidate(item, url, visited, subtitleCallback, callback, depth + 1)) found = true
-                        }
-                    }
-                }
-                if (!found) found = loadExtractor(url, referer, subtitleCallback, callback)
-                found
-            }
-            else -> loadExtractor(url, referer, subtitleCallback, callback)
-        }
+        return if (isMovie) newMovieSearchResponse(title, href, TvType.Movie) { posterUrl = poster }
+        else newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { posterUrl = poster }
     }
 
     private fun BloggerPost.toSearchResult(): SearchResponse? {
         if (!isValidContentUrl(url) || !isValidTitle(title)) return null
         val fixedPoster = fixUrlNull(poster?.fixBloggerImage())
-        return if (isMoviePost()) {
-            newMovieSearchResponse(title.cleanTitle(), url, TvType.Movie) { posterUrl = fixedPoster }
-        } else {
-            newTvSeriesSearchResponse(title.cleanTitle(), url, TvType.AsianDrama) { posterUrl = fixedPoster }
-        }
+        return if (isMoviePost()) newMovieSearchResponse(title.cleanTitle(), url, TvType.Movie) { posterUrl = fixedPoster }
+        else newTvSeriesSearchResponse(title.cleanTitle(), url, TvType.AsianDrama) { posterUrl = fixedPoster }
     }
 
     private fun BloggerPost.toEpisode(seriesTitle: String, fallbackEpisode: Int): Episode? {
@@ -346,7 +406,7 @@ class DrakorAsia : MainAPI() {
     }
 
     private suspend fun fetchSearchFeed(query: String): List<BloggerPost> {
-        val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.toString())
+        val encoded = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.toString())
         return fetchFeedUrl("$mainUrl/feeds/posts/default?alt=json&q=$encoded&max-results=$SEARCH_LIMIT")
     }
 
@@ -362,9 +422,8 @@ class DrakorAsia : MainAPI() {
     }
 
     private suspend fun fetchFeedUrl(url: String): List<BloggerPost> {
-        return runCatching {
-            parseBloggerFeed(app.get(url, headers = feedHeaders, referer = mainUrl).text)
-        }.getOrDefault(emptyList())
+        return runCatching { parseBloggerFeed(app.get(url, headers = feedHeaders, referer = mainUrl).text) }
+            .getOrDefault(emptyList())
     }
 
     private fun parseBloggerFeed(raw: String): List<BloggerPost> {
@@ -380,29 +439,16 @@ class DrakorAsia : MainAPI() {
                 ?.string("href")
                 ?.let { normalizeUrl(it) }
                 .orEmpty()
-
             val labels = entry.array("category")
                 ?.mapNotNull { it.asObjectOrNull()?.string("term")?.cleanTitle() }
                 ?.filter { it.isNotBlank() }
                 ?.distinct()
                 .orEmpty()
-
-            val content = entry.obj("content")?.string("\$t")
-                ?: entry.obj("summary")?.string("\$t")
-                ?: ""
-
-            val poster = listOf(
-                entry.obj("media\$thumbnail")?.string("url"),
-                extractImageFromContent(content)
-            ).firstOrNull { !it.isNullOrBlank() }?.fixBloggerImage()
-
-            BloggerPost(
-                title = title,
-                url = url,
-                poster = poster,
-                labels = labels,
-                content = content
-            )
+            val content = entry.obj("content")?.string("\$t") ?: entry.obj("summary")?.string("\$t") ?: ""
+            val poster = listOf(entry.obj("media\$thumbnail")?.string("url"), extractImageFromContent(content))
+                .firstOrNull { !it.isNullOrBlank() }
+                ?.fixBloggerImage()
+            BloggerPost(title, url, poster, labels, content)
         }
     }
 
@@ -467,9 +513,7 @@ class DrakorAsia : MainAPI() {
     }
 
     private fun cleanTags(rawTags: List<String>, seriesTitle: String): List<String> {
-        val blocked = nonSeriesLabels + setOf(
-            "Series", "Eps. TV", "TV", "0-9", "0–9", "0 - 9", name, seriesTitle
-        )
+        val blocked = nonSeriesLabels + setOf("Series", "Eps. TV", "TV", name, seriesTitle)
         return rawTags
             .map { it.cleanTitle() }
             .filter { tag ->
@@ -534,9 +578,7 @@ class DrakorAsia : MainAPI() {
     private fun readPoster(document: Document, seriesTitle: String? = null): String? {
         return document.select(".post-body img[src], .entry-content img[src], article img[src], meta[property=og:image], meta[name=twitter:image]")
             .asSequence()
-            .mapNotNull { element ->
-                if (element.hasAttr("content")) element.attr("content") else element.imageAttr()
-            }
+            .mapNotNull { element -> if (element.hasAttr("content")) element.attr("content") else element.imageAttr() }
             .map { it.fixBloggerImage() }
             .firstOrNull { !it.isBadImageUrl(seriesTitle) }
             ?.let { fixUrlNull(it) }
@@ -587,15 +629,12 @@ class DrakorAsia : MainAPI() {
 
     private suspend fun emitDirect(mediaUrl: String, referer: String, callback: (ExtractorLink) -> Unit, label: String? = null) {
         val fixed = mediaUrl.replace("\\/", "/").htmlUnescape()
-        val type = if (fixed.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-        val quality = getQualityFromName(fixed).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
-        val linkHeaders = linkedMapOf(
-            "Referer" to referer,
-            "User-Agent" to USER_AGENT
-        )
-        if (referer.contains("abyssplayer.com", true)) {
-            linkHeaders["Origin"] = "https://abyssplayer.com"
+        val type = when {
+            fixed.contains(".m3u8", true) -> ExtractorLinkType.M3U8
+            fixed.contains(".mpd", true) -> ExtractorLinkType.DASH
+            else -> ExtractorLinkType.VIDEO
         }
+        val quality = getQualityFromName(fixed).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
         callback.invoke(
             newExtractorLink(
                 source = name,
@@ -605,200 +644,12 @@ class DrakorAsia : MainAPI() {
             ) {
                 this.quality = quality
                 this.referer = referer
-                this.headers = linkHeaders
-            }
-        )
-    }
-
-    private suspend fun resolveAbyssPlayer(abyssUrl: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
-        val pageUrl = abyssUrl.replace("abyss.to/", "abyssplayer.com/")
-        val html = runCatching {
-            app.get(pageUrl, headers = abyssHeaders(), referer = ABYSS_SERVICE_REFERER).text
-        }.getOrNull().orEmpty()
-        if (html.isBlank()) return false
-
-        val encoded = extractAbyssDatas(html)
-        if (!encoded.isNullOrBlank() && resolveAbyssWithDecoder(encoded, callback)) return true
-
-        // Local fallback intentionally avoids fristDatas/firstDatas because HAR shows those
-        // are Abyss internal octet-stream chunks and ExoPlayer reports container unsupported.
-        return resolveAbyssLocalSources(pageUrl, html, callback)
-    }
-
-    private suspend fun resolveAbyssWithDecoder(encoded: String, callback: (ExtractorLink) -> Unit): Boolean {
-        val body = """{"text":"${encoded.escapeJson()}"}"""
-        val response = runCatching {
-            app.post(
-                url = ABYSS_DECODER_API,
-                headers = abyssHeaders(),
-                requestBody = body.toRequestBody("application/json".toMediaType())
-            ).text
-        }.getOrNull().orEmpty()
-        if (response.isBlank()) return false
-
-        val root = runCatching { JsonParser().parse(response).asJsonObject }.getOrNull() ?: return false
-        val result = root.obj("result") ?: root
-        val sources = result.array("sources") ?: result.obj("mp4")?.array("sources") ?: return false
-        var emitted = false
-
-        sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
-            if (!source.bool("status", true)) return@forEach
-            val videoUrl = source.toAbyssSourceUrl() ?: return@forEach
-            if (!videoUrl.isAbyssPlayableCandidate()) return@forEach
-            val label = source.string("label") ?: source.string("quality") ?: source.string("name") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
-            runCatching {
-                if (emitAbyssLink(videoUrl, label, callback)) emitted = true
-            }
-        }
-
-        return emitted
-    }
-
-    private suspend fun resolveAbyssLocalSources(pageUrl: String, html: String, callback: (ExtractorLink) -> Unit): Boolean {
-        val payload = parseAbyssPayload(html) ?: return false
-        val mediaJson = decryptAbyssMedia(payload) ?: return false
-        val root = runCatching { JsonParser().parse(mediaJson).asJsonObject }.getOrNull() ?: return false
-        val sources = root.obj("mp4")?.array("sources") ?: return false
-        var emitted = false
-
-        sources.mapNotNull { it.asObjectOrNull() }.forEach { source ->
-            if (!source.bool("status", true)) return@forEach
-            val videoUrl = source.toAbyssSourceUrl() ?: return@forEach
-            val label = source.string("label") ?: source.int("res_id")?.toAbyssQualityLabel() ?: "Auto"
-            // Avoid known Abyss firstData/chunk objects; emit only final source paths or normal containers.
-            if (!videoUrl.isAbyssPlayableCandidate()) return@forEach
-            runCatching {
-                if (emitAbyssLink(videoUrl, label, callback)) emitted = true
-            }
-        }
-
-        return emitted
-    }
-
-    private suspend fun emitAbyssLink(videoUrl: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
-        val fixed = videoUrl.replace("\\/", "/").let { if (it.startsWith("//")) "https:$it" else it }
-        if (!fixed.isAbyssPlayableCandidate()) return false
-        val type = when {
-            fixed.contains(".m3u8", true) -> ExtractorLinkType.M3U8
-            fixed.contains(".mpd", true) -> ExtractorLinkType.DASH
-            else -> ExtractorLinkType.VIDEO
-        }
-        val quality = getQualityFromName(label).let { if (it == Qualities.Unknown.value) inferQuality(fixed) else it }
-        callback.invoke(
-            newExtractorLink(
-                source = "AbyssPlayer",
-                name = "AbyssPlayer ${label.cleanTitle().ifBlank { "Auto" }}",
-                url = fixed,
-                type = type
-            ) {
-                this.quality = quality
-                this.referer = ABYSS_REFERER
                 this.headers = mapOf(
-                    "Referer" to ABYSS_REFERER,
-                    "Origin" to ABYSS_ORIGIN,
+                    "Referer" to referer,
                     "User-Agent" to USER_AGENT
                 )
             }
         )
-        return true
-    }
-
-    private fun JsonObject.toAbyssSourceUrl(): String? {
-        val base = listOf(
-            string("file"),
-            string("src"),
-            string("link"),
-            string("url")
-        ).firstOrNull { !it.isNullOrBlank() }
-            ?.replace("\\/", "/")
-            ?.let { if (it.startsWith("//")) "https:$it" else it }
-            ?.trim()
-            ?: return null
-        val path = string("path")?.replace("\\/", "/")?.trim('/')
-        val combined = if (!path.isNullOrBlank() && (base.startsWith("http", true) || base.startsWith("//"))) {
-            base.trimEnd('/') + "/" + path
-        } else {
-            base
-        }
-        return combined.takeIf { it.startsWith("http", true) || it.startsWith("//") }
-    }
-
-    private fun extractAbyssDatas(html: String): String? {
-        return Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([^"']+)["']""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    private fun abyssHeaders(): Map<String, String> {
-        return mapOf(
-            "User-Agent" to USER_AGENT,
-            "Origin" to ABYSS_SERVICE_ORIGIN,
-            "Referer" to ABYSS_SERVICE_REFERER,
-            "Accept" to "application/json,text/plain,*/*"
-        )
-    }
-
-    private fun parseAbyssPayload(html: String): DrakorAsiaAbyssPayload? {
-        val encoded = Regex("""(?:const|let|var)?\s*datas\s*=\s*["']([A-Za-z0-9+/=]+)["']""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return null
-        val json = runCatching { String(Base64.decode(encoded, Base64.DEFAULT), Charsets.ISO_8859_1) }.getOrNull() ?: return null
-        val node = runCatching { JsonParser().parse(json).asJsonObject }.getOrNull() ?: return null
-        val slug = node.string("slug").orEmpty()
-        val md5Id = node.string("md5_id").orEmpty()
-        val userId = node.string("user_id").orEmpty()
-        val media = node.string("media").orEmpty()
-        if (slug.isBlank() || md5Id.isBlank() || userId.isBlank() || media.isBlank()) return null
-        return DrakorAsiaAbyssPayload(slug, md5Id, userId, media)
-    }
-
-    private fun decryptAbyssMedia(payload: DrakorAsiaAbyssPayload): String? {
-        return runCatching {
-            val key = md5Hex("${payload.userId}:${payload.slug}:${payload.md5Id}").toByteArray(Charsets.UTF_8)
-            val counter = key.copyOfRange(0, 16)
-            val encrypted = ByteArray(payload.media.length) { index -> payload.media[index].code.toByte() }
-            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(counter))
-            String(cipher.doFinal(encrypted), Charsets.UTF_8)
-        }.getOrNull()
-    }
-
-    private fun md5Hex(value: String): String {
-        val digest = MessageDigest.getInstance("MD5").digest(value.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { byte -> "%02x".format(byte) }
-    }
-
-    private fun Int.toAbyssQualityLabel(): String {
-        return when (this) {
-            5 -> "1080p"
-            4 -> "720p"
-            3 -> "480p"
-            2 -> "360p"
-            else -> "Auto"
-        }
-    }
-
-    private fun String.toAbyssPlayerUrl(): String? {
-        val clean = replace("\\/", "/").trim().trim('"', '\'', ',', ';')
-        if (clean.isAbyssPlayerPage()) return clean
-        if (!clean.contains("short.ink", true)) return null
-        val id = clean.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
-        return "https://abyssplayer.com/$id"
-    }
-
-    private fun String.toAbyssToUrl(): String? {
-        val clean = replace("\\/", "/").trim().trim('"', '\'', ',', ';')
-        val id = clean.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return null
-        return "https://abyss.to/$id"
-    }
-
-    private fun String.isAbyssPlayerPage(): Boolean {
-        val value = lowercase()
-        return value.contains("abyssplayer.com/") || value.contains("abyss.to/")
     }
 
     private fun String.isPlayableCandidate(): Boolean {
@@ -806,7 +657,7 @@ class DrakorAsia : MainAPI() {
         return isDirectMedia() || isDownloadCandidate() || listOf(
             "short.ink", "abyssplayer.com", "abyss.to", "blogger.com/video.g", "googlevideo.com", "blogspot.com",
             "dailymotion", "ok.ru", "odnoklassniki", "streamtape", "filemoon", "dood", "vidhide", "vidguard",
-            "voe.sx", "mixdrop", "mp4upload", "abyssplayer", "streamwish", "streamruby", "sendvid", "uqload",
+            "voe.sx", "mixdrop", "mp4upload", "streamwish", "streamruby", "sendvid", "uqload",
             "desustream", "ondesu"
         ).any { value.contains(it) }
     }
@@ -816,31 +667,15 @@ class DrakorAsia : MainAPI() {
         return value.contains("/video/down.php") || value.contains("katong.usbx.me/video/down")
     }
 
-    private fun String.isSupportedContainerCandidate(): Boolean {
-        val value = lowercase().substringBefore("#").substringBefore("?")
+    private fun String.isDirectMedia(): Boolean {
+        val value = lowercase().substringBefore("#")
         return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains(".mpd") || value.contains("videoplayback")
     }
 
-    private fun String.isAbyssPlayableCandidate(): Boolean {
-        return isSupportedContainerCandidate() || isAbyssStreamPathCandidate()
-    }
-
-    private fun String.isAbyssStreamPathCandidate(): Boolean {
-        val value = replace("\\/", "/").lowercase().substringBefore("#").substringBefore("?")
-        if (!value.contains(".sssrr.org/")) return false
-        if (value.contains(".fd") || value.contains("/sora/")) return false
-        val path = runCatching { URI(value).path.orEmpty() }.getOrDefault("")
-        if (path.isBlank() || path == "/") return false
-        return Regex("""/[0-9a-f]/[0-9a-f]/[0-9a-f]/[0-9a-f]{16,}\.\d{6,}\.\d+(?:$|/)""").containsMatchIn(path)
-    }
-
-    private fun String.escapeJson(): String {
-        return replace("\\", "\\\\").replace("\"", "\\\"")
-    }
-
-    private fun String.isDirectMedia(): Boolean {
-        val value = lowercase().substringBefore("#")
-        return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback")
+    private fun String.isEpisodeUrlFor(seriesTitle: String): Boolean {
+        val value = lowercase()
+        val slug = seriesTitle.cleanTitle().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+        return value.contains("episode", true) && (slug.isBlank() || value.contains(slug))
     }
 
     private fun isValidContentUrl(url: String): Boolean {
@@ -853,17 +688,14 @@ class DrakorAsia : MainAPI() {
     private fun isValidTitle(title: String): Boolean {
         val clean = title.cleanTitle()
         if (clean.length < 2) return false
-        return !listOf(
-            "Home", "Genre", "Season", "Drama List", "DRAMA LIST", "Video Server",
-            "Server 1", "Tonton", "Nonton", name, "drakorasia"
-        ).any { clean.equals(it, true) }
+        return !listOf("Home", "Genre", "Season", "Drama List", "DRAMA LIST", "Video Server", "Server 1", "Tonton", "Nonton", name, "drakorasia")
+            .any { clean.equals(it, true) }
     }
 
     private fun BloggerPost.isValidContentPost(): Boolean = isValidContentUrl(url) && isValidTitle(title)
 
     private fun BloggerPost.isEpisodePost(): Boolean {
-        return title.contains("Episode", true) ||
-            labels.any { it.equals("Eps. TV", true) || it.startsWith("Eps.", true) }
+        return title.contains("Episode", true) || labels.any { it.equals("Eps. TV", true) || it.startsWith("Eps.", true) }
     }
 
     private fun BloggerPost.isSeriesPost(): Boolean = labels.any { it.equals("Series", true) }
@@ -885,7 +717,7 @@ class DrakorAsia : MainAPI() {
         return replace(Regex("(?i)\\s+Episode\\s+\\d+.*$"), "")
             .replace(Regex("(?i)\\s+Eps?\\.?\\s*\\d+.*$"), "")
             .cleanTitle()
-            .takeIf { it.isNotBlank() && it != this.cleanTitle() }
+            .takeIf { it.isNotBlank() && it != cleanTitle() }
     }
 
     private fun cleanEpisodeTitle(title: String): String {
@@ -898,6 +730,7 @@ class DrakorAsia : MainAPI() {
         return Regex("(?i)episode[-\\s]*(\\d+)").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("(?i)episode[-\\s]*(\\d+)").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("(?i)eps?\\.?[-\\s]*(\\d+)").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Regex("(?i)eps?\\.?[-\\s]*(\\d+)").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun String.urlDecodeSafe(): String {
@@ -996,14 +829,6 @@ class DrakorAsia : MainAPI() {
         return get(key)?.takeIf { !it.isJsonNull }?.asString
     }
 
-    private fun JsonObject.int(key: String): Int? {
-        return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asInt }.getOrNull()
-    }
-
-    private fun JsonObject.bool(key: String, default: Boolean): Boolean {
-        return runCatching { get(key)?.takeIf { !it.isJsonNull }?.asBoolean }.getOrNull() ?: default
-    }
-
     private data class MainPageData(
         val items: List<SearchResponse>,
         val hasNext: Boolean
@@ -1017,22 +842,10 @@ class DrakorAsia : MainAPI() {
         val content: String
     )
 
-    private data class DrakorAsiaAbyssPayload(
-        val slug: String,
-        val md5Id: String,
-        val userId: String,
-        val media: String
-    )
-
     companion object {
         private const val MAIN_PAGE_LIMIT = 20
         private const val SEARCH_LIMIT = 30
         private const val SEARCH_SERIES_LIMIT = 150
         private const val EPISODE_LIMIT = 150
-        private const val ABYSS_REFERER = "https://abyssplayer.com/"
-        private const val ABYSS_ORIGIN = "https://abyssplayer.com"
-        private const val ABYSS_SERVICE_ORIGIN = "https://playhydrax.com"
-        private const val ABYSS_SERVICE_REFERER = "https://playhydrax.com/"
-        private const val ABYSS_DECODER_API = "https://enc-dec.app/api/dec-abyss"
     }
 }

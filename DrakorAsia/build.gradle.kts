@@ -2,7 +2,7 @@ android {
     namespace = "com.BetbetMiro.drakorasia"
 }
 
-version = 10
+version = 11
 
 cloudstream {
     language = "id"
