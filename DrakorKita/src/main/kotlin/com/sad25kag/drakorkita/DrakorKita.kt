@@ -33,7 +33,7 @@ class DrakorKita : MainAPI() {
     override var name = "DrakorKita"
     override val hasMainPage = true
     override var lang = "id"
-    override val hasDownloadSupport = false
+    override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
 
     private val sourceHeaders = mapOf(
@@ -408,13 +408,17 @@ class DrakorKita : MainAPI() {
         posterUrl: String?
     ): List<ApiConfig> {
         val decodedBlocks = linkedSetOf<String>()
-        decodedBlocks.add(document.html())
+        val html = document.html()
+        decodedBlocks.add(html)
 
+        // DrakorKita writes the real playback config through an obfuscated document.write block.
+        // The script does not always contain literal "split('.')" or "document.write"; in the
+        // active source/HAR it uses bracket notation, so every inline script and the full document
+        // must be scanned for the long dot-separated base64 payload.
+        decodeDocumentWriteScript(html)?.let(decodedBlocks::add)
         document.select("script").forEach { script ->
             val scriptText = script.data().ifBlank { script.html() }
-            if (scriptText.contains("split('.')") || scriptText.contains("document.write")) {
-                decodeDocumentWriteScript(scriptText)?.let(decodedBlocks::add)
-            }
+            decodeDocumentWriteScript(scriptText)?.let(decodedBlocks::add)
         }
 
         val results = linkedMapOf<String, ApiConfig>()
@@ -467,7 +471,8 @@ class DrakorKita : MainAPI() {
         val encoded = Regex("""(?:var\s+)?[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*['"]([A-Za-z0-9+/=._-]+(?:\.[A-Za-z0-9+/=._-]+)+)['"]""")
             .findAll(script)
             .map { it.groupValues[1] }
-            .firstOrNull { it.count { char -> char == '.' } > 10 }
+            .filter { it.count { char -> char == '.' } > 20 }
+            .maxByOrNull { it.length }
             ?: return null
 
         val decoded = encoded.split(".").mapNotNull { segment ->
@@ -526,7 +531,7 @@ class DrakorKita : MainAPI() {
     }
 
     private fun String.extractJsVar(name: String): String? {
-        return Regex("""var\s+${Regex.escape(name)}\s*=\s*['"]([^'"]*)['"]""")
+        return Regex("""(?:var\s+)?${Regex.escape(name)}\s*=\s*['"]([^'"]*)['"]""")
             .find(this)
             ?.groupValues
             ?.getOrNull(1)
