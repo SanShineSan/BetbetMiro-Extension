@@ -1,6 +1,7 @@
 package com.sad25kag.drakorasia
 
 import android.util.Base64
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.lagradost.cloudstream3.SubtitleFile
@@ -301,6 +302,10 @@ open class DrakorAsiaAbyssExtractor : ExtractorApi() {
             .replace("&nbsp;", " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+    }
+
+    private fun JsonElement.asObjectOrNull(): JsonObject? {
+        return takeIf { it.isJsonObject }?.asJsonObject
     }
 
     private fun JsonObject.obj(key: String): JsonObject? {

@@ -133,15 +133,15 @@ class DonghuaID : MainAPI() {
         val document = response.document
         val emitted = linkedSetOf<String>()
 
-        suspend fun emitDirect(rawUrl: String?, label: String? = null, referer: String = data): Boolean {
-            val finalUrl = rawUrl
-                ?.decodeEmbedText()
-                ?.absoluteUrl(referer)
-                ?.takeIf { it.isDirectMediaLike() }
-                ?: return false
-            val key = finalUrl.substringBefore("#")
-            if (!emitted.add(key)) return true
+        fun countedCallback(link: ExtractorLink) {
+            if (emitted.add(link.url.substringBefore("#"))) {
+                callback.invoke(link)
+            }
+        }
 
+        fun emitDirect(rawUrl: String, label: String?, referer: String): Boolean {
+            val finalUrl = rawUrl.normalizePlayerUrl(referer)?.takeIf { it.isDirectMediaLike() } ?: return false
+            if (!emitted.add(finalUrl.substringBefore("#"))) return true
             val linkName = listOfNotNull(name, label?.cleanText()?.takeIf { it.isNotBlank() }).joinToString(" - ")
             callback.invoke(
                 newExtractorLink(linkName, linkName, finalUrl, inferType(finalUrl)) {
@@ -157,28 +157,16 @@ class DonghuaID : MainAPI() {
             return true
         }
 
-        val countedCallback: (ExtractorLink) -> Unit = { link ->
-            emitted.add(link.url.substringBefore("#"))
-            callback.invoke(link)
-        }
-
         val candidates = collectSourcePlayerCandidates(document, data)
         for (candidate in candidates) {
-            val playerUrl = candidate.url.decodeEmbedText().absoluteUrl(candidate.referer) ?: continue
-            if (emitDirect(playerUrl, candidate.label, candidate.referer)) continue
-
-            val beforeExtractor = emitted.size
-            runCatching { loadExtractor(playerUrl, candidate.referer, subtitleCallback, countedCallback) }
-            val extractorEmitted = emitted.size > beforeExtractor
-            if (extractorEmitted) continue
-        }
-
-        // Last fallback only: direct media already present on the same watch page.
-        // No host list, no manual host resolver, and no fetched-player-page scraping here.
-        if (emitted.isEmpty()) {
-            collectDirectMediaFromText(response.text, data).forEach { direct ->
-                emitDirect(direct, hostLabel(direct), data)
+            val playerUrl = candidate.url.normalizePlayerUrl(candidate.referer) ?: continue
+            val before = emitted.size
+            if (playerUrl.isDirectMediaLike()) {
+                emitDirect(playerUrl, candidate.label, candidate.referer)
+            } else {
+                runCatching { loadExtractor(playerUrl, candidate.referer, subtitleCallback) { link -> countedCallback(link) } }
             }
+            if (emitted.size > before) continue
         }
 
         return emitted.isNotEmpty()
@@ -283,28 +271,28 @@ class DonghuaID : MainAPI() {
     private fun collectSourcePlayerCandidates(document: Document, referer: String): LinkedHashSet<PlayerCandidate> {
         val candidates = linkedSetOf<PlayerCandidate>()
 
-        fun add(rawUrl: String?, label: String? = null, candidateReferer: String = referer) {
-            val fixedUrl = rawUrl
-                ?.decodeEmbedText()
-                ?.absoluteUrl(candidateReferer)
-                ?.takeIf { it.isSourcePlayerUrl() || it.isDirectMediaLike() }
-                ?: return
+        fun addPlayer(rawUrl: String?, label: String? = null, candidateReferer: String = referer) {
+            val fixedUrl = rawUrl?.normalizePlayerUrl(candidateReferer) ?: return
+            if (!fixedUrl.isUsablePlayerUrl() && !fixedUrl.isDirectMediaLike()) return
             candidates.add(PlayerCandidate(fixedUrl, label?.cleanText()?.takeIf { it.isNotBlank() }, candidateReferer))
         }
 
-        val playerRoots = document.select("#embed_holder, #pembed, .player-embed, .mobius, .mirror, .server, .servers, .player")
-        val scopedRoots = if (playerRoots.isNotEmpty()) playerRoots else document.select("body")
-
-        scopedRoots.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
-            val src = node.attr("src").ifBlank { node.attr("content") }
-            add(src, node.attr("title").ifBlank { hostLabel(src) })
-        }
-
-        document.select(".mobius option[value], select.mirror option[value], .mirror option[value], select option[value]").forEach { option ->
+        // Source structure: server list/player option is the primary source of truth.
+        document.select(".mobius option[value], .mirror option[value], select option[value]").forEach { option ->
             val value = option.attr("value").trim()
             if (value.isBlank()) return@forEach
             val label = option.text().cleanText().takeIf { it.isNotBlank() && !it.equals("Select Video Server", true) }
-            decodeServerOption(value, referer).forEach { decodedUrl -> add(decodedUrl, label) }
+            decodeServerOption(value, referer).forEach { playerUrl -> addPlayer(playerUrl, label, referer) }
+        }
+
+        // Fallback only when source exposes iframe/player directly on the same watch page.
+        if (candidates.isEmpty()) {
+            document.select("#embed_holder, #pembed, .player-embed, .mobius, .mirror, .server, .servers, .player, body")
+                .select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]")
+                .forEach { node ->
+                    val src = node.attr("src").ifBlank { node.attr("content") }
+                    addPlayer(src, node.attr("title").ifBlank { hostLabel(src) }, referer)
+                }
         }
 
         return candidates
@@ -312,42 +300,49 @@ class DonghuaID : MainAPI() {
 
     private fun decodeServerOption(value: String, referer: String): List<String> {
         val results = linkedSetOf<String>()
-        val variants = linkedSetOf<String>()
-        val clean = value.decodeEmbedText()
-        variants.add(clean)
-        decodeBase64(clean)?.let { variants.add(it.decodeEmbedText()) }
-        decodeBase64UrlSafe(clean)?.let { variants.add(it.decodeEmbedText()) }
+        val rawVariants = linkedSetOf<String>()
+        val clean = value.cleanOptionValue()
+        rawVariants.add(clean)
+        clean.percentDecodePreservePlus().takeIf { it != clean }?.let { rawVariants.add(it.cleanOptionValue()) }
 
-        variants.forEach { decoded ->
-            decoded.absoluteUrl(referer)?.let { fixed ->
-                if (fixed.isSourcePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
+        rawVariants.toList().forEach { variant ->
+            decodeBase64(variant)?.let { rawVariants.add(it.cleanDecodedHtml()) }
+            decodeBase64UrlSafe(variant)?.let { rawVariants.add(it.cleanDecodedHtml()) }
+        }
+
+        rawVariants.forEach { decoded ->
+            decoded.normalizePlayerUrl(referer)?.let { fixed ->
+                if (fixed.isUsablePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
             }
 
             val parsed = Jsoup.parse(decoded)
             parsed.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
                 val src = node.attr("src").ifBlank { node.attr("content") }
-                src.absoluteUrl(referer)?.let { fixed ->
-                    if (fixed.isSourcePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
+                src.normalizePlayerUrl(referer)?.let { fixed ->
+                    if (fixed.isUsablePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
                 }
             }
         }
         return results.toList()
     }
 
-    private fun collectDirectMediaFromText(text: String, base: String): List<String> {
-        val normalized = text.decodeEmbedText()
-        val urls = linkedSetOf<String>()
-        Regex("""https?:\\?/\\?/[^'\"<>()\\\s]+""", RegexOption.IGNORE_CASE)
-            .findAll(normalized)
-            .map { it.value.replace("\\/", "/") }
-            .forEach { urls.add(it) }
-        Regex("""https?://[^'\"<>()\s]+""", RegexOption.IGNORE_CASE)
-            .findAll(normalized)
-            .map { it.value.trimEnd(',', ';', ')') }
-            .forEach { urls.add(it) }
-        return urls.mapNotNull { it.absoluteUrl(base) }
-            .filter { it.isDirectMediaLike() }
-            .distinct()
+    private fun String.cleanOptionValue(): String = trim()
+        .replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u0026", "&")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+
+    private fun String.cleanDecodedHtml(): String = cleanOptionValue()
+        .replace("\\&quot;", "\"")
+        .replace("\\\\", "\\")
+
+    private fun String.percentDecodePreservePlus(): String {
+        val safe = replace("+", "%2B")
+        return runCatching { URLDecoder.decode(safe, "UTF-8") }.getOrDefault(this)
     }
 
     private fun buildPagedUrl(rawUrl: String, page: Int): String {
@@ -412,16 +407,9 @@ class DonghuaID : MainAPI() {
         .trim()
 
     private fun String.decodeEmbedText(): String {
-        var value = cleanText()
-            .replace("\\/", "/")
-            .replace("\\u002F", "/")
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#039;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
+        var value = cleanOptionValue()
         repeat(2) {
-            value = runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
+            value = value.percentDecodePreservePlus()
         }
         return value.trim()
     }
@@ -429,7 +417,8 @@ class DonghuaID : MainAPI() {
     private fun decodeBase64(value: String): String? {
         val clean = value.trim().replace("\n", "").replace("\r", "")
         if (clean.length < 12 || clean.any { it !in 'A'..'Z' && it !in 'a'..'z' && it !in '0'..'9' && it != '+' && it != '/' && it != '=' }) return null
-        return runCatching { String(Base64.getDecoder().decode(clean), Charsets.UTF_8) }
+        val padded = clean.padEnd(clean.length + (4 - clean.length % 4) % 4, '=')
+        return runCatching { String(Base64.getDecoder().decode(padded), Charsets.UTF_8) }
             .getOrNull()
             ?.takeIf { it.contains("<iframe", true) || it.contains("http", true) }
     }
@@ -441,6 +430,14 @@ class DonghuaID : MainAPI() {
         return runCatching { String(Base64.getUrlDecoder().decode(padded), Charsets.UTF_8) }
             .getOrNull()
             ?.takeIf { it.contains("<iframe", true) || it.contains("http", true) }
+    }
+
+    private fun String.normalizePlayerUrl(baseUrl: String = mainUrl): String? {
+        val value = cleanDecodedHtml().percentDecodePreservePlus().trim().trim('"', '\'')
+        if (value.isBlank() || value.startsWith("javascript:", true) || value == "#" || value.startsWith("data:", true)) return null
+        if (value.startsWith("//")) return "https:$value"
+        if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
+        return runCatching { URI(baseUrl).resolve(value).toString() }.getOrNull()
     }
 
     private fun String.absoluteUrl(baseUrl: String = mainUrl): String? {
@@ -471,7 +468,7 @@ class DonghuaID : MainAPI() {
         return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".m4s") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback") || value.contains("/stream/")
     }
 
-    private fun String.isSourcePlayerUrl(): Boolean {
+    private fun String.isUsablePlayerUrl(): Boolean {
         val value = decodeEmbedText().lowercase(Locale.ROOT).substringBefore("#")
         if (!value.startsWith("http://") && !value.startsWith("https://")) return false
         if (isDirectMediaLike()) return true
