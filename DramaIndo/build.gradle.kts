@@ -1,4 +1,4 @@
-version = 3
+version = 4
 cloudstream {
     description = "DramaIndo - Drama Korea subtitle Indonesia"
     language = "id"

@@ -39,12 +39,12 @@ class DramaIndo : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(buildArchiveUrl(request.data, page), referer = mainUrl).document
-        val home = document.parseCards()
+        val cards = document.parseCards()
 
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
-                list = home,
+                list = cards,
                 isHorizontalImages = false,
             ),
             hasNext = document.hasNextPage(page),
@@ -53,11 +53,7 @@ class DramaIndo : MainAPI() {
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim().replace(Regex("\\s+"), "+")
-        val url = if (page <= 1) {
-            "$mainUrl/?s=$cleanQuery"
-        } else {
-            "$mainUrl/page/$page/?s=$cleanQuery"
-        }
+        val url = if (page <= 1) "$mainUrl/?s=$cleanQuery" else "$mainUrl/page/$page/?s=$cleanQuery"
 
         return app.get(url, referer = mainUrl)
             .document
@@ -67,20 +63,18 @@ class DramaIndo : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, referer = mainUrl).document
-        val pageTitle = document.selectFirst("h1.entry-title, h1")?.text()?.cleanText()
+        val pageTitle = document.selectFirst("h1.entry-title, h1[itemprop=name], h1")
+            ?.text()
+            ?.cleanTitle()
             ?: throw ErrorLoadingException("DramaIndo: title tidak ditemukan")
         val poster = document.posterUrl()
         val plot = document.plotText()
+        val genres = document.genreList()
         val playableLinks = document.extractPlayableLinks()
         val seriesTitle = document.infoValue("Title")
             ?: document.findSeriesTitle(url)
             ?: pageTitle.removeEpisodeSuffix()
         val seriesUrl = document.findSeriesUrl(url, seriesTitle)
-        val genres = document.infoValue("Genres")
-            ?.split(",")
-            ?.map { it.cleanText() }
-            ?.filter { it.isNotBlank() }
-            ?: emptyList()
 
         val isEpisodePost = pageTitle.hasEpisodeNumber() || (playableLinks.isNotEmpty() && seriesTitle != pageTitle)
         if (isEpisodePost && seriesTitle.isNotBlank()) {
@@ -88,20 +82,20 @@ class DramaIndo : MainAPI() {
                 add(EpisodeSeed(pageTitle, url, poster, pageTitle.episodeNumber()))
                 if (!seriesUrl.isNullOrBlank() && seriesUrl != url) {
                     runCatching {
-                        addAll(app.get(seriesUrl, referer = url).document.parseEpisodeSeeds())
+                        addAll(app.get(seriesUrl, referer = url).document.parseEpisodeSeeds(seriesTitle))
                     }
                 }
-                addAll(document.parseEpisodeSeeds())
+                addAll(document.parseEpisodeSeeds(seriesTitle))
             }
 
             val episodes = seeds
                 .filter { it.url.isNotBlank() }
                 .distinctBy { it.url }
                 .sortedWith(compareBy<EpisodeSeed> { it.episode ?: Int.MAX_VALUE }.thenBy { it.title })
-                .map { seed -> seed.toEpisode() }
+                .map { it.toEpisode(seriesTitle) }
 
             return newTvSeriesLoadResponse(
-                seriesTitle,
+                seriesTitle.cleanTitle(),
                 seriesUrl ?: url,
                 TvType.AsianDrama,
                 episodes,
@@ -112,7 +106,7 @@ class DramaIndo : MainAPI() {
             }
         }
 
-        val listingEpisodes = document.parseEpisodeSeeds()
+        val listingEpisodes = document.parseEpisodeSeeds(pageTitle)
         if (listingEpisodes.isNotEmpty()) {
             return newTvSeriesLoadResponse(
                 pageTitle,
@@ -121,7 +115,7 @@ class DramaIndo : MainAPI() {
                 listingEpisodes
                     .distinctBy { it.url }
                     .sortedWith(compareBy<EpisodeSeed> { it.episode ?: Int.MAX_VALUE }.thenBy { it.title })
-                    .map { it.toEpisode() },
+                    .map { it.toEpisode(pageTitle) },
             ) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -142,10 +136,13 @@ class DramaIndo : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val document = app.get(data, referer = mainUrl).document
-        val links = document.extractPlayableLinks()
-        var callbackCount = 0
+        val links = if (data.isDramaIndoStreamHost()) {
+            listOf(SourceLink(data, data.streamSourceName(), null))
+        } else {
+            runCatching { app.get(data, referer = mainUrl).document.extractPlayableLinks() }.getOrDefault(emptyList())
+        }
 
+        var callbackCount = 0
         for (source in links) {
             if (source.url.isDramaIndoStreamHost()) {
                 DramaIndoStreamResolver.resolve(source.name, source.url, data) { link ->
@@ -173,8 +170,10 @@ class DramaIndo : MainAPI() {
     }
 
     private fun Document.parseCards(): List<SearchResponse> {
-        val primary = select("article.item, article.item-infinite, article[class*=item]").mapNotNull { it.toSearchResult() }
-        if (primary.isNotEmpty()) return primary.distinctBy { it.url }
+        val cards = select("article.item, article.item-infinite, article[class*=item]")
+            .mapNotNull { it.toSearchResult() }
+            .distinctBy { it.url }
+        if (cards.isNotEmpty()) return cards
 
         return select("article, div[class*=post], div[class*=movie], div[class*=item]")
             .mapNotNull { it.toSearchResult() }
@@ -182,9 +181,9 @@ class DramaIndo : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val anchor = selectFirst("h2.entry-title a[href], h2 a[href], h3 a[href], .entry-title a[href], a[title][href]")
+        val anchor = selectFirst(".entry-title a[href], h1 a[href], h2 a[href], h3 a[href]")
             ?: select("a[href]").firstOrNull { link ->
-                val text = link.text().cleanText()
+                val text = link.text().cleanTitle()
                 text.isNotBlank() && !text.isGenericNavigationText()
             }
             ?: return null
@@ -192,7 +191,7 @@ class DramaIndo : MainAPI() {
         val href = fixUrlNull(anchor.attr("href")) ?: return null
         if (!href.startsWith(mainUrl)) return null
 
-        val title = anchor.attr("title").ifBlank { anchor.text() }.cleanTitle()
+        val title = anchor.text().ifBlank { anchor.attr("title") }.cleanTitle()
         if (title.isBlank() || title.isGenericNavigationText()) return null
 
         val poster = selectFirst("img")?.imageUrl()
@@ -203,25 +202,27 @@ class DramaIndo : MainAPI() {
         }
     }
 
-    private fun Document.parseEpisodeSeeds(): List<EpisodeSeed> {
-        val primary = select("article.item, article.item-infinite, article[class*=item]").mapNotNull { it.toEpisodeSeed() }
-        if (primary.isNotEmpty()) return primary.distinctBy { it.url }
+    private fun Document.parseEpisodeSeeds(seriesTitle: String): List<EpisodeSeed> {
+        val cards = select("article.item, article.item-infinite, article[class*=item]")
+            .mapNotNull { it.toEpisodeSeed(seriesTitle) }
+            .distinctBy { it.url }
+        if (cards.isNotEmpty()) return cards
 
-        return select("h2.entry-title a[href], h2 a[href], h3 a[href], .entry-title a[href]")
+        return select(".entry-title a[href], h1 a[href], h2 a[href], h3 a[href]")
             .mapNotNull { anchor ->
-                val title = anchor.text().cleanTitle()
+                val title = anchor.text().ifBlank { anchor.attr("title") }.cleanTitle()
                 val href = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
                 if (!href.startsWith(mainUrl) || !title.hasEpisodeNumber()) return@mapNotNull null
-                EpisodeSeed(title, href, anchor.parent()?.selectFirst("img")?.imageUrl(), title.episodeNumber())
+                EpisodeSeed(title, href, anchor.closest("article")?.selectFirst("img")?.imageUrl(), title.episodeNumber())
             }
             .distinctBy { it.url }
     }
 
-    private fun Element.toEpisodeSeed(): EpisodeSeed? {
-        val anchor = selectFirst("h2.entry-title a[href], h2 a[href], h3 a[href], .entry-title a[href], a[title][href]")
+    private fun Element.toEpisodeSeed(seriesTitle: String): EpisodeSeed? {
+        val anchor = selectFirst(".entry-title a[href], h1 a[href], h2 a[href], h3 a[href]")
             ?: return null
         val href = fixUrlNull(anchor.attr("href")) ?: return null
-        val title = anchor.attr("title").ifBlank { anchor.text() }.cleanTitle()
+        val title = anchor.text().ifBlank { anchor.attr("title") }.cleanTitle()
         if (!href.startsWith(mainUrl) || !title.hasEpisodeNumber()) return null
 
         return EpisodeSeed(
@@ -235,7 +236,7 @@ class DramaIndo : MainAPI() {
     private fun Document.extractPlayableLinks(): List<SourceLink> {
         val sources = linkedSetOf<SourceLink>()
 
-        select("div.entry-content iframe[src], iframe[src]").forEachIndexed { index, iframe ->
+        select(".entry-content iframe[src], iframe[src]").forEachIndexed { index, iframe ->
             val href = fixUrlNull(iframe.attr("src")) ?: return@forEachIndexed
             if (href.isDramaIndoStreamHost()) {
                 sources.add(
@@ -248,15 +249,16 @@ class DramaIndo : MainAPI() {
             }
         }
 
-        select("a[href]").forEach { anchor ->
+        select(".entry-content a[href], article a[href]").forEach { anchor ->
             val href = fixUrlNull(anchor.attr("href")) ?: return@forEach
             if (!href.isSupportedHost()) return@forEach
 
+            val parentText = anchor.parent()?.text()?.cleanText().orEmpty()
             sources.add(
                 SourceLink(
                     url = href,
                     name = anchor.text().cleanText().ifBlank { href.hostName() },
-                    quality = anchor.parent()?.text()?.qualityFromText() ?: anchor.text().qualityFromText(),
+                    quality = parentText.qualityFromText() ?: anchor.text().qualityFromText(),
                 )
             )
         }
@@ -265,40 +267,55 @@ class DramaIndo : MainAPI() {
     }
 
     private fun Document.infoValue(label: String): String? {
-        val prefix = "$label:"
-        return select("li, p")
-            .firstOrNull { it.text().cleanText().startsWith(prefix, ignoreCase = true) }
+        val regex = Regex("(?i)^${Regex.escape(label)}\\s*:")
+        return select(".entry-content li, .entry-content p, li, p")
+            .firstOrNull { regex.containsMatchIn(it.text().cleanText()) }
             ?.text()
-            ?.substringAfter(":")
-            ?.cleanText()
+            ?.replace(regex, "")
+            ?.cleanTitle()
             ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun Document.genreList(): List<String> {
+        return infoValue("Genres")
+            ?.split(",")
+            ?.map { it.cleanTitle() }
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
     }
 
     private fun Document.posterUrl(): String? {
         return selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }?.let { fixUrlNull(it) }
-            ?: selectFirst("article img[src*='wp-content'], .entry-content img[src*='wp-content'], .post img[src*='wp-content'], img")?.imageUrl()
+            ?: selectFirst(".entry-content img[src*='wp-content'], article img[src*='wp-content'], .post img[src*='wp-content'], img")?.imageUrl()
     }
 
     private fun Document.plotText(): String? {
-        val contentText = selectFirst("div.entry-content.entry-content-single, .entry-content, article")
-            ?.text()
-            ?.cleanText()
-            .orEmpty()
+        select(".entry-content p").forEach { paragraph ->
+            val text = paragraph.text().cleanText()
+            if (text.contains("Sinopsis", ignoreCase = true)) {
+                val sinopsis = text
+                    .replace(Regex("(?i)^\\s*Sinopsis\\s*"), "")
+                    .replace(Regex("(?i)^\\s*Sinopsis\\s*[:：-]?\\s*"), "")
+                    .cleanText()
+                if (sinopsis.length > 40 && !sinopsis.isDirtyPlot()) return sinopsis
+            }
+        }
 
-        return contentText
-            .substringAfter("Sinopsis", contentText)
-            .substringBefore("Details", contentText)
-            .substringBefore("Download", contentText)
+        val clone = selectFirst(".entry-content.entry-content-single, .entry-content")?.clone() ?: return null
+        clone.select("iframe, script, style, ul, table, h1, h2, center, .sharedaddy, .fb-comments, .gmr-rating").forEach { it.remove() }
+        val text = clone.text()
+            .substringAfter("Sinopsis", "")
+            .substringBefore("Details")
+            .substringBefore("Download")
             .cleanText()
-            .takeIf { it.length > 40 }
-            ?: select("p").firstOrNull { it.text().cleanText().length > 80 }?.text()?.cleanText()
+        return text.takeIf { it.length > 40 && !it.isDirtyPlot() }
     }
 
     private fun Document.findSeriesTitle(currentUrl: String): String? {
-        return select("article.hentry a[href], div.entry-content a[href], a[href]")
+        return select(".gmr-movie-on a[href], article.hentry a[href], .entry-content a[href]")
             .firstOrNull { link ->
                 val href = fixUrlNull(link.attr("href")) ?: return@firstOrNull false
-                val text = link.text().cleanText()
+                val text = link.text().cleanTitle()
                 href.startsWith(mainUrl) &&
                     href != currentUrl &&
                     !href.isEpisodePermalink() &&
@@ -311,10 +328,10 @@ class DramaIndo : MainAPI() {
     }
 
     private fun Document.findSeriesUrl(currentUrl: String, seriesTitle: String): String? {
-        return select("a[href]")
+        return select(".gmr-movie-on a[href], .entry-content a[href], a[href]")
             .mapNotNull { link ->
                 val href = fixUrlNull(link.attr("href")) ?: return@mapNotNull null
-                val text = link.text().cleanText()
+                val text = link.text().cleanTitle()
                 if (!href.startsWith(mainUrl) || href == currentUrl || href.isEpisodePermalink()) return@mapNotNull null
                 if (text.equals(seriesTitle, ignoreCase = true)) href else null
             }
@@ -339,9 +356,10 @@ class DramaIndo : MainAPI() {
         return fixUrlNull(image)
     }
 
-    private fun EpisodeSeed.toEpisode(): Episode {
+    private fun EpisodeSeed.toEpisode(seriesTitle: String): Episode {
+        val displayName = title.cleanEpisodeDisplayName(seriesTitle, episode)
         return newEpisode(url) {
-            this.name = title
+            this.name = displayName
             this.episode = episode
             this.posterUrl = poster
         }
@@ -355,13 +373,27 @@ class DramaIndo : MainAPI() {
 
     private fun String.cleanTitle(): String {
         return cleanText()
-            .removePrefix("Watch ")
+            .replace(Regex("(?i)^Permalink\\s+to:\\s*"), "")
+            .replace(Regex("(?i)^Watch\\s+"), "")
+            .replace(Regex("(?i)\\s+Sub\\s+Indo\\s*$"), "")
             .cleanText()
+    }
+
+    private fun String.cleanEpisodeDisplayName(seriesTitle: String, episode: Int?): String {
+        val cleanSeries = seriesTitle.cleanTitle()
+        val clean = cleanTitle()
+            .replace(Regex("(?i)^${Regex.escape(cleanSeries)}\\s*"), "")
+            .cleanTitle()
+        return when {
+            episode != null && clean.equals("Episode $episode", ignoreCase = true) -> "Episode $episode"
+            episode != null && clean.isBlank() -> "Episode $episode"
+            else -> clean.ifBlank { episode?.let { "Episode $it" } ?: this.cleanTitle() }
+        }
     }
 
     private fun String.removeEpisodeSuffix(): String {
         return replace(Regex("(?i)\\s+Episode\\s+\\d+(?:\\s*-\\s*\\d+)?(?:\\s*\\[END])?.*$"), "")
-            .cleanText()
+            .cleanTitle()
     }
 
     private fun String.hasEpisodeNumber(): Boolean {
@@ -378,6 +410,11 @@ class DramaIndo : MainAPI() {
 
     private fun String.isEpisodePermalink(): Boolean {
         return Regex("/20\\d{2}/").containsMatchIn(this) || Regex("(?i)episode-?\\d+").containsMatchIn(this)
+    }
+
+    private fun String.isDirtyPlot(): Boolean {
+        val lower = lowercase()
+        return lower.startsWith("sharer tweet") || lower.contains("no votes nonton drama")
     }
 
     private fun String.isGenericNavigationText(): Boolean {

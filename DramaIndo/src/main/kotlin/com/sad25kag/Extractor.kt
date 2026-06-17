@@ -1,5 +1,6 @@
 package com.sad25kag
 
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -56,6 +57,7 @@ open class DramaIndoEncryptedStream(
 object DramaIndoStreamResolver {
     private const val AES_KEY = "kiemtienmua911ca"
     private const val AES_IV = "1234567890oiuytr"
+    private const val DEFAULT_REFERER_HOST = "dramaindo.my"
 
     suspend fun resolve(
         extractorName: String,
@@ -65,18 +67,25 @@ object DramaIndoStreamResolver {
     ): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host ?: return false
-        val videoId = uri.fragment
-            ?.substringBefore("&")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: return false
-
         val baseUrl = "${uri.scheme ?: "https"}://$host"
         val playerReferer = "$baseUrl/"
+        val videoId = extractVideoId(uri, url) ?: return false
         val refererHost = runCatching { URI(referer).host?.removePrefix("www.") }
             .getOrNull()
             .takeUnless { it.isNullOrBlank() }
-            ?: "dramaindo.my"
+            ?: DEFAULT_REFERER_HOST
+
+        // HAR shows browser opens the player origin first, then calls /api/v1/video as same-origin XHR.
+        runCatching {
+            app.get(
+                playerReferer,
+                referer = referer,
+                headers = mapOf(
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer" to referer,
+                ),
+            )
+        }
 
         val apiUrl = "$baseUrl/api/v1/video?id=$videoId&w=421&h=935&r=$refererHost"
         val encrypted = runCatching {
@@ -85,54 +94,97 @@ object DramaIndoStreamResolver {
                 referer = playerReferer,
                 headers = mapOf(
                     "Accept" to "*/*",
-                    "Origin" to baseUrl,
                     "Referer" to playerReferer,
                 ),
             ).text
         }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: return false
 
         val decrypted = decryptHex(encrypted) ?: return false
-        val streamUrl = parseVideoSource(decrypted) ?: return false
+        val json = runCatching { JsonParser.parseString(decrypted).asJsonObject }.getOrNull() ?: return false
+        val stream = json.pickStreamUrl() ?: return false
         val headers = mapOf(
             "Referer" to playerReferer,
             "Origin" to baseUrl,
         )
 
-        val generated = runCatching {
+        var emitted = false
+        runCatching {
             generateM3u8(
                 source = extractorName,
-                streamUrl = streamUrl,
+                streamUrl = stream.url,
                 referer = playerReferer,
                 headers = headers,
             )
-        }.getOrDefault(emptyList())
-
-        if (generated.isNotEmpty()) {
-            generated.forEach(callback)
-            return true
+        }.getOrDefault(emptyList()).forEach { link ->
+            callback(link)
+            emitted = true
         }
 
-        callback(
-            newExtractorLink(extractorName, "$extractorName HLS", streamUrl, ExtractorLinkType.M3U8) {
-                this.referer = playerReferer
-                this.quality = Qualities.Unknown.value
-                this.headers = headers
-            }
-        )
-        return true
+        if (!emitted) {
+            callback(
+                newExtractorLink(extractorName, stream.name, stream.url, ExtractorLinkType.M3U8) {
+                    this.referer = playerReferer
+                    this.quality = stream.quality ?: Qualities.Unknown.value
+                    this.headers = headers
+                }
+            )
+            emitted = true
+        }
+
+        return emitted
     }
 
-    private fun parseVideoSource(json: String): String? {
-        val obj = runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull() ?: return null
-        return listOf("source", "cf")
-            .mapNotNull { key ->
-                runCatching { obj.get(key)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
+    private fun extractVideoId(uri: URI, rawUrl: String): String? {
+        return uri.fragment
+            ?.substringBefore("?")
+            ?.substringBefore("&")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: Regex("(?i)[#/]([a-z0-9]{5,})(?:[/?&]|$)")
+                .find(rawUrl)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun JsonObject.pickStreamUrl(): StreamCandidate? {
+        // HAR playback requests prefer the direct source master.m3u8 when available.
+        // cf-master.txt is retained as fallback because it is also a HLS playlist in HAR.
+        val orderedKeys = listOf("source", "cf")
+        orderedKeys.forEach { key ->
+            val value = runCatching { get(key)?.takeIf { it.isJsonPrimitive }?.asString }.getOrNull()
+                ?.replace("\\/", "/")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: return@forEach
+            if (value.isHlsLike()) {
+                return StreamCandidate(
+                    name = if (key.equals("cf", ignoreCase = true)) "${this.titleText()} Cloudflare HLS" else "${this.titleText()} HLS",
+                    url = value,
+                    quality = value.qualityFromText(),
+                )
             }
-            .firstOrNull { source ->
-                source.contains(".m3u8", ignoreCase = true) ||
-                    source.contains("master", ignoreCase = true) ||
-                    source.contains("cf-master", ignoreCase = true)
-            }
+        }
+        return null
+    }
+
+    private fun JsonObject.titleText(): String {
+        return runCatching { get("title")?.takeIf { it.isJsonPrimitive }?.asString }
+            .getOrNull()
+            ?.substringBeforeLast(".")
+            ?.replace('.', ' ')
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: "DramaIndo"
+    }
+
+    private fun String.isHlsLike(): Boolean {
+        val lower = lowercase()
+        return lower.contains(".m3u8") || lower.contains("master") || lower.contains("cf-master") || lower.endsWith(".txt")
+    }
+
+    private fun String.qualityFromText(): Int? {
+        return Regex("(?i)(2160|1080|720|480|360)p").find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun decryptHex(hex: String): String? {
@@ -152,4 +204,10 @@ object DramaIndoStreamResolver {
             cleanHex.substring(index * 2, index * 2 + 2).toInt(16).toByte()
         }
     }
+
+    private data class StreamCandidate(
+        val name: String,
+        val url: String,
+        val quality: Int?,
+    )
 }
