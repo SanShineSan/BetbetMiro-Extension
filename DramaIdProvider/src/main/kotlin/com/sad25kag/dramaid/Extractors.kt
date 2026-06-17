@@ -10,8 +10,8 @@ import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.jsoup.Jsoup
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import java.net.URI
 import java.net.URLDecoder
 import java.util.Base64
