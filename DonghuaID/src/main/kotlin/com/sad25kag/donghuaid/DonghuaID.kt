@@ -1,7 +1,23 @@
 package com.sad25kag.donghuaid
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.ShowStatus
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newAnimeSearchResponse
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newEpisode
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -32,6 +48,7 @@ class DonghuaID : MainAPI() {
         "$mainUrl/anime/?status=ongoing&type=&sub=&order=&page={page}" to "Ongoing",
         "$mainUrl/anime/?status=completed&type=&sub=&order=&page={page}" to "Completed",
     )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = buildPagedUrl(request.data, page)
         val document = app.get(url, headers = siteHeaders, referer = "$mainUrl/").document
@@ -40,7 +57,6 @@ class DonghuaID : MainAPI() {
         val hasNext = document.selectFirst(
             "a.next[href], a.next.page-numbers[href], link[rel=next], .hpage a[href*='page=${page + 1}'], a[href*='/page/${page + 1}/'], a[href*='page=${page + 1}']"
         ) != null
-
         return newHomePageResponse(request.name, results, hasNext)
     }
 
@@ -55,7 +71,6 @@ class DonghuaID : MainAPI() {
             "$mainUrl/anime/?status=&type=&sub=&order=&keyword=$encoded",
             "$mainUrl/anime/?s=$encoded",
         )
-
         return routes.flatMap { route ->
             runCatching {
                 parseDonghuaCards(app.get(route, headers = siteHeaders, referer = "$mainUrl/").document, includeSidebar = false)
@@ -91,6 +106,7 @@ class DonghuaID : MainAPI() {
         val year = Regex("""(?i)(?:Released|Rilis|Aired|Year)\s*:?\s*([12][0-9]{3})""").find(infoText)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val status = detectStatus(infoText)
         val episodes = parseEpisodes(document, url).distinctBy { it.data.normalizedKey() }
+
         val type = when {
             episodes.size > 1 -> TvType.Anime
             infoText.contains("Movie", true) || tags.any { it.equals("Movie", true) } || url.contains("movie", true) -> TvType.AnimeMovie
@@ -112,8 +128,9 @@ class DonghuaID : MainAPI() {
                 this.recommendations = recommendations
             }
         } else {
-            val data = episodes.firstOrNull()?.data ?: url
-            newMovieLoadResponse(title, url, type, data) {
+            // Phisher-style: movie/single item also uses the first watch/episode link when available.
+            val watchLink = episodes.firstOrNull()?.data ?: url
+            newMovieLoadResponse(title, url, type, watchLink) {
                 this.posterUrl = poster
                 this.plot = plot
                 this.year = year
@@ -137,53 +154,69 @@ class DonghuaID : MainAPI() {
             }
         }
 
-        suspend fun emitDirect(rawUrl: String, label: String?, referer: String): Boolean {
-            val finalUrl = rawUrl.normalizePlayerUrl(referer)?.takeIf { it.isDirectMediaLike() } ?: return false
-            if (!emitted.add(finalUrl.substringBefore("#"))) return true
-            val linkName = listOfNotNull(name, label?.cleanText()?.takeIf { it.isNotBlank() }).joinToString(" - ")
-            callback.invoke(
-                newExtractorLink(linkName, linkName, finalUrl, inferType(finalUrl)) {
-                    this.referer = referer
-                    this.quality = getQualityFromName(label ?: finalUrl)
-                    this.headers = siteHeaders + mapOf(
-                        "Referer" to referer,
-                        "Origin" to originOf(referer),
-                        "Range" to "bytes=0-",
-                    )
-                }
-            )
-            return true
-        }
+        suspend fun runSourceFlow(watchUrl: String): Boolean {
+            val document = app.get(watchUrl, headers = siteHeaders, referer = "$mainUrl/").document
+            val serverOptions = document.select(".mobius option[value], .mirror option[value], .servers option[value], select option[value]")
+                .filter { option -> option.attr("value").trim().isNotBlank() }
 
-        suspend fun resolvePage(pageUrl: String, allowDetailToEpisode: Boolean): Boolean {
-            val document = app.get(pageUrl, headers = siteHeaders, referer = "$mainUrl/").document
-            val candidates = collectSourcePlayerCandidates(document, pageUrl)
-            for (candidate in candidates) {
-                val playerUrl = candidate.url.normalizePlayerUrl(candidate.referer) ?: continue
-                val before = emitted.size
-                if (playerUrl.isDirectMediaLike()) {
-                    emitDirect(playerUrl, candidate.label, candidate.referer)
-                } else {
-                    runCatching { loadExtractor(playerUrl, candidate.referer, subtitleCallback) { link -> countedCallback(link) } }
-                }
-                if (emitted.size > before) continue
-            }
-
-            if (emitted.isNotEmpty()) return true
-
-            // Some CloudStream tests may pass the search/detail URL into loadLinks().
-            // Keep the real source flow by resolving that detail page to the first episode/watch URL,
-            // then process that watch page normally: option[value] -> decode -> iframe -> loadExtractor.
-            if (allowDetailToEpisode) {
-                val watchLink = firstEpisodeWatchLink(document, pageUrl)
-                if (!watchLink.isNullOrBlank() && watchLink.normalizedKey() != pageUrl.normalizedKey()) {
-                    return resolvePage(watchLink, false)
+            for (server in serverOptions) {
+                val value = server.attr("value").trim()
+                val iframeUrls = decodeServerOption(value, watchUrl)
+                for (iframeUrl in iframeUrls) {
+                    val before = emitted.size
+                    runCatching {
+                        loadExtractor(iframeUrl, watchUrl, subtitleCallback) { link -> countedCallback(link) }
+                    }
+                    if (emitted.size > before) {
+                        // Keep trying the remaining mirrors only when needed by app/user; one emitted link already proves this mirror works.
+                        continue
+                    }
                 }
             }
             return emitted.isNotEmpty()
         }
 
-        return resolvePage(data, true)
+        val inputDocument = app.get(data, headers = siteHeaders, referer = "$mainUrl/").document
+
+        // If the test/app accidentally sends a detail URL into loadLinks, keep the source flow:
+        // detail -> first episode/watch link -> watch page -> .mobius option -> decode -> iframe -> loadExtractor.
+        if (data.isDetailUrl()) {
+            val watchLink = firstEpisodeWatchLink(inputDocument, data) ?: return false
+            return runSourceFlow(watchLink)
+        }
+
+        if (runSourceFlow(data)) return true
+
+        // Final source-flow guard for unusual pages: only resolve to a watch link; do not scan/guess hosts from the detail page.
+        val watchLink = firstEpisodeWatchLink(inputDocument, data)
+        return if (!watchLink.isNullOrBlank() && watchLink.normalizedKey() != data.normalizedKey()) {
+            runSourceFlow(watchLink)
+        } else {
+            false
+        }
+    }
+
+    private fun decodeServerOption(value: String, referer: String): List<String> {
+        val decodedValues = linkedSetOf<String>()
+        val clean = value.cleanOptionValue()
+        decodedValues.add(clean)
+        clean.percentDecodePreservePlus().takeIf { it != clean }?.let { decodedValues.add(it.cleanOptionValue()) }
+
+        decodedValues.toList().forEach { candidate ->
+            decodeBase64(candidate)?.let { decodedValues.add(it.cleanDecodedHtml()) }
+            decodeBase64UrlSafe(candidate)?.let { decodedValues.add(it.cleanDecodedHtml()) }
+        }
+
+        val iframeUrls = linkedSetOf<String>()
+        decodedValues.forEach { decoded ->
+            decoded.normalizePlayerUrl(referer)?.takeIf { it.isPlayerUrl() }?.let { iframeUrls.add(it) }
+            val parsed = Jsoup.parse(decoded)
+            parsed.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
+                val src = node.attr("src").ifBlank { node.attr("content") }
+                src.normalizePlayerUrl(referer)?.takeIf { it.isPlayerUrl() }?.let { iframeUrls.add(it) }
+            }
+        }
+        return iframeUrls.toList()
     }
 
     private fun parseDonghuaCards(document: Document, includeSidebar: Boolean = false): List<SearchResponse> {
@@ -246,27 +279,15 @@ class DonghuaID : MainAPI() {
         }
     }
 
-    private fun parseEpisodes(document: Document, pageUrl: String): List<Episode> {
-        val episodeScopedAnchors = document.select(
-            ".episodelist a[href], .eplister a[href], .bixbox.bxcl a[href], #episodes a[href], #episode a[href], .episodes a[href], .episode-list a[href], .epcheck a[href], .episodios a[href], .listing a[href]"
+    private fun parseEpisodes(document: Document, pageUrl: String): List<com.lagradost.cloudstream3.Episode> {
+        val anchors = document.select(
+            "div.eplister > ul > li a[href], .eplister a[href], .episodelist a[href], .bixbox.bxcl a[href], #episodes a[href], #episode a[href], .episodes a[href], .episode-list a[href], .epcheck a[href], .episodios a[href], .listing a[href]"
         )
-        val anchors = if (episodeScopedAnchors.isNotEmpty()) {
-            episodeScopedAnchors.map { EpisodeAnchor(it, true) }
-        } else {
-            val currentSlug = pageUrl.slugSeriesKey()
-            document.select("article.post a[href], .postbody a[href], .entry-content a[href]")
-                .filter { anchor ->
-                    val href = anchor.attr("href").absoluteUrl(pageUrl) ?: return@filter false
-                    href.slugSeriesKey() == currentSlug || href.isWatchUrlCandidate(pageUrl, false)
-                }
-                .map { EpisodeAnchor(it, false) }
-        }
 
-        return anchors.mapNotNull { candidate ->
-            val anchor = candidate.anchor
+        return anchors.mapNotNull { anchor ->
             val href = anchor.attr("href").absoluteUrl(pageUrl) ?: return@mapNotNull null
             if (!href.startsWith(mainUrl, true)) return@mapNotNull null
-            if (!href.isWatchUrlCandidate(pageUrl, candidate.fromEpisodeContainer)) return@mapNotNull null
+            if (!href.isWatchUrlCandidate(pageUrl, true)) return@mapNotNull null
             val rawTitle = anchor.selectFirst(".epl-title, .playinfo h3, h3, .title")?.text()?.cleanText()
                 ?: anchor.ownText().cleanText().takeIf { it.length > 2 }
                 ?: anchor.text().cleanText().takeIf { it.length > 2 && !it.equals("Prev", true) && !it.equals("Next", true) }
@@ -288,94 +309,7 @@ class DonghuaID : MainAPI() {
         return parseEpisodes(document, pageUrl)
             .map { it.data }
             .firstOrNull { it.normalizedKey() != pageUrl.normalizedKey() }
-    }
-
-    private data class EpisodeAnchor(
-        val anchor: Element,
-        val fromEpisodeContainer: Boolean,
-    )
-
-    private data class PlayerCandidate(
-        val url: String,
-        val label: String? = null,
-        val referer: String,
-    )
-
-    private fun collectSourcePlayerCandidates(document: Document, referer: String): LinkedHashSet<PlayerCandidate> {
-        val candidates = linkedSetOf<PlayerCandidate>()
-
-        fun addPlayer(rawUrl: String?, label: String? = null, candidateReferer: String = referer) {
-            val fixedUrl = rawUrl?.normalizePlayerUrl(candidateReferer) ?: return
-            if (!fixedUrl.isUsablePlayerUrl() && !fixedUrl.isDirectMediaLike()) return
-            candidates.add(PlayerCandidate(fixedUrl, label?.cleanText()?.takeIf { it.isNotBlank() }, candidateReferer))
-        }
-
-        // Source structure: server list/player option is the primary source of truth.
-        document.select(".mobius option[value], .mirror option[value], select option[value]").forEach { option ->
-            val value = option.attr("value").trim()
-            if (value.isBlank()) return@forEach
-            val label = option.text().cleanText().takeIf { it.isNotBlank() && !it.equals("Select Video Server", true) }
-            decodeServerOption(value, referer).forEach { playerUrl -> addPlayer(playerUrl, label, referer) }
-        }
-
-        // Fallback only when source exposes iframe/player directly on the same watch page.
-        if (candidates.isEmpty()) {
-            document.select("#embed_holder, #pembed, .player-embed, .mobius, .mirror, .server, .servers, .player, body")
-                .select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]")
-                .forEach { node ->
-                    val src = node.attr("src").ifBlank { node.attr("content") }
-                    addPlayer(src, node.attr("title").ifBlank { hostLabel(src) }, referer)
-                }
-        }
-
-        return candidates
-    }
-
-    private fun decodeServerOption(value: String, referer: String): List<String> {
-        val results = linkedSetOf<String>()
-        val rawVariants = linkedSetOf<String>()
-        val clean = value.cleanOptionValue()
-        rawVariants.add(clean)
-        clean.percentDecodePreservePlus().takeIf { it != clean }?.let { rawVariants.add(it.cleanOptionValue()) }
-
-        rawVariants.toList().forEach { variant ->
-            decodeBase64(variant)?.let { rawVariants.add(it.cleanDecodedHtml()) }
-            decodeBase64UrlSafe(variant)?.let { rawVariants.add(it.cleanDecodedHtml()) }
-        }
-
-        rawVariants.forEach { decoded ->
-            decoded.normalizePlayerUrl(referer)?.let { fixed ->
-                if (fixed.isUsablePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
-            }
-
-            val parsed = Jsoup.parse(decoded)
-            parsed.select("iframe[src], embed[src], video[src], source[src], meta[itemprop=embedUrl][content]").forEach { node ->
-                val src = node.attr("src").ifBlank { node.attr("content") }
-                src.normalizePlayerUrl(referer)?.let { fixed ->
-                    if (fixed.isUsablePlayerUrl() || fixed.isDirectMediaLike()) results.add(fixed)
-                }
-            }
-        }
-        return results.toList()
-    }
-
-    private fun String.cleanOptionValue(): String = trim()
-        .replace("\\/", "/")
-        .replace("\\u002F", "/")
-        .replace("\\u0026", "&")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#039;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-
-    private fun String.cleanDecodedHtml(): String = cleanOptionValue()
-        .replace("\\&quot;", "\"")
-        .replace("\\\\", "\\")
-
-    private fun String.percentDecodePreservePlus(): String {
-        val safe = replace("+", "%2B")
-        return runCatching { URLDecoder.decode(safe, "UTF-8") }.getOrDefault(this)
+            ?: document.selectFirst(".mobius option[value], .mirror option[value], select option[value]")?.let { pageUrl }
     }
 
     private fun buildPagedUrl(rawUrl: String, page: Int): String {
@@ -439,12 +373,23 @@ class DonghuaID : MainAPI() {
         .replace(Regex("""\s+"""), " ")
         .trim()
 
-    private fun String.decodeEmbedText(): String {
-        var value = cleanOptionValue()
-        repeat(2) {
-            value = value.percentDecodePreservePlus()
-        }
-        return value.trim()
+    private fun String.cleanOptionValue(): String = trim()
+        .replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u0026", "&")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+
+    private fun String.cleanDecodedHtml(): String = cleanOptionValue()
+        .replace("\\&quot;", "\"")
+        .replace("\\\\", "\\")
+
+    private fun String.percentDecodePreservePlus(): String {
+        val safe = replace("+", "%2B")
+        return runCatching { URLDecoder.decode(safe, "UTF-8") }.getOrDefault(this)
     }
 
     private fun decodeBase64(value: String): String? {
@@ -488,21 +433,13 @@ class DonghuaID : MainAPI() {
 
     private fun String.slugHint(): String = lowercase(Locale.ROOT).replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
 
-    private fun String.slugSeriesKey(): String {
-        val slug = substringBefore("?").trimEnd('/').substringAfterLast('/')
-        return slug
-            .replace(Regex("""(?i)-episode-?\d+.*$"""), "")
-            .replace(Regex("""(?i)-eps?-?\d+.*$"""), "")
-            .trim('-')
-    }
-
     private fun String.isDirectMediaLike(): Boolean {
         val value = lowercase(Locale.ROOT).substringBefore("#")
         return value.contains(".m3u8") || value.contains(".mp4") || value.contains(".m4s") || value.contains(".webm") || value.contains(".mkv") || value.contains("videoplayback") || value.contains("/stream/")
     }
 
-    private fun String.isUsablePlayerUrl(): Boolean {
-        val value = decodeEmbedText().lowercase(Locale.ROOT).substringBefore("#")
+    private fun String.isPlayerUrl(): Boolean {
+        val value = lowercase(Locale.ROOT).substringBefore("#")
         if (!value.startsWith("http://") && !value.startsWith("https://")) return false
         if (isDirectMediaLike()) return true
         if (value.contains("google-analytics") || value.contains("googletagmanager") || value.contains("doubleclick")) return false
@@ -511,17 +448,25 @@ class DonghuaID : MainAPI() {
         return assetExtensions.none { path.endsWith(it) }
     }
 
+    private fun String.isDetailUrl(): Boolean {
+        val value = substringBefore("#").substringBefore("?").trimEnd('/').lowercase(Locale.ROOT)
+        val root = mainUrl.trimEnd('/').lowercase(Locale.ROOT)
+        if (!value.startsWith(root)) return false
+        val path = value.removePrefix(root).trim('/')
+        return path.startsWith("anime/")
+    }
 
     private fun String.isWatchUrlCandidate(pageUrl: String, fromEpisodeContainer: Boolean): Boolean {
         val value = substringBefore("#").substringBefore("?").trimEnd('/').lowercase(Locale.ROOT)
         val root = mainUrl.trimEnd('/').lowercase(Locale.ROOT)
-        if (value == pageUrl.normalizedKey() || !value.startsWith(root)) return false
+        if (!value.startsWith(root)) return false
         val path = value.removePrefix(root).trim('/')
         if (path.isBlank()) return false
         if (path.startsWith("anime/") || path.startsWith("genre/") || path.startsWith("genres/") || path.startsWith("tag/") || path.startsWith("category/") || path.startsWith("wp-")) return false
         if (path.contains("/page/")) return false
         if (path.contains("episode") || path.contains("-eps-") || path.contains("-ep-")) return true
-        return fromEpisodeContainer && !path.contains("/")
+        // Movie pages on DonghuaID often use the same page as the watch page and appear inside eplister.
+        return fromEpisodeContainer && !path.contains("/") && value != pageUrl.normalizedKey()
     }
 
     private fun String.isDonghuaContentUrl(): Boolean {
@@ -541,17 +486,4 @@ class DonghuaID : MainAPI() {
         if (contains("blank", true) || contains("placeholder", true) || contains("spacer", true)) return false
         return contains(".jpg", true) || contains(".jpeg", true) || contains(".png", true) || contains(".webp", true) || contains("/wp-content/uploads/", true)
     }
-
-    private fun inferType(url: String): ExtractorLinkType = when {
-        url.contains(".m3u8", true) -> ExtractorLinkType.M3U8
-        url.contains(".mpd", true) -> ExtractorLinkType.DASH
-        else -> ExtractorLinkType.VIDEO
-    }
-
-    private fun originOf(url: String): String = runCatching {
-        val uri = URI(url)
-        "${uri.scheme}://${uri.host}"
-    }.getOrDefault(mainUrl)
-
-    private fun hostLabel(url: String): String? = runCatching { URI(url).host?.removePrefix("www.") }.getOrNull()
 }
