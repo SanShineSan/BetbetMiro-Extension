@@ -192,7 +192,7 @@ open class GdrivePlayerTo : ExtractorApi() {
         val seenPages = linkedSetOf<String>()
         val queue = mutableListOf(firstUrl to firstReferer)
 
-        fun emitPlaylist(rawPlaylistUrl: String, playerUrl: String): Boolean {
+        suspend fun emitPlaylist(rawPlaylistUrl: String, playerUrl: String): Boolean {
             val playlistUrl = normalizePlayerUrl(rawPlaylistUrl, playerUrl) ?: return false
             if (!isHlsUrl(playlistUrl)) return false
             if (!emitted.add(playlistUrl.substringBefore("#"))) return true
