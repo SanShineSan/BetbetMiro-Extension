@@ -13,6 +13,7 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.filmlokal.FilmLokalUtils.absoluteUrl
 import com.filmlokal.FilmLokalUtils.cleanText
 import com.filmlokal.FilmLokalUtils.durationMinutes
+import com.filmlokal.FilmLokalUtils.isAdultCandidate
 import com.filmlokal.FilmLokalUtils.isValidPoster
 import com.filmlokal.FilmLokalUtils.isVideoUrl
 import com.filmlokal.FilmLokalUtils.typeFromUrlOrTitle
@@ -67,6 +68,7 @@ object FilmLokalParser {
 
         val title = cleanTitle(text).ifBlank { return null }
         if (title.length < 2 || isBadTitle(title)) return null
+        if (isAdultCandidate(href, title, anchor.text())) return null
 
         val poster = extractPoster(api.mainUrl, anchor.selectFirst(IMAGE_SELECTOR), anchor)
         val type = typeFromUrlOrTitle(href, title)
@@ -103,6 +105,7 @@ object FilmLokalParser {
         ).ifBlank { return null }
 
         if (title.length < 2 || isBadTitle(title)) return null
+        if (isAdultCandidate(href, title, element.text())) return null
 
         val poster = extractPoster(api.mainUrl, image, link)
             ?: extractPoster(api.mainUrl, image, element)
@@ -126,6 +129,8 @@ object FilmLokalParser {
         ).ifBlank { return null }
 
         val contentRoot = document.selectFirst("article, .entry-content, .single, .post, main") ?: document
+        if (isAdultCandidate(url, title, adultContext(contentRoot))) return null
+
         val poster = extractDetailPoster(api.mainUrl, title, document)
             ?: extractPoster(
                 api.mainUrl,
@@ -193,6 +198,7 @@ object FilmLokalParser {
             val text = cleanTitle(anchor.text())
                 .ifBlank { cleanTitle(anchor.attr("title")) }
                 .ifBlank { "Episode" }
+            if (isAdultCandidate(href, text)) return@mapNotNull null
 
             api.newEpisode(href) {
                 name = text
@@ -200,6 +206,11 @@ object FilmLokalParser {
         }
 
         return episodes
+    }
+
+    private fun adultContext(root: Element): String {
+        return root.select(FilmLokalUtils.adultLinkSelector)
+            .joinToString(" ") { "${it.attr("href")} ${it.text()}" }
     }
 
     private fun extractDetailPoster(baseUrl: String, title: String, document: Document): String? {

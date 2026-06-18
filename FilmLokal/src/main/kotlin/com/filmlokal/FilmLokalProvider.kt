@@ -22,7 +22,7 @@ class FilmLokalProvider : MainAPI() {
     override var lang = "id"
     override val hasMainPage = true
     override val hasQuickSearch = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.NSFW)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
     override val mainPage = mainPageOf(*FilmLokalSeeds.mainPageRows())
 

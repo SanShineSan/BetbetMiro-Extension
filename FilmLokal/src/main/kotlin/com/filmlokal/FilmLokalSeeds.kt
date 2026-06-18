@@ -25,15 +25,7 @@ object FilmLokalSeeds {
         "/country/japan/page/%d/" to "Japan",
         "/country/korea/page/%d/" to "Korea",
         "/country/china/page/%d/" to "China",
-        "/21-mph/page/%d/" to "21 Mph",
         "/sub-indo/page/%d/" to "Subtitle Indonesia",
-        "/sub-english/page/%d/" to "Subtitle English",
-        "/film-semi/page/%d/" to "Film Semi",
-        "/censored/page/%d/" to "Jeruk Censored",
-        "/uncensored/page/%d/" to "Jeruk Uncensored",
-        "/live-streaming-igo/page/%d/" to "Jeruk Live Igo",
-        "/jeruk-barat/page/%d/" to "Jeruk Barat",
-        "/asian-amateur/page/%d/" to "Asian Amateur",
-        "/jav/page/%d/" to "ALL JAV"
+        "/sub-english/page/%d/" to "Subtitle English"
     )
 }
