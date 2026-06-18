@@ -316,10 +316,12 @@ class Alqanime : MainAPI() {
 
             if (resolvedUrl.contains("mediafire.com", true)) {
                 if (tryMediafire(resolvedUrl, qualityInt, ::markEmit)) continue
+                continue
             }
 
             if (resolvedUrl.contains("acefile.co", true)) {
                 if (tryAcefile(resolvedUrl, qualityInt, ::markEmit, subtitleCallback)) continue
+                continue
             }
 
             if (resolvedUrl.contains("resharer.org", true)) {
@@ -408,70 +410,102 @@ class Alqanime : MainAPI() {
         callback: (ExtractorLink) -> Unit,
         subtitleCallback: (SubtitleFile) -> Unit
     ): Boolean {
-        val pages = linkedSetOf<String>()
+        val cleanUrl = url.cleanEscaped()
+        val id = Regex("""acefile\.co/(?:f|file|player)/([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+            .find(cleanUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""[?&](?:id|file)=([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE)
+                .find(cleanUrl)?.groupValues?.getOrNull(1)
+
+        val visited = linkedSetOf<String>()
         val pageQueue = mutableListOf<String>()
-        fun addPage(page: String) {
-            if (pages.add(page)) pageQueue.add(page)
+
+        fun addPage(page: String, baseUrl: String = cleanUrl) {
+            val normalized = normalizeUrl(page, baseUrl)?.cleanEscaped() ?: return
+            if (normalized.isBlank() || normalized == "#") return
+            if (normalized.isArchiveDownloadUrl()) return
+            if (visited.add(normalized)) pageQueue.add(normalized)
         }
 
-        addPage(url)
-
-        val id = Regex("""acefile\.co/(?:f|player)/(\w+)""", RegexOption.IGNORE_CASE)
-            .find(url)?.groupValues?.getOrNull(1)
+        suspend fun emitAcefileDirect(candidate: String, referer: String): Boolean {
+            val fixed = candidate.cleanEscaped().replace(".txt", ".m3u8")
+            if (!fixed.isPlayableMediaUrl() || fixed.isArchiveDownloadUrl() || fixed.isAcefileLandingPageUrl()) return false
+            val type = if (fixed.contains(".m3u8", true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
+            }
+            callback(newExtractorLink("AceFile", "AceFile", fixed, type) {
+                this.referer = referer
+                this.quality = quality
+                this.headers = commonHeaders + mapOf("Referer" to referer)
+            })
+            return true
+        }
 
         if (id != null) {
-            addPage("https://acefile.co/f/$id")
             addPage("https://acefile.co/player/$id")
+        } else {
+            addPage(cleanUrl)
         }
 
         var emitted = false
         var index = 0
 
-        while (index < pageQueue.size) {
+        while (index < pageQueue.size && index < 4) {
             val pageUrl = pageQueue[index++]
+            val referer = when {
+                pageUrl.contains("/player/", true) && cleanUrl.contains("acefile.co", true) -> cleanUrl
+                else -> "$mainUrl/"
+            }
+
             val response = runCatching {
                 app.get(
                     pageUrl,
-                    headers = commonHeaders + mapOf("Referer" to "$mainUrl/"),
-                    referer = "$mainUrl/",
+                    headers = commonHeaders + mapOf(
+                        "Referer" to referer,
+                        "Origin" to "https://acefile.co"
+                    ),
+                    referer = referer,
                     timeout = 20000L
                 )
             }.getOrNull() ?: continue
 
             val document = response.document
             val html = response.text.cleanEscaped()
-            val referer = pageUrl
 
-            document.select("iframe[src], embed[src]").forEach { iframe ->
-                normalizeUrl(iframe.attr("src"), pageUrl)?.let { addPage(it) }
-            }
-
-            val directLinks = collectPlayableUrls(document, html, pageUrl)
-            for (direct in directLinks) {
-                val type = if (direct.contains(".m3u8", true)) {
-                    ExtractorLinkType.M3U8
-                } else {
-                    ExtractorLinkType.VIDEO
+            collectPlayableUrls(document, html, pageUrl)
+                .filterNot { it.isAcefileLandingPageUrl() }
+                .forEach { direct ->
+                    if (emitAcefileDirect(direct, pageUrl)) emitted = true
                 }
-                callback(newExtractorLink("AceFile", "AceFile", direct, type) {
-                    this.referer = referer
-                    this.quality = quality
-                    this.headers = commonHeaders + mapOf("Referer" to referer)
-                })
-                emitted = true
-            }
 
             if (emitted) return true
 
+            document.select(
+                "iframe[src], embed[src], video[src], video source[src], source[src], " +
+                    "[data-url], [data-href], [data-link], [data-file], [data-source], [data-video], [data-src]"
+            ).forEach { element ->
+                listOf("src", "data-url", "data-href", "data-link", "data-file", "data-source", "data-video", "data-src")
+                    .map { element.attr(it) }
+                    .map { it.cleanEscaped() }
+                    .filter { it.isNotBlank() && !it.isAcefileLandingPageUrl() }
+                    .forEach { addPage(it, pageUrl) }
+            }
+
             runCatching {
-                loadExtractor(pageUrl, "$mainUrl/", subtitleCallback) { link ->
-                    callback(link)
-                    emitted = true
+                loadExtractor(pageUrl, referer, subtitleCallback) { link ->
+                    val linkUrl = link.url.cleanEscaped()
+                    if (linkUrl.isPlayableMediaUrl() && !linkUrl.isAcefileLandingPageUrl() && !linkUrl.isArchiveDownloadUrl()) {
+                        callback(link)
+                        emitted = true
+                    }
                 }
             }
+
+            if (emitted) return true
         }
 
-        return emitted
+        return false
     }
 
     private suspend fun tryReshare(
@@ -1145,6 +1179,14 @@ class Alqanime : MainAPI() {
             lower.contains(".mp4") ||
             lower.contains(".webm") ||
             lower.contains("/api/file/")
+    }
+
+    private fun String.isAcefileLandingPageUrl(): Boolean {
+        val lower = lowercase().substringBefore("?")
+        if (!lower.contains("acefile.co")) return false
+        return lower.contains("/f/") ||
+            lower.contains("/file/") ||
+            lower.contains("/player/")
     }
 
     data class EpisodeLink(
