@@ -4,7 +4,7 @@
 
 ### CloudStream provider repository maintained by @sad25kag
 
-Anime • Donghua • Drama • Movie • Multi-Source • Age-Restricted Providers
+Anime • Donghua • Drama • Movie • Multi-Source Providers
 
 <img src="https://img.shields.io/github/stars/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=yellow" />
 <img src="https://img.shields.io/github/forks/sad25kag/BetbetMiro-Extension?style=for-the-badge&color=blue" />
@@ -54,7 +54,6 @@ Repository ini dapat memuat provider untuk beberapa kategori berikut:
 - Film Indonesia
 - Film Barat dan Asia
 - Multi-source provider
-- Provider terbatas usia sesuai aturan wilayah masing-masing
 
 Ketersediaan kategori mengikuti provider yang sedang aktif dan dapat berubah sewaktu-waktu.
 
@@ -231,18 +230,6 @@ Repository ini tidak menyimpan, meng-host, atau mendistribusikan konten video ap
 Semua konten berasal dari sumber pihak ketiga yang tersedia di internet. Repository ini hanya menyediakan parser dan integrasi provider untuk CloudStream.
 
 Pemilik repository tidak berafiliasi dengan CloudStream maupun sumber pihak ketiga yang digunakan oleh provider.
-
----
-
-## Peringatan Konten Terbatas Usia
-
-Sebagian provider dalam repository ini dapat mengakses sumber yang dibatasi usia atau wilayah.
-
-Dengan menggunakan repository ini, pengguna menyatakan bahwa:
-
-- Telah memenuhi batas usia yang berlaku di wilayah masing-masing.
-- Bertanggung jawab penuh atas penggunaan repository dan provider di dalamnya.
-- Memahami hukum, aturan, dan risiko penggunaan sumber di wilayah masing-masing.
 
 ---
 
