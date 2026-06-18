@@ -46,6 +46,23 @@ internal fun String.urlEncodeSf21(): String = URLEncoder.encode(this.trim(), "UT
 
 internal fun String.urlDecodeSf21(): String = runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
 
+internal fun String.isNsfwContentSf21(): Boolean {
+    val normalized = urlDecodeSf21()
+        .cleanSf21()
+        .lowercase()
+        .replace(Regex("""[+_./-]+"""), " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+
+    if (normalized.isBlank()) return false
+
+    return listOf(
+        Regex("""(^|\s)semi($|\s)"""),
+        Regex("""(^|\s)dewasa($|\s)"""),
+        Regex("""(^|\s)18\s*(?:\+|plus|only|up)($|\s)""")
+    ).any { it.containsMatchIn(normalized) }
+}
+
 internal fun String.isSf21Host(): Boolean {
     val host = runCatching { URI(this).host.orEmpty().lowercase() }.getOrDefault("")
     return host == "surgafilm21.website" || host == "www.surgafilm21.website" || host == "surgafilm21.homes" || host == "www.surgafilm21.homes"
@@ -55,6 +72,7 @@ internal fun String.isCatalogUrlSf21(): Boolean {
     if (!isSf21Host()) return false
     val path = runCatching { URI(this).path.orEmpty().trim('/').lowercase() }.getOrDefault("")
     if (path.isBlank()) return false
+    if (path.isNsfwContentSf21()) return false
 
     val rejectExact = setOf(
         "series", "populer", "popular", "latest", "recommendation", "rekomendasi",
