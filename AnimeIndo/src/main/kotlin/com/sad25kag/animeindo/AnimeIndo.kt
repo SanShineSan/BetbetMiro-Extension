@@ -411,7 +411,15 @@ class AnimeIndo : MainAPI() {
         }.substringBefore("#").trim()
     }
 
+    private fun isBlockedServerUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return listOf(
+            "putarflix"
+        ).any { lower.contains(it) }
+    }
+
     private fun isPlayableServerUrl(url: String): Boolean {
+        if (isBlockedServerUrl(url)) return false
         val lower = url.lowercase()
         if (lower.startsWith(mainUrl.lowercase()) && !listOf(
                 "btube3.php", "yup.php", "yup", "xtwap", "gdplayer", "gdriveplayer",
@@ -458,6 +466,7 @@ class AnimeIndo : MainAPI() {
 
     private fun addServerUrl(serverUrls: MutableList<String>, rawUrl: String?) {
         val url = cleanPlayerUrl(rawUrl) ?: return
+        if (isBlockedServerUrl(url)) return
         if (!isPlayableServerUrl(url)) return
         serverUrls.add(url)
     }
@@ -498,11 +507,18 @@ class AnimeIndo : MainAPI() {
     }
 
     private fun collectServerUrls(document: Document, serverUrls: MutableList<String>) {
-        document.select("#tontonin[src], iframe[src], iframe[data-src], source[src], video[src]").forEach { element ->
+        document.select(
+            "#tontonin[src], iframe#tontonin[src], .player iframe[src], .video iframe[src], " +
+                "source[src], video[src]"
+        ).forEach { element ->
             addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
         }
 
-        document.select("a.server[data-video], [data-video], [data-url], [data-iframe], [data-src], [data-link], [data-href], [data-file], [onclick], a[href], button, option[value]").forEach { element ->
+        document.select(
+            "a.server[data-video], button.server[data-video], [class*=server][data-video], " +
+                "[data-video], [data-url], [data-iframe], [data-src], [data-link], [data-href], " +
+                "[data-file], option[value]"
+        ).forEach { element ->
             addServerUrl(serverUrls, element.attr("data-video"))
             addServerUrl(serverUrls, element.attr("data-url"))
             addServerUrl(serverUrls, element.attr("data-iframe"))
@@ -511,6 +527,14 @@ class AnimeIndo : MainAPI() {
             addServerUrl(serverUrls, element.attr("data-href"))
             addServerUrl(serverUrls, element.attr("data-file"))
             addServerUrl(serverUrls, element.attr("value"))
+        }
+
+        document.select(
+            ".server[onclick], .servers [onclick], .player [onclick], .video [onclick], " +
+                "a.server[href], .server a[href], .servers a[href], div.navi a[href], .navi a[href], " +
+                ".download a[href], .downloads a[href], a[href*='drive.google'], " +
+                "a[href*='gdrive'], a[href*='gdplayer']"
+        ).forEach { element ->
             addServerUrlsFromText(serverUrls, element.attr("onclick"))
 
             val href = element.attr("href")
@@ -533,22 +557,8 @@ class AnimeIndo : MainAPI() {
             }
         }
 
-        document.select("div.navi a[href], .navi a[href], .download a[href], .downloads a[href], a[href*='drive.google'], a[href*='gdrive'], a[href*='gdplayer']").forEach { a ->
-            val href = a.attr("href")
-            if (href.isNotBlank() && !href.contains(mainUrl, true)) {
-                addServerUrl(serverUrls, href)
-            }
-        }
-
-        val html = document.html()
-        addServerUrlsFromText(serverUrls, html)
-        Regex("""(?i)(?:src|file|url|href)\s*[:=]\s*["']([^"']+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"']*)["']""")
-            .findAll(html)
-            .forEach { addServerUrl(serverUrls, it.groupValues[1]) }
-
-        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+(?:m3u8|mp4|embed|player|btube3|b-tube|btube|xtwap|cepat|gdriveplayer|gdplayer|gdrive|drive\.google|mp4upload|yup|dailymotion|ok\.ru)[^"'<>\s]*""")
-            .findAll(html)
-            .forEach { addServerUrl(serverUrls, it.value) }
+        document.select("#tontonin, .server, .servers, .navi, .download, .downloads, .player, .video")
+            .forEach { element -> addServerUrlsFromText(serverUrls, element.outerHtml()) }
     }
 
     private fun resolveXtwapChildUrl(baseUrl: String, childUrl: String): String {
@@ -660,6 +670,8 @@ class AnimeIndo : MainAPI() {
         var found = false
 
         distinctServers.forEach { fullUrl ->
+            if (isBlockedServerUrl(fullUrl)) return@forEach
+
             if (fullUrl.contains("yup.php", true)) {
                 try {
                     val playerDoc = app.get(fullUrl, referer = cleanData).document
