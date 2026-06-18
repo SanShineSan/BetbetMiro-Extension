@@ -8,5 +8,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class AnimeIndoPlugin: Plugin() {
     override fun load(context: Context) {
         registerMainAPI(AnimeIndo())
+        registerExtractorAPI(GdrivePlayerTo())
     }
 }

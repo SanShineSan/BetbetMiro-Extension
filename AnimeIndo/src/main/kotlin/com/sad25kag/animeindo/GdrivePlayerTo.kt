@@ -3,7 +3,7 @@ package com.sad25kag.animeindo
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.extractors.ExtractorApi
+import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -64,8 +64,8 @@ open class GdrivePlayerTo : ExtractorApi() {
             Regex("""(?i)(?:file|url|src)\s*[:=]\s*["']([^"']*hlsplaylist\.php[^"']*)["']""")
         )
 
-        patterns.forEach { pattern ->
-            pattern.findAll(normalized).forEach { match ->
+        for (pattern in patterns) {
+            for (match in pattern.findAll(normalized)) {
                 val raw = match.groups[1]?.value ?: match.value
                 normalizePlayerUrl(raw, baseUrl)?.let { candidates.add(it) }
             }
@@ -78,13 +78,15 @@ open class GdrivePlayerTo : ExtractorApi() {
         val normalized = normalizeEscapedText(text)
         val candidates = linkedSetOf<String>()
 
-        listOf(
+        val patterns = listOf(
             Regex("""(?i)(?:https?:)?//gdriveplayer\.to/subproxy\.php[^"'<>\\\s]+"""),
             Regex("""(?i)/subproxy\.php\?[^"'<>\\\s]+"""),
             Regex("""(?i)(?<![A-Za-z0-9_./-])subproxy\.php\?[^"'<>\\\s]+"""),
             Regex("""(?i)(?:tracks|captions|subtitles|file)\s*[:=]\s*["']([^"']*subproxy\.php[^"']*)["']""")
-        ).forEach { pattern ->
-            pattern.findAll(normalized).forEach { match ->
+        )
+
+        for (pattern in patterns) {
+            for (match in pattern.findAll(normalized)) {
                 val raw = match.groups[1]?.value ?: match.value
                 normalizePlayerUrl(raw, baseUrl)?.let { candidates.add(it) }
             }
@@ -121,7 +123,7 @@ open class GdrivePlayerTo : ExtractorApi() {
         val pageReferer = referer ?: mainUrl
         val emitted = linkedSetOf<String>()
 
-        fun emitPlaylist(rawPlaylistUrl: String): Boolean {
+        suspend fun emitPlaylist(rawPlaylistUrl: String): Boolean {
             val playlistUrl = normalizePlayerUrl(rawPlaylistUrl, playerUrl) ?: return false
             if (!playlistUrl.contains("hlsplaylist.php", true) && !playlistUrl.contains(".m3u8", true)) return false
             if (!emitted.add(playlistUrl.substringBefore("#"))) return true
@@ -149,19 +151,23 @@ open class GdrivePlayerTo : ExtractorApi() {
             ).text
         }.getOrNull() ?: return
 
-        collectSubtitleUrls(playerText, playerUrl).forEach { subtitleUrl ->
+        for (subtitleUrl in collectSubtitleUrls(playerText, playerUrl)) {
             subtitleCallback(SubtitleFile("Indonesian", subtitleUrl))
         }
 
-        collectHlsPlaylistUrls(playerText, playerUrl).forEach { emitPlaylist(it) }
+        for (playlistUrl in collectHlsPlaylistUrls(playerText, playerUrl)) {
+            emitPlaylist(playlistUrl)
+        }
         if (emitted.isNotEmpty()) return
 
         val unpacked = runCatching { getAndUnpack(playerText) }.getOrDefault("")
         if (unpacked.isNotBlank()) {
-            collectSubtitleUrls(unpacked, playerUrl).forEach { subtitleUrl ->
+            for (subtitleUrl in collectSubtitleUrls(unpacked, playerUrl)) {
                 subtitleCallback(SubtitleFile("Indonesian", subtitleUrl))
             }
-            collectHlsPlaylistUrls(unpacked, playerUrl).forEach { emitPlaylist(it) }
+            for (playlistUrl in collectHlsPlaylistUrls(unpacked, playerUrl)) {
+                emitPlaylist(playlistUrl)
+            }
         }
     }
 }
