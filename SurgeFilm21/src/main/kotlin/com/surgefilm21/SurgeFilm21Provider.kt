@@ -14,7 +14,7 @@ class SurgeFilm21Provider : MainAPI() {
     override var lang = "id"
     override val hasDownloadSupport = true
 
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama, TvType.AnimeMovie, TvType.Cartoon, TvType.NSFW)
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama, TvType.AnimeMovie, TvType.Cartoon)
 
     private val sections = listOf(
         SurgeFilm21Section("/latest/", "Update Terbaru", "latest"),
@@ -55,10 +55,12 @@ class SurgeFilm21Provider : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
-        if (query.isBlank()) return emptyList()
+        if (query.isBlank() || query.isNsfwContentSf21()) return emptyList()
         val results = mutableListOf<SearchResponse>()
         for (page in 1..3) {
-            val pageItems = searchPage(query, page, TvType.Movie).filterNot { item -> results.any { it.url == item.url } }
+            val pageItems = searchPage(query, page, TvType.Movie)
+                .filterNot { item -> results.any { it.url == item.url } }
+                .filterNot { item -> item.name.isNsfwContentSf21() || item.url.isNsfwContentSf21() }
             if (pageItems.isEmpty()) break
             results.addAll(pageItems)
         }
@@ -67,6 +69,7 @@ class SurgeFilm21Provider : MainAPI() {
 
     private suspend fun listingPage(path: String, page: Int, defaultType: TvType): List<SearchResponse> {
         val base = path.absUrlSf21(mainUrl) ?: return emptyList()
+        if (base.isNsfwContentSf21()) return emptyList()
         val pageUrl = if (page <= 1) {
             base
         } else {
@@ -77,10 +80,12 @@ class SurgeFilm21Provider : MainAPI() {
             val document = SurgeFilm21Sepeda.getDocument(pageUrl, base)
             SurgeFilm21Parser.parseHomeItems(this, document, base, defaultType)
                 .distinctBy { it.url }
+                .filterNot { item -> item.name.isNsfwContentSf21() || item.url.isNsfwContentSf21() }
         }.getOrNull().orEmpty()
     }
 
     private suspend fun searchPage(query: String, page: Int, defaultType: TvType): List<SearchResponse> {
+        if (query.isNsfwContentSf21()) return emptyList()
         val encoded = query.urlEncodeSf21()
         val candidates = listOf(
             "$mainUrl/?s=$encoded&page=$page",
@@ -94,6 +99,7 @@ class SurgeFilm21Provider : MainAPI() {
                 val document = SurgeFilm21Sepeda.getDocument(url, mainUrl)
                 SurgeFilm21Parser.parseHomeItems(this, document, url, defaultType)
                     .filter { it.name.contains(query, true) || query.length <= 4 }
+                    .filterNot { it.name.isNsfwContentSf21() || it.url.isNsfwContentSf21() }
                     .distinctBy { it.url }
             }.getOrNull().orEmpty()
             if (items.isNotEmpty()) return items
@@ -102,11 +108,14 @@ class SurgeFilm21Provider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        if (url.isNsfwContentSf21()) return null
         val document = SurgeFilm21Sepeda.getDocument(url, mainUrl)
         val title = SurgeFilm21Parser.parseTitle(document).ifBlank { return null }
         val poster = SurgeFilm21Parser.parsePoster(document, url)
         val plot = SurgeFilm21Parser.parsePlot(document)
         val tags = SurgeFilm21Parser.parseTags(document)
+        if (listOf(title, url, plot.orEmpty(), tags.joinToString(" ")).any { it.isNsfwContentSf21() }) return null
+
         val year = SurgeFilm21Parser.parseYear(document, title)
         val episodes = SurgeFilm21Parser.parseEpisodes(this, document, url)
         val inferredType = when {
@@ -132,6 +141,7 @@ class SurgeFilm21Provider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit): Boolean {
+        if (data.isNsfwContentSf21()) return false
         return SurgeFilm21Extractor.load(data, subtitleCallback, callback)
     }
 
