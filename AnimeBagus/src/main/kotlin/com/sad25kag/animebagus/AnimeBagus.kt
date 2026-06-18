@@ -26,6 +26,9 @@ class AnimeBagus : MainAPI() {
         val url: String
     )
 
+    private val playDataPrefix = "animebagus-playdata::"
+    private val playDataSeparator = "||"
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Sedang Populer",
         "$mainUrl/ongoing" to "Sedang Tayang",
@@ -223,8 +226,8 @@ class AnimeBagus : MainAPI() {
         val isMovie = forcedMovie || isMovieDocument(document, html, title)
 
         if (isMovie || episodes.isEmpty()) {
-            val playData = episodes.firstOrNull()?.data ?: cleanUrl
-            return newMovieLoadResponse(title, cleanUrl, TvType.AnimeMovie, playData) {
+            val playCandidates = buildMoviePlayCandidates(document, cleanUrl, animeUrl, episodes)
+            return newMovieLoadResponse(title, cleanUrl, TvType.AnimeMovie, encodePlayData(playCandidates)) {
                 posterUrl = poster
                 plot = description
                 tags = genres
@@ -274,6 +277,98 @@ class AnimeBagus : MainAPI() {
                 episode = number
             }
         }
+    }
+
+    private fun buildMoviePlayCandidates(
+        document: Document,
+        cleanUrl: String,
+        animeUrl: String,
+        episodes: List<Episode>
+    ): List<String> {
+        val candidates = linkedSetOf<String>()
+        val cleanMovieUrl = cleanUrl.substringBefore("#").trimEnd('/')
+        val cleanAnimeUrl = animeUrl.substringBefore("#").trimEnd('/')
+
+        // Source evidence shows playable server buttons live on episode/player pages,
+        // not necessarily on the movie detail metadata page. Keep all candidates in
+        // play data so loadLinks can probe them in one pass before declaring callback 0.
+        candidates.add(cleanMovieUrl)
+        candidates.add(cleanAnimeUrl)
+        collectPlayPageUrls(document, cleanAnimeUrl).forEach(candidates::add)
+        episodes.map { it.data.substringBefore("#").trimEnd('/') }.forEach(candidates::add)
+
+        listOf(
+            "$cleanAnimeUrl/episode-1",
+            "$cleanAnimeUrl/episode-01",
+            "$cleanAnimeUrl/episode-0"
+        ).forEach(candidates::add)
+
+        return candidates.filter { it.isNotBlank() }.distinct()
+    }
+
+    private fun encodePlayData(candidates: List<String>): String {
+        val cleaned = candidates
+            .map { it.substringBefore("#").trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+        return when {
+            cleaned.isEmpty() -> ""
+            cleaned.size == 1 -> cleaned.first()
+            else -> playDataPrefix + cleaned.joinToString(playDataSeparator)
+        }
+    }
+
+    private fun decodePlayData(data: String): List<String> {
+        val clean = data.trim()
+        if (!clean.startsWith(playDataPrefix)) return listOf(clean.substringBefore("#").trimEnd('/'))
+        return clean.removePrefix(playDataPrefix)
+            .split(playDataSeparator)
+            .map { it.substringBefore("#").trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun collectPlayPageUrls(document: Document, pageUrl: String): List<String> {
+        val cleanBase = pageUrl.substringBefore("#").trimEnd('/')
+        val pageSlug = cleanBase.removePrefix(mainUrl).trim('/').substringBefore('/')
+        val candidates = linkedSetOf<String>()
+
+        document.select("a[href], button[href], [data-href], [data-url]").forEach { element ->
+            val label = element.text().trim()
+            listOf(
+                element.attr("href"),
+                element.attr("data-href"),
+                element.attr("data-url")
+            ).forEach rawLoop@ { raw ->
+                val fixed = cleanPlayerUrl(raw)?.substringBefore("#")?.trimEnd('/') ?: return@rawLoop
+                if (!fixed.startsWith(mainUrl)) return@rawLoop
+                if (fixed == cleanBase) return@rawLoop
+
+                val path = fixed.removePrefix(mainUrl).trim('/')
+                if (path.isBlank()) return@rawLoop
+                if (path.startsWith("genre/", true) || path.startsWith("search", true) ||
+                    path.startsWith("release", true) || path.startsWith("ongoing", true) ||
+                    path.startsWith("movies", true) || path.startsWith("data/", true)) return@rawLoop
+
+                val sameSlug = pageSlug.isNotBlank() && (path == pageSlug || path.startsWith("$pageSlug/", true))
+                val looksPlayable = label.contains("nonton", true) ||
+                    label.contains("tonton", true) ||
+                    label.contains("putar", true) ||
+                    label.contains("play", true) ||
+                    label.contains("watch", true) ||
+                    label.contains("film", true) ||
+                    label.contains("movie", true) ||
+                    label.contains("terbaru", true) ||
+                    path.contains("/episode-", true) ||
+                    fixed.contains("player.tikungan.store", true) ||
+                    fixed.contains("rockethls.online", true) ||
+                    fixed.contains("abysscdn.com", true)
+
+                if (sameSlug && looksPlayable) candidates.add(fixed)
+            }
+        }
+
+        return candidates.toList()
     }
 
     private fun latestEpisodeCount(document: Document): Int? {
@@ -329,22 +424,39 @@ class AnimeBagus : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val cleanData = data.substringBefore("#").trimEnd('/')
-        val document = app.get(cleanData, referer = mainUrl).document
-        val servers = collectPlayerServers(document).toMutableList()
+        val candidatePages = decodePlayData(data)
+        val servers = mutableListOf<Pair<String, PlayerServer>>()
 
-        if (servers.isEmpty() && !isEpisodeUrl(cleanData)) {
-            listOf("$cleanData/episode-1", "$cleanData/episode-01").forEach { candidate ->
-                try {
-                    servers.addAll(collectPlayerServers(app.get(candidate, referer = cleanData).document))
-                } catch (_: Exception) {
+        candidatePages.forEach { pageUrl ->
+            if (pageUrl.isBlank()) return@forEach
+            try {
+                val document = app.get(pageUrl, referer = mainUrl).document
+                collectPlayerServers(document).forEach { servers.add(pageUrl to it) }
+
+                collectPlayPageUrls(document, pageUrl).forEach { nestedPage ->
+                    try {
+                        val nestedDocument = app.get(nestedPage, referer = pageUrl).document
+                        collectPlayerServers(nestedDocument).forEach { servers.add(nestedPage to it) }
+                    } catch (_: Exception) {
+                    }
                 }
+
+                if (!isEpisodeUrl(pageUrl)) {
+                    listOf("$pageUrl/episode-1", "$pageUrl/episode-01", "$pageUrl/episode-0").forEach { fallbackPage ->
+                        try {
+                            val fallbackDocument = app.get(fallbackPage, referer = pageUrl).document
+                            collectPlayerServers(fallbackDocument).forEach { servers.add(fallbackPage to it) }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+            } catch (_: Exception) {
             }
         }
 
         var found = false
 
-        servers.distinctBy { it.url }.forEach { server ->
+        servers.distinctBy { it.second.url }.forEach { (sourcePage, server) ->
             val originalUrl = cleanPlayerUrl(server.url) ?: return@forEach
             val directUrl = unwrapTikunganUrl(originalUrl)
 
@@ -354,27 +466,29 @@ class AnimeBagus : MainAPI() {
                         resolveTikunganBox(server.name, originalUrl, directUrl, callback)
 
                     directUrl.contains("rockethls.online", ignoreCase = true) ||
+                        directUrl.contains("nzn3.org", ignoreCase = true) ||
                         server.name.contains("filemoon", ignoreCase = true) ->
                         resolveRocketHls(server.name, originalUrl, directUrl, subtitleCallback, callback)
 
                     directUrl.contains("abysscdn.com", ignoreCase = true) ||
                         server.name.contains("hydrax", ignoreCase = true) ->
-                        runExtractorLink(server.name.ifBlank { "HYDRAX" }, directUrl, "https://player.tikungan.store/", subtitleCallback, callback)
+                        resolveGenericServer(server.name.ifBlank { "HYDRAX" }, directUrl, originalUrl, subtitleCallback, callback) ||
+                            resolveGenericServer(server.name.ifBlank { "HYDRAX" }, directUrl, "https://player.tikungan.store/", subtitleCallback, callback)
 
                     directUrl.endsWith(".m3u8", ignoreCase = true) -> {
-                        emitM3u8(server.name, directUrl, cleanData, callback)
+                        emitM3u8(server.name, directUrl, sourcePage, callback)
                         true
                     }
 
                     directUrl.endsWith(".mp4", ignoreCase = true) -> {
                         callback(newExtractorLink(name, server.name.ifBlank { "MP4" }, directUrl) {
                             quality = Qualities.Unknown.value
-                            referer = cleanData
+                            referer = sourcePage
                         })
                         true
                     }
 
-                    else -> runExtractorLink(server.name, directUrl, cleanData, subtitleCallback, callback)
+                    else -> resolveGenericServer(server.name, directUrl, sourcePage, subtitleCallback, callback)
                 }
 
                 if (resolved) found = true
@@ -395,16 +509,27 @@ class AnimeBagus : MainAPI() {
             addPlayerServer(servers, label, element.attr("data-url"))
         }
 
-        document.select("iframe#player-frame[src], iframe[src]").forEach { iframe ->
-            val label = iframe.attr("title").trim().ifBlank { detectServerName(iframe.attr("src")) }
-            addPlayerServer(servers, label, iframe.attr("src"))
+        document.select("iframe#player-frame[src], iframe[src], source[src], video[src]").forEach { element ->
+            val raw = element.attr("src").ifBlank { element.attr("data-src") }
+            val label = element.attr("title").trim().ifBlank { detectServerName(raw) }
+            addPlayerServer(servers, label, raw)
+        }
+
+        // Active AnimeBagus pages expose servers via select-player buttons, but movie/detail
+        // variants can expose playable URLs as plain anchors/text. Scan anchors and full HTML
+        // with strict host filtering so loadLinks does not miss BOX/FILEMOON/HYDRAX.
+        document.select("a[href]").forEach { anchor ->
+            val href = anchor.attr("href")
+            val label = anchor.text().trim().ifBlank { detectServerName(href) }
+            addPlayerServer(servers, label, href)
         }
 
         document.select("script").forEach { script ->
             addPlayerUrlsFromText(servers, script.data().ifBlank { script.html() })
         }
 
-        addPlayerUrlsFromText(servers, document.select("#player, #players, .player, .server, .servers").outerHtml())
+        addPlayerUrlsFromText(servers, document.select("#player, #players, .player, .server, .servers, .the__content, article, main").outerHtml())
+        addPlayerUrlsFromText(servers, document.html())
 
         return servers.distinctBy { it.url }
     }
@@ -443,9 +568,11 @@ class AnimeBagus : MainAPI() {
 
         return lower.contains("player.tikungan.store") ||
             lower.contains("rockethls.online") ||
+            lower.contains("nzn3.org") ||
             lower.contains("abysscdn.com") ||
             lower.contains("filemoon") ||
             lower.contains("hydrax") ||
+            lower.contains("r66nv9ed.com") ||
             lower.contains(".m3u8") ||
             lower.contains(".mp4")
     }
@@ -497,7 +624,7 @@ class AnimeBagus : MainAPI() {
     private fun detectServerName(url: String): String {
         val lower = url.lowercase()
         return when {
-            lower.contains("rockethls.online") || lower.contains("filemoon") -> "FILEMOON"
+            lower.contains("rockethls.online") || lower.contains("nzn3.org") || lower.contains("filemoon") -> "FILEMOON"
             lower.contains("abysscdn.com") || lower.contains("hydrax") -> "HYDRAX"
             lower.contains("player.tikungan.store") -> "BOX"
             lower.contains(".m3u8") -> "HLS"
@@ -541,9 +668,17 @@ class AnimeBagus : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var emitted = false
+        val sourceName = serverName.ifBlank { "FILEMOON" }
 
-        if (runExtractorLink(serverName.ifBlank { "FILEMOON" }, directUrl, "https://player.tikungan.store/", subtitleCallback, callback)) {
-            emitted = true
+        listOf(
+            originalUrl to mainUrl,
+            originalUrl to "https://player.tikungan.store/",
+            directUrl to originalUrl,
+            directUrl to "https://player.tikungan.store/"
+        ).distinct().forEach { (candidate, referer) ->
+            if (!emitted && runCatching { runExtractorLink(sourceName, candidate, referer, subtitleCallback, callback) }.getOrDefault(false)) {
+                emitted = true
+            }
         }
 
         val code = Regex("""(?i)/e/([^/?#]+)""").find(directUrl)?.groupValues?.getOrNull(1)
@@ -553,19 +688,70 @@ class AnimeBagus : MainAPI() {
                 val details = app.get(detailsUrl, referer = directUrl).text
                 val embedFrameUrl = jsonStringValue(details, "embed_frame_url")
                 if (!embedFrameUrl.isNullOrBlank()) {
-                    if (runExtractorLink(serverName.ifBlank { "FILEMOON" }, embedFrameUrl, directUrl, subtitleCallback, callback)) {
-                        emitted = true
+                    listOf(
+                        embedFrameUrl to directUrl,
+                        embedFrameUrl to "https://rockethls.online/",
+                        embedFrameUrl to originalUrl
+                    ).distinct().forEach { (candidate, referer) ->
+                        if (!emitted && runCatching { runExtractorLink(sourceName, candidate, referer, subtitleCallback, callback) }.getOrDefault(false)) {
+                            emitted = true
+                        }
                     }
                 }
             } catch (_: Exception) {
             }
         }
 
-        if (!emitted && originalUrl != directUrl) {
-            emitted = runExtractorLink(serverName.ifBlank { "FILEMOON" }, originalUrl, mainUrl, subtitleCallback, callback)
+        return emitted
+    }
+
+    private suspend fun resolveGenericServer(
+        serverName: String,
+        url: String,
+        refererUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var emitted = false
+        if (runExtractorLink(serverName, url, refererUrl, subtitleCallback, callback)) {
+            emitted = true
+        }
+
+        if (!emitted) {
+            try {
+                val page = app.get(url, referer = refererUrl).text
+                    .replace("&amp;", "&")
+                    .replace("\\/", "/")
+                extractDirectMediaUrls(page).forEach { mediaUrl ->
+                    when {
+                        mediaUrl.contains(".m3u8", ignoreCase = true) -> emitM3u8(serverName, mediaUrl, url, callback)
+                        mediaUrl.contains(".mp4", ignoreCase = true) -> callback(newExtractorLink(name, serverName.ifBlank { "MP4" }, mediaUrl) {
+                            quality = parseQuality("$serverName $mediaUrl")
+                            referer = url
+                        })
+                    }
+                    emitted = true
+                }
+            } catch (_: Exception) {
+            }
         }
 
         return emitted
+    }
+
+    private fun extractDirectMediaUrls(text: String): List<String> {
+        val decoded = decodeUrl(text)
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("\\/", "/")
+        val urls = linkedSetOf<String>()
+        Regex("""(?i)https?://[^\s"'<>]+(?:\.m3u8|\.mp4)[^\s"'<>]*""")
+            .findAll(decoded)
+            .forEach { urls.add(it.value.trimEnd(',', ')', ';')) }
+        Regex("""(?i)(?:manifestUri|file|src|url)\s*[:=]\s*["']([^"']+(?:\.m3u8|\.mp4)[^"']*)["']""")
+            .findAll(decoded)
+            .forEach { urls.add(resolveAgainst(mainUrl, it.groupValues[1])) }
+        return urls.toList()
     }
 
     private suspend fun runExtractorLink(
