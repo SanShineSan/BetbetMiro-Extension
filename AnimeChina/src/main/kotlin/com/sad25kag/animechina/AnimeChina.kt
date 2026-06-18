@@ -2,11 +2,9 @@ package com.sad25kag.animechina
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
-import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -24,92 +22,85 @@ class AnimeChina : MainAPI() {
         "Referer" to "$mainUrl/",
     )
 
-    private val indexPosterCache = mutableMapOf<String, String?>()
+    // Known embeddable player domains for plain-link detection
+    private val knownPlayerHosts = listOf(
+        "ok.ru", "dailymotion.com", "anichin.stream", "drive.google.com",
+        "rumble.com", "filemoon.", "streamtape.", "dood.", "vidhide.",
+        "vidguard.", "voe.", "mixdrop.", "mp4upload.", "sendvid.",
+        "blogger.com", "googlevideo.com", "mega.nz", "sbembed.",
+        "short.ink", "racaty.", "rubystream.", "streamruby.", "filelions.",
+        "abyssplayer."
+    )
 
     override val mainPage = mainPageOf(
         "" to "Latest Update",
-        "index:ALL" to "All Anime",
-        "index:A" to "A Titles",
-        "index:B" to "B Titles",
-        "index:D" to "D Titles",
-        "index:H" to "H Titles",
-        "index:L" to "L Titles",
-        "index:M" to "M Titles",
-        "index:P" to "P Titles",
-        "index:Q" to "Q Titles",
-        "index:S" to "S Titles",
-        "index:T" to "T Titles",
-        "index:W" to "W Titles",
-        "index:X" to "X Titles",
-        "index:Z" to "Z Titles",
+        "ongoing" to "Ongoing",
+        "genres/action" to "Action",
+        "genres/adventure" to "Adventure",
+        "genres/fantasy" to "Fantasy",
+        "genres/comedy" to "Comedy",
+        "genres/drama" to "Drama",
+        "genres/cultivation" to "Cultivation",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (request.data.startsWith("index:", ignoreCase = true)) {
-            val indexDocument = app.get("$mainUrl/index-list/", headers = browserHeaders).document
-            val indexResult = parseIndexListCards(indexDocument, request.data.substringAfter(":"), page)
-            return newHomePageResponse(request.name, indexResult.results, indexResult.hasNext)
-        }
-
         val url = buildPageUrl(request.data, page)
         val document = app.get(url, headers = browserHeaders).document
-        val results = parseAnimeChinaCards(document).distinctBy { it.url.normalizedKey() }
-        val hasNext = document.selectFirst("a.next[href], link[rel=next], .pagination a[href*='/page/${page + 1}/'], a[href*='/page/${page + 1}/']") != null
+        val results = parseAnimeChinaCards(document)
+        val hasNext = document.selectFirst(
+            "a.next[href], .pagination a[href*='/page/${page + 1}/'], a[href*='/page/${page + 1}/'], a[href*='page/${page + 1}']"
+        ) != null
         return newHomePageResponse(request.name, results, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val routes = listOf(
-            "$mainUrl/?s=$encoded",
-            "$mainUrl/page/1/?s=$encoded",
-            "$mainUrl/index-list/?s=$encoded",
-        )
-        return routes.flatMap { route ->
-            runCatching {
-                parseAnimeChinaCards(app.get(route, headers = browserHeaders).document)
-            }.getOrDefault(emptyList())
-        }.filter { it.name.contains(query, ignoreCase = true) || query.length < 3 }
+        val document = app.get("$mainUrl/?s=$encoded", headers = browserHeaders).document
+        return parseAnimeChinaCards(document)
+            .filter { it.name.contains(query, ignoreCase = true) || query.length < 3 }
             .distinctBy { it.url.normalizedKey() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        // Always fetch the canonical URL (without ?episode=N) for metadata
         val canonicalUrl = canonicalSeriesUrl(url)
-        val document = app.get(url, headers = browserHeaders).document
-        val metaDocument = if (url.contains("episode=", ignoreCase = true) && canonicalUrl != url) {
-            runCatching { app.get(canonicalUrl, headers = browserHeaders, referer = url).document }
-                .getOrDefault(document)
-        } else {
-            document
-        }
+        val document = app.get(canonicalUrl, headers = browserHeaders).document
 
         val title = cleanTitle(
-            metaDocument.selectFirst("h1, h2[itemprop=name], .entry-title, .title")?.text()
-                ?: metaDocument.selectFirst("meta[property=og:title]")?.attr("content")
-                ?: document.selectFirst("h1, h2[itemprop=name], .entry-title, .title")?.text()
+            document.selectFirst("h1.entry-title, h1, h2[itemprop=name], .entry-title, .title")?.text()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
                 ?: document.title()
         ) ?: return null
 
-        val poster = metaDocument.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(canonicalUrl)
-            ?: metaDocument.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(canonicalUrl)
-            ?: document.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(url)
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(url)
+        val poster = document.selectFirst(
+            ".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img"
+        )?.imageUrl(canonicalUrl)
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")?.toAbsoluteUrl(canonicalUrl)
+            ?: document.select("article img").firstOrNull { el ->
+                val src = el.attr("src").ifBlank { el.attr("data-src") }
+                src.isNotBlank() && !src.contains("logo") && !src.contains("cropped")
+            }?.imageUrl(canonicalUrl)
 
-        val plot = extractPlot(metaDocument)
-            ?: extractPlot(document)
-            ?: metaDocument.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.cleanText()?.takeIf { it.isGoodPlot(title) }
-            ?: document.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.cleanText()?.takeIf { it.isGoodPlot(title) }
+        val plot = extractPlot(document)
+            ?: document.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")
+                ?.cleanText()?.takeIf { it.isGoodPlot(title) }
 
-        val tags = extractGenreTags(metaDocument)
-            .ifEmpty { extractGenreTags(document) }
+        val tags = document.select("a[href*='/genres/']").map { it.text().cleanText() }
+            .filter { it.isValidGenreTag() }.distinct()
 
-        val episodes = parseEpisodeList(document, url)
-            .ifEmpty { parseEpisodeList(metaDocument, canonicalUrl) }
-            .distinctBy { it.data.normalizedKey() }
-        val recommendations = parseAnimeChinaCards(metaDocument)
-            .filterNot { it.url.normalizedKey() == canonicalUrl.normalizedKey() }
-            .take(16)
+        // Episode list: each episode.data keeps ?episode=N so loadLinks fetches the right player
+        val episodes = parseEpisodeList(document, canonicalUrl)
+
+        val recommendations = document.select(".recommended a[href*='/watch/'], .related a[href*='/watch/']").mapNotNull { a ->
+            val href = a.attr("href").toAbsoluteUrl(canonicalUrl) ?: return@mapNotNull null
+            val imgTitle = a.selectFirst("img")?.attr("alt")?.cleanText()?.takeIf { it.length > 2 }
+                ?: a.selectFirst("h2, h3, .title")?.text()?.cleanText()?.takeIf { it.length > 2 }
+                ?: return@mapNotNull null
+            val poster2 = a.selectFirst("img")?.imageUrl(canonicalUrl)
+            newMovieSearchResponse(imgTitle, canonicalSeriesUrl(href), TvType.Anime) {
+                this.posterUrl = poster2
+            }
+        }.take(12)
 
         return newTvSeriesLoadResponse(title, canonicalUrl, TvType.Anime, episodes) {
             this.posterUrl = poster
@@ -117,7 +108,7 @@ class AnimeChina : MainAPI() {
             this.plot = plot
             this.tags = tags
             this.recommendations = recommendations
-            this.showStatus = detectStatus(metaDocument) ?: detectStatus(document)
+            this.showStatus = detectStatus(document)
         }
     }
 
@@ -127,113 +118,103 @@ class AnimeChina : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        // data = episode URL with ?episode=N  (or canonical for single-episode / movie)
         val document = app.get(data, headers = browserHeaders, referer = "$mainUrl/").document
         val emitted = linkedSetOf<String>()
 
-        suspend fun emitDirect(rawUrl: String?, label: String? = null, referer: String = data): Boolean {
-            val videoUrl = rawUrl?.decodeEmbedText()?.toAbsoluteUrl(referer)?.takeIf { it.isDirectMediaLike() } ?: return false
-            val key = videoUrl.substringBefore("#")
-            if (!emitted.add(key)) return true
-            val sourceName = listOfNotNull(name, label?.cleanText()?.takeIf { it.isNotBlank() }).joinToString(" - ")
-            val headers = browserHeaders + mapOf(
-                "Referer" to referer,
-                "Origin" to originOf(referer),
-            )
-            if (videoUrl.contains(".m3u8", true)) {
-                M3u8Helper.generateM3u8(sourceName, videoUrl, referer, headers = headers).forEach(callback)
-            } else {
-                callback.invoke(
-                    newExtractorLink(sourceName, sourceName, videoUrl, ExtractorLinkType.VIDEO) {
-                        this.referer = referer
-                        this.quality = getQualityFromName(label ?: videoUrl)
-                        this.headers = headers
-                    },
-                )
-            }
-            return true
-        }
+        // ── STEP 1: Read plain-text player links from .the__content ──────────────
+        // animechina.my.id embeds the player URL as a plain hyperlink at the top
+        // of the post content, e.g. https://ok.ru/videoembed/xxx or
+        // https://anichin.stream/?id=xxx — not inside <iframe>.
+        val contentLinks = document.select(
+            ".the__content a[href], .entry-content a[href], .post-content a[href], article .content a[href]"
+        ).mapNotNull { it.attr("href").toAbsoluteUrl(data) }
+            .filter { url -> knownPlayerHosts.any { host -> url.contains(host, ignoreCase = true) } }
 
-        val candidates = collectPlayerCandidates(document, data)
-        for (candidate in candidates.take(40)) {
-            val playerUrl = candidate.decodeEmbedText().toAbsoluteUrl(data) ?: continue
-            if (emitDirect(playerUrl, hostLabel(playerUrl), data)) continue
-
-            val before = emitted.size
-            val countedCallback: (ExtractorLink) -> Unit = { link ->
-                emitted.add(link.url.substringBefore("#"))
-                callback.invoke(link)
-            }
-            runCatching { loadExtractor(playerUrl, data, subtitleCallback, countedCallback) }
-            if (emitted.size > before) continue
-
-            val playerText = runCatching {
-                app.get(playerUrl, headers = browserHeaders + mapOf("Referer" to data), referer = data).text
-            }.getOrNull() ?: continue
-            val unpacked = runCatching { getAndUnpack(playerText) }.getOrNull().orEmpty()
-            val nested = collectUrlsFromText(playerText + "\n" + unpacked, playerUrl)
-            for (nestedUrl in nested.take(20)) {
-                if (emitDirect(nestedUrl, hostLabel(playerUrl), playerUrl)) continue
-                val fixedNested = nestedUrl.toAbsoluteUrl(playerUrl) ?: continue
-                runCatching { loadExtractor(fixedNested, playerUrl, subtitleCallback, countedCallback) }
+        for (playerUrl in contentLinks) {
+            val key = playerUrl.substringBefore("#")
+            if (!emitted.add(key)) continue
+            runCatching {
+                loadExtractor(playerUrl, data, subtitleCallback) { link ->
+                    emitted.add(link.url.substringBefore("#"))
+                    callback.invoke(link)
+                }
             }
         }
+
+        // ── STEP 2: Read SVR buttons (mirror servers) ─────────────────────────────
+        // Mirror servers may be in option[value], data-src, or iframe src
+        val mirrorCandidates = linkedSetOf<String>()
+        document.select("select option[value], .mirror option[value], .mobius option[value]").forEach { opt ->
+            val v = opt.attr("value").trim()
+            if (v.isNotBlank()) {
+                // Try base64 decode (common pattern for mirror options)
+                val decoded = runCatching { base64Decode(v) }.getOrNull().orEmpty()
+                val iframeUrl = if (decoded.contains("<iframe", ignoreCase = true)) {
+                    org.jsoup.Jsoup.parse(decoded).selectFirst("iframe[src]")?.attr("src")
+                } else {
+                    decoded.ifBlank { null }
+                }
+                iframeUrl?.toAbsoluteUrl(data)?.let { mirrorCandidates.add(it) }
+                    ?: v.toAbsoluteUrl(data)?.let { mirrorCandidates.add(it) }
+            }
+        }
+        // Also iframe/embed direct
+        document.select("iframe[src], embed[src]").forEach { el ->
+            el.attr("src").toAbsoluteUrl(data)?.let { mirrorCandidates.add(it) }
+        }
+
+        for (playerUrl in mirrorCandidates) {
+            val key = playerUrl.substringBefore("#")
+            if (!emitted.add(key)) continue
+            runCatching {
+                loadExtractor(playerUrl, data, subtitleCallback) { link ->
+                    emitted.add(link.url.substringBefore("#"))
+                    callback.invoke(link)
+                }
+            }
+        }
+
+        // ── STEP 3: Script scan fallback ──────────────────────────────────────────
+        if (emitted.isEmpty()) {
+            document.select("script").forEach { script ->
+                val text = script.html()
+                val unpacked = runCatching { getAndUnpack(text) }.getOrNull().orEmpty()
+                Regex("""https?:\\/\\/[^'"<>\\\s]+""", RegexOption.IGNORE_CASE)
+                    .findAll(text + "\n" + unpacked)
+                    .forEach { match ->
+                        val u = match.value.replace("\\/", "/").toAbsoluteUrl(data) ?: return@forEach
+                        if (knownPlayerHosts.any { host -> u.contains(host, ignoreCase = true) }) {
+                            val key = u.substringBefore("#")
+                            if (emitted.add(key)) {
+                                runCatching {
+                                    loadExtractor(u, data, subtitleCallback) { link ->
+                                        emitted.add(link.url.substringBefore("#"))
+                                        callback.invoke(link)
+                                    }
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+
         return emitted.isNotEmpty()
     }
 
-    private data class IndexPageResult(
-        val results: List<SearchResponse>,
-        val hasNext: Boolean,
-    )
-
-    private suspend fun parseIndexListCards(document: Document, section: String, page: Int): IndexPageResult {
-        val pageSize = 16
-        val normalizedSection = section.uppercase(Locale.ROOT)
-        val cards = parseAnimeChinaCards(document).filter { card ->
-            normalizedSection == "ALL" || card.name.indexLetter() == normalizedSection
-        }.distinctBy { it.url.normalizedKey() }
-        val start = ((page.coerceAtLeast(1) - 1) * pageSize).coerceAtLeast(0)
-        val pageCards = cards.drop(start).take(pageSize)
-        return IndexPageResult(
-            results = pageCards.map { it.withIndexPoster() },
-            hasNext = cards.size > start + pageSize,
-        )
-    }
-
-    private suspend fun SearchResponse.withIndexPoster(): SearchResponse {
-        val detailUrl = canonicalSeriesUrl(url)
-        val poster = resolvePosterFromDetail(detailUrl)
-        return newMovieSearchResponse(name, detailUrl, TvType.Anime) {
-            this.posterUrl = poster
-            this.posterHeaders = mapOf("Referer" to detailUrl)
-        }
-    }
-
-    private suspend fun resolvePosterFromDetail(detailUrl: String): String? {
-        val canonicalUrl = canonicalSeriesUrl(detailUrl)
-        if (indexPosterCache.containsKey(canonicalUrl)) return indexPosterCache[canonicalUrl]
-        val poster = runCatching {
-            val document = app.get(canonicalUrl, headers = browserHeaders, referer = "$mainUrl/index-list/").document
-            extractPoster(document, canonicalUrl)
-        }.getOrNull()
-        indexPosterCache[canonicalUrl] = poster
-        return poster
-    }
-
-    private fun extractPoster(document: Document, referer: String): String? {
-        return document.selectFirst(".info__poster img.wp-post-image, .info__poster img, .thumb img, .poster img, .bigcover img, .mvic-desc img, article img")?.imageUrl(referer)
-            ?: document.selectFirst("meta[property=og:image], meta[name=twitter:image]")?.attr("content")?.toAbsoluteUrl(referer)
-    }
+    // ─── Helpers ──────────────────────────────────────────────────────────────────
 
     private fun buildPageUrl(path: String, page: Int): String {
         val cleanPath = path.trim().trimStart('/')
-        val base = if (cleanPath.startsWith("http", true)) cleanPath.trimEnd('/') else "$mainUrl/$cleanPath".trimEnd('/')
-        if (page <= 1) return if (cleanPath.isBlank()) "$mainUrl/" else "$base/"
-        return if (cleanPath.isBlank()) "$mainUrl/page/$page/" else "$base/page/$page/"
+        val base = if (cleanPath.startsWith("http", true)) cleanPath.trimEnd('/')
+        else if (cleanPath.isBlank()) mainUrl
+        else "$mainUrl/$cleanPath".trimEnd('/')
+        if (page <= 1) return "$base/"
+        return "$base/page/$page/"
     }
 
     private fun parseAnimeChinaCards(document: Document): List<SearchResponse> {
-        val anchors = document.select("a[href*='/watch/']")
-        return anchors.mapNotNull { it.toAnimeChinaCard() }
+        return document.select("a[href*='/watch/']").mapNotNull { it.toAnimeChinaCard() }
             .filterNot { it.name.equals("Watch", true) || it.name.startsWith("Episode ", true) }
             .distinctBy { it.url.normalizedKey() }
     }
@@ -247,7 +228,8 @@ class AnimeChina : MainAPI() {
             ?: return null
         val title = cleanCardTitle(rawTitle).takeIf { it.length > 2 } ?: return null
         val poster = selectFirst("img")?.imageUrl(href)
-        val responseUrl = if (href.contains("episode=", ignoreCase = true)) href else canonicalSeriesUrl(href)
+        // Use canonical URL (no ?episode=N) for the card — load() will build episode list
+        val responseUrl = canonicalSeriesUrl(href)
         return newMovieSearchResponse(title, responseUrl, TvType.Anime) {
             this.posterUrl = poster
             this.posterHeaders = mapOf("Referer" to "$mainUrl/")
@@ -255,142 +237,72 @@ class AnimeChina : MainAPI() {
     }
 
     private fun parseEpisodeList(document: Document, baseUrl: String): List<Episode> {
-        val anchors = document.select("div.gsd a[href*='episode='], .gsd a[href*='episode=']")
-            .ifEmpty { document.select("a[href*='episode=']") }
+        // Episode links use ?episode=N query param — keep them intact as episode.data
+        val anchors = document.select("div.gsd a[href*='episode='], .gsd a[href*='episode=']").ifEmpty {
+            document.select("a[href*='episode=']").filterNot { a ->
+                val href = a.attr("href")
+                href.contains("/genres/") || href.contains("/category/")
+            }
+        }
 
         val episodes = anchors.mapNotNull { anchor ->
+            // Preserve ?episode=N in href
             val href = anchor.attr("href").toAbsoluteUrl(baseUrl) ?: return@mapNotNull null
-            val episodeNumber = href.toEpisodeNumber() ?: anchor.text().toEpisodeNumber()
+            if (!href.contains("episode=", ignoreCase = true)) return@mapNotNull null
+            val episodeNumber = href.substringAfter("episode=").substringBefore("&").toIntOrNull()
+                ?: anchor.text().toEpisodeNumber()
             newEpisode(href) {
-                this.name = anchor.text().cleanText().takeIf { it.isNotBlank() } ?: episodeNumber?.let { "Episode $it" }
+                this.name = anchor.text().cleanText().ifBlank { null } ?: episodeNumber?.let { "Episode $it" }
                 this.episode = episodeNumber
-                this.posterUrl = anchor.selectFirst("img")?.imageUrl(href)
             }
         }.distinctBy { it.data.normalizedKey() }
             .sortedWith(compareBy<Episode> { it.episode ?: Int.MAX_VALUE }.thenBy { it.name ?: "" })
 
         if (episodes.isNotEmpty()) return episodes
 
-        val currentEpisode = baseUrl.toEpisodeNumber() ?: return emptyList()
-        return listOf(
-            newEpisode(baseUrl) {
+        // Fallback: single-episode / movie — use canonical URL
+        val currentEpisode = baseUrl.toEpisodeNumber()
+        return if (currentEpisode != null) {
+            listOf(newEpisode(baseUrl) {
                 this.name = "Episode $currentEpisode"
                 this.episode = currentEpisode
-            }
-        )
-    }
-
-    private fun collectPlayerCandidates(document: Document, referer: String): LinkedHashSet<String> {
-        val candidates = linkedSetOf<String>()
-        document.select("iframe[src], embed[src], video[src], video source[src], source[src]").forEach { element ->
-            element.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+            })
+        } else {
+            // Single playable item (movie-like without episode number)
+            listOf(newEpisode(baseUrl) { this.name = "Play" })
         }
-        val dataKeys = listOf(
-            "data-src", "data-url", "data-link", "data-iframe", "data-embed", "data-player", "data-video", "data-file", "data-stream", "value"
-        )
-        document.select("[data-src], [data-url], [data-link], [data-iframe], [data-embed], [data-player], [data-video], [data-file], [data-stream], option[value]")
-            .forEach { element ->
-                dataKeys.forEach { key ->
-                    val value = element.attr(key).trim()
-                    if (value.isNotBlank()) addCandidateValue(value, referer, candidates)
-                }
-            }
-        collectUrlsFromText(document.html(), referer).forEach { candidates.add(it) }
-        document.select("script").forEach { script ->
-            val unpacked = runCatching { getAndUnpack(script.html()) }.getOrNull().orEmpty()
-            collectUrlsFromText(script.html() + "\n" + unpacked, referer).forEach { candidates.add(it) }
-        }
-        return candidates
-    }
-
-    private fun addCandidateValue(value: String, referer: String, candidates: LinkedHashSet<String>) {
-        candidates.add(value)
-        value.decodeEmbedText().takeIf { it != value }?.let { candidates.add(it) }
-        runCatching { base64Decode(value) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { decoded ->
-            candidates.add(decoded)
-            collectUrlsFromText(decoded, referer).forEach { candidates.add(it) }
-            Jsoup.parse(decoded).select("iframe[src], video[src], source[src]").forEach { element ->
-                element.attr("src").takeIf { it.isNotBlank() }?.let { candidates.add(it) }
-            }
-        }
-    }
-
-    private fun collectUrlsFromText(text: String, referer: String): List<String> {
-        val normalized = text.decodeEmbedText()
-        val urls = linkedSetOf<String>()
-        Regex("""https?:\\?/\\?/[^'\"<>\\\s]+""", RegexOption.IGNORE_CASE).findAll(normalized).forEach { match ->
-            urls.add(match.value.replace("\\/", "/"))
-        }
-        Regex("""(?:src|file|url|source|video|embed|iframe)\s*[:=]\s*['\"]([^'\"]+)['\"]""", RegexOption.IGNORE_CASE).findAll(normalized).forEach { match ->
-            match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }?.let { urls.add(it) }
-        }
-        Regex("""['\"]([^'\"]+\.(?:m3u8|mp4|webm|mkv)(?:\?[^'\"]*)?)['\"]""", RegexOption.IGNORE_CASE).findAll(normalized).forEach { match ->
-            match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }?.let { urls.add(it) }
-        }
-        return urls.mapNotNull { it.toAbsoluteUrl(referer) }.filter { it.isPlayableCandidate() }.distinct()
-    }
-
-    private fun String.isPlayableCandidate(): Boolean {
-        val value = decodeEmbedText().lowercase(Locale.ROOT)
-        if (value.isDirectMediaLike()) return true
-        if (!value.startsWith("http")) return false
-        return listOf(
-            "dailymotion", "filemoon", "streamtape", "streamsb", "sbembed", "vidhide", "vidguard",
-            "voe", "mixdrop", "mp4upload", "dood", "sendvid", "ok.ru", "rumble", "youtube",
-            "googlevideo", "blogger", "drive.google", "cdn", "player", "embed", "anichin.stream",
-            "abyssplayer", "short.ink", "flaswish", "racaty", "rubystream", "streamruby", "filelions",
-            "mega.nz"
-        ).any { value.contains(it) }
-    }
-
-    private fun String.isDirectMediaLike(): Boolean {
-        val lower = lowercase(Locale.ROOT).substringBefore("#")
-        return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") || lower.contains("videoplayback")
     }
 
     private fun extractPlot(document: Document): String? {
-        return document.select(".the__content p, .info__ori .the__content p, .entry-content p, .synopsis p, .desc p, .storyline p, article p")
-            .map { it.text().cleanText() }
-            .filter { paragraph -> paragraph.isGoodPlot() }
+        return document.select(
+            ".the__content p, .info__ori .the__content p, .entry-content p, .synopsis p, .desc p, .storyline p"
+        ).map { it.text().cleanText() }
+            .filter { it.isGoodPlot() }
             .distinct()
             .joinToString("\n\n")
             .takeIf { it.isNotBlank() }
     }
 
-    private fun extractGenreTags(document: Document): List<String> {
-        return document.select(".info__ori a[href*='/genres/'], .genres a[href*='/genres/'], a[href*='/genres/']")
-            .map { it.text().cleanText() }
-            .filter { it.isValidGenreTag() }
-            .distinct()
-    }
-
     private fun String.isGoodPlot(title: String? = null): Boolean {
-        val value = cleanText()
-        if (value.isBlank()) return false
-        if (value.length < 20) return false
-        if (title != null && value.equals(title, ignoreCase = true)) return false
-        if (value.contains("Share on", true)) return false
-        if (value.contains("Article Rating", true)) return false
-        if (value.contains("Login", true) && value.contains("Register", true)) return false
-        if (value.contains("Nonton Donghua Sub Indo", true) && value.length < 90) return false
+        val v = cleanText()
+        if (v.isBlank() || v.length < 20) return false
+        if (title != null && v.equals(title, ignoreCase = true)) return false
+        if (v.contains("Share on", true)) return false
+        if (v.contains("Article Rating", true)) return false
+        if (v.contains("Login", true) && v.contains("Register", true)) return false
+        if (v.contains("Nonton Donghua Sub Indo", true) && v.length < 90) return false
         return true
     }
 
     private fun String.isValidGenreTag(): Boolean {
-        val value = cleanText()
-        if (value.isBlank() || value.equals("All Genres", true)) return false
-        if (Regex("""^\d{4}$""").matches(value)) return false
-        if (Regex("""^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*""", RegexOption.IGNORE_CASE).matches(value)) return false
-        if (Regex("""^\d{1,2}$""").matches(value)) return false
-        if (value.contains("Episode", true)) return false
-        if (value.contains("Subtitle", true)) return false
-        if (value.contains("Nonton", true)) return false
+        val v = cleanText()
+        if (v.isBlank() || v.equals("All Genres", true)) return false
+        if (Regex("""^\d{4}$""").matches(v)) return false
+        if (v.length < 3) return false
+        if (v.contains("Episode", true)) return false
+        if (v.contains("Subtitle", true)) return false
+        if (v.contains("Nonton", true)) return false
         return true
-    }
-
-    private fun String.indexLetter(): String? {
-        val first = cleanText().firstOrNull { it.isLetterOrDigit() } ?: return null
-        return if (first.isDigit()) "#" else first.uppercaseChar().toString()
     }
 
     private fun cleanCardTitle(raw: String): String {
@@ -427,10 +339,11 @@ class AnimeChina : MainAPI() {
     }
 
     private fun Element.imageUrl(referer: String = mainUrl): String? {
-        val image = if (tagName().equals("img", true)) this else selectFirst("img")
+        val img = if (tagName().equals("img", true)) this else selectFirst("img")
         return listOf("data-src", "data-original", "data-lazy-src", "src")
-            .firstNotNullOfOrNull { key -> image?.attr(key)?.trim()?.takeIf { it.isNotBlank() && !it.startsWith("data:") } }
-            ?.toAbsoluteUrl(referer)
+            .firstNotNullOfOrNull { key ->
+                img?.attr(key)?.trim()?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            }?.toAbsoluteUrl(referer)
     }
 
     private fun String.toAbsoluteUrl(base: String = mainUrl): String? {
@@ -439,19 +352,6 @@ class AnimeChina : MainAPI() {
         if (value.startsWith("//")) return "https:$value"
         if (value.startsWith("http://", true) || value.startsWith("https://", true)) return value
         return runCatching { URI(base).resolve(value).toString() }.getOrNull()
-    }
-
-    private fun String.decodeEmbedText(): String {
-        var value = cleanText().replace("\\/", "/")
-        repeat(2) {
-            value = runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
-        }
-        value = value.replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#039;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-        return value
     }
 
     private fun String.cleanText(): String {
@@ -466,11 +366,4 @@ class AnimeChina : MainAPI() {
     }
 
     private fun String.normalizedKey(): String = substringBefore("#").trimEnd('/').lowercase(Locale.ROOT)
-
-    private fun originOf(url: String): String = runCatching {
-        val uri = URI(url)
-        "${uri.scheme}://${uri.host}"
-    }.getOrDefault(mainUrl)
-
-    private fun hostLabel(url: String): String? = runCatching { URI(url).host?.removePrefix("www.") }.getOrNull()
 }
