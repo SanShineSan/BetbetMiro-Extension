@@ -1,5 +1,6 @@
 package com.sad25kag.animeindo
 
+import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
@@ -31,8 +32,6 @@ class AnimeIndo : MainAPI() {
         val poster: String?,
         val episodeNumber: Int?
     )
-
-    private enum class AnimeIndoServerType { BTUBE, GDRIVE, MP4, YUP, CEPAT }
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Episode Terbaru",
@@ -267,17 +266,6 @@ class AnimeIndo : MainAPI() {
         return slug.contains(Regex("-episode-\\d+", RegexOption.IGNORE_CASE))
     }
 
-    private fun findFirstWatchLink(document: Document, detailUrl: String): String? {
-        val cleanDetail = detailUrl.substringBefore("#").trimEnd('/')
-        return document.select("div.ep a[href], .episode-list a[href], .episodes a[href], a[href]")
-            .mapNotNull { element ->
-                val href = fixUrl(element.attr("href")).substringBefore("#").trimEnd('/')
-                href.takeIf { it != cleanDetail && isEpisodeUrl(it) }
-            }
-            .distinct()
-            .firstOrNull()
-    }
-
     private fun parseEpisodeNumber(text: String): Int? {
         return Regex("(?:episode\\s*)?(\\d+)(?:\\.\\d+)?", RegexOption.IGNORE_CASE)
             .findAll(text)
@@ -378,8 +366,13 @@ class AnimeIndo : MainAPI() {
 
         val movieDetail = forcedMovie || moviePost || isMovieDetail(document, title, animeUrl)
         if (movieDetail || (episodes.isEmpty() && !cleanUrl.contains("/anime/", true) && !episodePage)) {
-            val firstWatchLink = findFirstWatchLink(document, animeUrl)
-            val movieData = firstWatchLink ?: cleanUrl
+            val movieWatchLink = when {
+                episodePage -> cleanUrl
+                episodes.isNotEmpty() -> episodes.sortedBy { it.episode ?: Int.MAX_VALUE }.first().data
+                else -> findFirstWatchLink(document)
+            }
+            val movieData = movieWatchLink ?: cleanUrl
+
             return newMovieLoadResponse(title, cleanUrl, TvType.AnimeMovie, movieData) {
                 posterUrl = poster
                 plot = description
@@ -426,95 +419,143 @@ class AnimeIndo : MainAPI() {
         }.substringBefore("#").trim()
     }
 
-    private fun serverTypeFromUrl(url: String): AnimeIndoServerType? {
-        val lower = url.lowercase()
+    private enum class ServerType(val label: String) {
+        BTUBE("B-TUBE"),
+        GDRIVE("GDRIVE"),
+        MP4("MP4"),
+        YUP("YUP"),
+        CEPAT("CEPAT")
+    }
+
+    private data class ServerCandidate(
+        val type: ServerType,
+        val url: String,
+        val label: String? = null
+    )
+
+    private fun serverTypeFromLabel(label: String?): ServerType? {
+        val lower = label.orEmpty().lowercase()
         return when {
-            lower.contains("btube3.php") || lower.contains("b-tube") || lower.contains("btube") -> AnimeIndoServerType.BTUBE
-            lower.contains("gdriveplayer.to") || lower.contains("gdplayer.to") || lower.contains("gdriveplayer") || lower.contains("gdplayer") -> AnimeIndoServerType.GDRIVE
-            lower.contains("mp4upload.com") || lower.contains("mp4upload") -> AnimeIndoServerType.MP4
-            lower.contains("yup.php") || lower.contains("yup") -> AnimeIndoServerType.YUP
-            lower.contains("xtwap.top") || lower.contains("xtwap") || lower.contains("cepat") -> AnimeIndoServerType.CEPAT
+            lower.contains("b-tube") || lower.contains("btube") -> ServerType.BTUBE
+            lower.contains("gdrive") || lower.contains("g-drive") || lower.contains("google drive") -> ServerType.GDRIVE
+            lower.contains("mp4") -> ServerType.MP4
+            lower.contains("yup") -> ServerType.YUP
+            lower.contains("cepat") || lower.contains("xtwap") -> ServerType.CEPAT
             else -> null
         }
     }
 
-    private fun isPlayableServerUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        if (
-            lower.contains("/anime/") ||
-            lower.contains("/genres/") ||
-            lower.contains("/genre/") ||
-            lower.contains("/tag/") ||
-            lower.contains("disclaimer") ||
-            lower.contains("privacy")
-        ) return false
-
-        return serverTypeFromUrl(url) != null
-    }
-
-    private fun decodeBase64ServerValue(rawValue: String?): String? {
-        val compact = rawValue
-            ?.trim()
-            ?.removeSurrounding("\"")
-            ?.removeSurrounding("'")
-            ?.removeSurrounding("`")
-            ?.replace("\n", "")
-            ?.replace("\r", "")
-            ?.replace("\t", "")
-            ?.takeIf { it.length >= 8 }
-            ?: return null
-
-        val normalized = compact.replace('-', '+').replace('_', '/')
-        if (!Regex("""^[A-Za-z0-9+/=]+$""").matches(normalized)) return null
-
-        return runCatching {
-            String(android.util.Base64.decode(normalized, android.util.Base64.DEFAULT))
-        }.getOrNull()?.takeIf { decoded ->
-            decoded.contains("http", true) ||
-                decoded.contains("iframe", true) ||
-                decoded.contains("src", true) ||
-                decoded.contains("file", true) ||
-                decoded.contains("data-", true)
+    private fun serverTypeFromUrl(url: String?): ServerType? {
+        val lower = url.orEmpty().lowercase()
+        return when {
+            lower.contains("btube3.php") || lower.contains("b-tube") || lower.contains("btube") -> ServerType.BTUBE
+            lower.contains("gdriveplayer") || lower.contains("gdplayer") -> ServerType.GDRIVE
+            lower.contains("mp4upload") -> ServerType.MP4
+            lower.contains("yup.php") || lower.contains("/yup") || lower.contains("?yup") || lower.contains("&yup") -> ServerType.YUP
+            lower.contains("xtwap") || lower.contains("cepat") -> ServerType.CEPAT
+            else -> null
         }
     }
 
-    private fun addServerUrl(serverUrls: MutableList<String>, rawUrl: String?, allowDecode: Boolean = true) {
-        val url = cleanPlayerUrl(rawUrl)
-        if (url != null && isPlayableServerUrl(url)) {
-            serverUrls.add(url)
-            return
+    private fun hasPlayableInlinePlayer(document: Document): Boolean {
+        val candidates = mutableListOf<ServerCandidate>()
+        collectServerCandidates(document, candidates)
+        return candidates.isNotEmpty()
+    }
+
+    private fun findFirstWatchLink(document: Document): String? {
+        return document.select("div.ep a[href], .episode-list a[href], a[href]")
+            .mapNotNull { a ->
+                val href = cleanPlayerUrl(a.attr("href")) ?: return@mapNotNull null
+                if (!href.startsWith(mainUrl)) return@mapNotNull null
+                if (!isEpisodeUrl(href)) return@mapNotNull null
+                href
+            }
+            .distinct()
+            .minWithOrNull(compareBy<String> { parseEpisodeNumber(it) ?: Int.MAX_VALUE }.thenBy { it })
+    }
+
+    private fun decodeServerTexts(rawValue: String?): List<String> {
+        val raw = rawValue?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val decoded = linkedSetOf<String>()
+        var current = raw
+            .replace("&amp;", "&")
+            .replace("\\/", "/")
+            .trim()
+        decoded.add(current)
+
+        repeat(2) {
+            current = runCatching { URLDecoder.decode(current, "UTF-8") }.getOrDefault(current)
+                .replace("&amp;", "&")
+                .replace("\\/", "/")
+                .trim()
+            decoded.add(current)
         }
 
-        if (allowDecode) {
-            decodeBase64ServerValue(rawUrl)?.let { decoded ->
-                addServerUrlsFromText(serverUrls, decoded, allowDecode = false)
+        val normalizedBase64 = current
+            .substringBefore("#")
+            .trim()
+            .replace('-', '+')
+            .replace('_', '/')
+        if (normalizedBase64.length >= 12 && normalizedBase64.matches(Regex("^[A-Za-z0-9+/=\\s]+$"))) {
+            runCatching {
+                val bytes = Base64.decode(normalizedBase64, Base64.DEFAULT)
+                String(bytes, Charsets.UTF_8)
+                    .replace("&amp;", "&")
+                    .replace("\\/", "/")
+                    .trim()
+            }.getOrNull()?.takeIf { it.isNotBlank() }?.let { decoded.add(it) }
+        }
+
+        return decoded.toList()
+    }
+
+    private fun extractServerUrlsFromText(text: String): List<String> {
+        val urls = linkedSetOf<String>()
+        Regex("""(?i)(?:https?:)?\\?/\\?/[^\"'<>\s]+""")
+            .findAll(text)
+            .forEach { urls.add(it.value.replace("\\/", "/")) }
+        Regex("""(?i)(?:src|file|url|href|data-video|data-url|data-iframe|data-src|data-link|data-href|data-file)\s*[:=]\s*["']([^"']+)["']""")
+            .findAll(text)
+            .forEach { urls.add(it.groupValues[1].replace("\\/", "/")) }
+        return urls.toList()
+    }
+
+    private fun addServerCandidate(
+        serverCandidates: MutableList<ServerCandidate>,
+        rawUrl: String?,
+        label: String? = null,
+        forcedType: ServerType? = null
+    ) {
+        val labelType = forcedType ?: serverTypeFromLabel(label)
+        decodeServerTexts(rawUrl).forEach { decodedText ->
+            val directUrl = cleanPlayerUrl(decodedText)
+            val directType = labelType ?: serverTypeFromUrl(directUrl)
+            if (!directUrl.isNullOrBlank() && directType != null) {
+                serverCandidates.add(ServerCandidate(directType, directUrl, label))
+            }
+
+            extractServerUrlsFromText(decodedText).forEach { embedded ->
+                val embeddedUrl = cleanPlayerUrl(embedded) ?: return@forEach
+                val embeddedType = labelType ?: serverTypeFromUrl(embeddedUrl)
+                if (embeddedType != null) {
+                    serverCandidates.add(ServerCandidate(embeddedType, embeddedUrl, label))
+                }
             }
         }
     }
 
-    private fun addServerUrlsFromText(serverUrls: MutableList<String>, text: String?, allowDecode: Boolean = true) {
+    private fun addServerCandidatesFromText(
+        serverCandidates: MutableList<ServerCandidate>,
+        text: String?,
+        label: String? = null,
+        forcedType: ServerType? = null
+    ) {
         if (text.isNullOrBlank()) return
-        var decoded = text
-            .replace("&amp;", "&")
-            .replace("\\/", "/")
-        repeat(2) {
-            decoded = runCatching { URLDecoder.decode(decoded, "UTF-8") }.getOrDefault(decoded)
-                .replace("&amp;", "&")
-                .replace("\\/", "/")
-        }
-
-        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+""")
-            .findAll(decoded)
-            .forEach { addServerUrl(serverUrls, it.value, allowDecode) }
-
-        Regex("""(?i)(?:src|file|url|href|data-video|data-url|data-iframe|data-src|data-link|data-href|data-file)\s*[:=]\s*["']([^"']+)["']""")
-            .findAll(decoded)
-            .forEach { addServerUrl(serverUrls, it.groupValues[1], allowDecode) }
-
-        if (allowDecode) {
-            Regex("""(?i)(?:value|data-video|data-url|data-iframe|data-src|data-link|data-file)\s*=\s*["']([^"']+)["']""")
-                .findAll(decoded)
-                .forEach { addServerUrl(serverUrls, it.groupValues[1], allowDecode = true) }
+        decodeServerTexts(text).forEach { decodedText ->
+            extractServerUrlsFromText(decodedText).forEach { url ->
+                addServerCandidate(serverCandidates, url, label, forcedType)
+            }
         }
     }
 
@@ -535,12 +576,15 @@ class AnimeIndo : MainAPI() {
         )
     }
 
-    private fun collectServerUrls(document: Document, serverUrls: MutableList<String>) {
+    private fun collectServerCandidates(document: Document, serverCandidates: MutableList<ServerCandidate>) {
         document.select(
             "#tontonin[src], iframe#tontonin[src], .player iframe[src], .video iframe[src], " +
                 "source[src], video[src]"
         ).forEach { element ->
-            addServerUrl(serverUrls, element.attr("src").ifBlank { element.attr("data-src") })
+            val label = listOf(element.id(), element.className(), element.parent()?.text().orEmpty())
+                .joinToString(" ")
+            val type = serverTypeFromLabel(label)
+            addServerCandidate(serverCandidates, element.attr("src").ifBlank { element.attr("data-src") }, label, type)
         }
 
         document.select(
@@ -548,44 +592,39 @@ class AnimeIndo : MainAPI() {
                 "[data-video], [data-url], [data-iframe], [data-src], [data-link], [data-href], " +
                 "[data-file], option[value]"
         ).forEach { element ->
-            addServerUrl(serverUrls, element.attr("data-video"))
-            addServerUrl(serverUrls, element.attr("data-url"))
-            addServerUrl(serverUrls, element.attr("data-iframe"))
-            addServerUrl(serverUrls, element.attr("data-src"))
-            addServerUrl(serverUrls, element.attr("data-link"))
-            addServerUrl(serverUrls, element.attr("data-href"))
-            addServerUrl(serverUrls, element.attr("data-file"))
-            addServerUrl(serverUrls, element.attr("value"))
+            val label = listOf(element.text(), element.attr("title"), element.attr("aria-label"), element.id(), element.className())
+                .joinToString(" ")
+            val type = serverTypeFromLabel(label)
+            addServerCandidate(serverCandidates, element.attr("data-video"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-url"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-iframe"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-src"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-link"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-href"), label, type)
+            addServerCandidate(serverCandidates, element.attr("data-file"), label, type)
+            addServerCandidate(serverCandidates, element.attr("value"), label, type)
+            addServerCandidatesFromText(serverCandidates, element.outerHtml(), label, type)
         }
 
         document.select(
             ".server[onclick], .servers [onclick], .player [onclick], .video [onclick], " +
                 "a.server[href], .server a[href], .servers a[href], div.navi a[href], .navi a[href], " +
-                ".download a[href], .downloads a[href], a[href*='gdrive'], a[href*='gdplayer'], " +
-                "a[href*='mp4upload'], a[href*='btube'], a[href*='yup'], a[href*='xtwap']"
+                ".download a[href], .downloads a[href], a[href*='gdriveplayer'], a[href*='gdplayer'], " +
+                "a[href*='mp4upload'], a[href*='btube'], a[href*='xtwap'], a[href*='yup']"
         ).forEach { element ->
-            addServerUrlsFromText(serverUrls, element.attr("onclick"))
-
-            val href = element.attr("href")
-            val label = element.text()
-            if (
-                label.contains("download", true) ||
-                label.contains("unduh", true) ||
-                label.contains("mirror", true) ||
-                label.contains("gdrive", true) ||
-                label.contains("mp4", true) ||
-                label.contains("b-tube", true) ||
-                label.contains("btube", true) ||
-                label.contains("cepat", true) ||
-                label.contains("yup", true) ||
-                isPlayableServerUrl(cleanPlayerUrl(href).orEmpty())
-            ) {
-                addServerUrl(serverUrls, href)
-            }
+            val label = listOf(element.text(), element.attr("title"), element.attr("aria-label"), element.id(), element.className())
+                .joinToString(" ")
+            val type = serverTypeFromLabel(label)
+            addServerCandidatesFromText(serverCandidates, element.attr("onclick"), label, type)
+            addServerCandidate(serverCandidates, element.attr("href"), label, type)
         }
 
         document.select("#tontonin, .server, .servers, .navi, .download, .downloads, .player, .video")
-            .forEach { element -> addServerUrlsFromText(serverUrls, element.outerHtml()) }
+            .forEach { element ->
+                val label = listOf(element.text(), element.id(), element.className()).joinToString(" ")
+                val type = serverTypeFromLabel(label)
+                addServerCandidatesFromText(serverCandidates, element.outerHtml(), label, type)
+            }
     }
 
     private fun resolveXtwapChildUrl(baseUrl: String, childUrl: String): String {
@@ -684,6 +723,21 @@ class AnimeIndo : MainAPI() {
         return false
     }
 
+    private fun emitDirectVideo(
+        sourceName: String,
+        linkName: String,
+        videoUrl: String,
+        refererUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val isM3u8 = videoUrl.contains(".m3u8", true)
+        callback(newExtractorLink(sourceName, linkName, videoUrl,
+            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+            this.quality = Qualities.Unknown.value
+            this.referer = refererUrl
+        })
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -692,105 +746,110 @@ class AnimeIndo : MainAPI() {
     ): Boolean {
         val cleanData = data.substringBefore("#")
         val document = app.get(cleanData).document
-        val serverUrls = mutableListOf<String>()
+        val serverCandidates = mutableListOf<ServerCandidate>()
 
-        collectServerUrls(document, serverUrls)
+        collectServerCandidates(document, serverCandidates)
 
-        if (serverUrls.isEmpty() && cleanData.contains("/anime/", true)) {
+        if (serverCandidates.isEmpty() && cleanData.contains("/anime/", true)) {
             movieEpisodeCandidateUrls(cleanData).forEach { candidate ->
                 try {
                     val candidateDocument = app.get(candidate, referer = cleanData).document
-                    collectServerUrls(candidateDocument, serverUrls)
+                    collectServerCandidates(candidateDocument, serverCandidates)
                 } catch (_: Exception) {
                 }
             }
         }
 
+        val distinctServers = serverCandidates
+            .distinctBy { "${it.type}:${it.url}" }
+
         var found = false
 
-        fun emit(link: ExtractorLink) {
-            found = true
-            callback(link)
-        }
+        distinctServers.forEach { candidate ->
+            val fullUrl = candidate.url
+            when (candidate.type) {
+                ServerType.YUP -> {
+                    try {
+                        val playerDoc = app.get(fullUrl, referer = cleanData).document
+                        val directVideo = playerDoc.selectFirst("source[src], video[src]")?.attr("src")
+                            ?.let { cleanPlayerUrl(it) }
+                        if (!directVideo.isNullOrBlank()) {
+                            emitDirectVideo("AnimeIndo", "YUP", directVideo, fullUrl, callback)
+                            found = true
+                            return@forEach
+                        }
 
-        for (rawUrl in serverUrls.distinct()) {
-            val fullUrl = cleanPlayerUrl(rawUrl) ?: continue
-            when (serverTypeFromUrl(fullUrl) ?: continue) {
-                AnimeIndoServerType.BTUBE -> {
+                        val iframeUrl = playerDoc.selectFirst("#mediaplayer[src], iframe[src]")?.attr("src")
+                            ?.let { cleanPlayerUrl(it) }
+                        if (!iframeUrl.isNullOrBlank()) {
+                            loadExtractor(iframeUrl, fullUrl, subtitleCallback) {
+                                found = true
+                                callback(it)
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                ServerType.BTUBE -> {
                     try {
                         val playerDoc = app.get(
                             fullUrl,
                             referer = cleanData,
                             headers = mapOf("Referer" to cleanData)
                         ).document
-                        val videoSrc = cleanPlayerUrl(
-                            playerDoc.selectFirst("source[src], video[src], iframe[src]")?.attr("src")
-                        )
-                        if (!videoSrc.isNullOrBlank()) {
-                            val isM3u8 = videoSrc.contains(".m3u8", true)
-                            if (serverTypeFromUrl(videoSrc) == AnimeIndoServerType.BTUBE) {
-                                loadExtractor(videoSrc, fullUrl, subtitleCallback) { emit(it) }
-                            } else {
-                                emit(newExtractorLink(
-                                    "AnimeIndo",
-                                    "B-TUBE",
-                                    videoSrc,
-                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                ) {
-                                    this.quality = Qualities.P1080.value
-                                    this.referer = cleanData
-                                })
+                        val directVideo = playerDoc.selectFirst("source[src], video[src]")?.attr("src")
+                            ?.let { cleanPlayerUrl(it) }
+                        if (!directVideo.isNullOrBlank()) {
+                            emitDirectVideo("AnimeIndo", "B-TUBE", directVideo, cleanData, callback)
+                            found = true
+                            return@forEach
+                        }
+
+                        val iframeUrl = playerDoc.selectFirst("iframe[src]")?.attr("src")
+                            ?.let { cleanPlayerUrl(it) }
+                        if (!iframeUrl.isNullOrBlank()) {
+                            loadExtractor(iframeUrl, fullUrl, subtitleCallback) {
+                                found = true
+                                callback(it)
                             }
                         }
                     } catch (_: Exception) {
                     }
                 }
 
-                AnimeIndoServerType.GDRIVE -> {
+                ServerType.CEPAT -> {
                     try {
-                        loadExtractor(fullUrl, cleanData, subtitleCallback) { emit(it) }
-                    } catch (_: Exception) {
-                    }
-                }
-
-                AnimeIndoServerType.MP4 -> {
-                    try {
-                        loadExtractor(fullUrl, cleanData, subtitleCallback) { emit(it) }
-                    } catch (_: Exception) {
-                    }
-                }
-
-                AnimeIndoServerType.YUP -> {
-                    try {
-                        val playerDoc = app.get(fullUrl, referer = cleanData).document
-                        val playerUrl = cleanPlayerUrl(
-                            playerDoc.selectFirst("#mediaplayer[src], iframe[src], source[src], video[src]")?.attr("src")
-                        )
-                        if (!playerUrl.isNullOrBlank()) {
-                            if (playerUrl.contains(".mp4", true) || playerUrl.contains(".m3u8", true)) {
-                                val isM3u8 = playerUrl.contains(".m3u8", true)
-                                emit(newExtractorLink(
-                                    "AnimeIndo",
-                                    "YUP",
-                                    playerUrl,
-                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                ) {
-                                    this.quality = Qualities.Unknown.value
-                                    this.referer = fullUrl
-                                })
-                            } else if (serverTypeFromUrl(playerUrl) == AnimeIndoServerType.YUP) {
-                                loadExtractor(playerUrl, fullUrl, subtitleCallback) { emit(it) }
-                            } else {
-                                loadExtractor(playerUrl, fullUrl, subtitleCallback) { emit(it) }
+                        if (fullUrl.contains("xtwap", true) || fullUrl.contains("cepat", true)) {
+                            if (resolveXtwapLink(fullUrl, callback)) {
+                                found = true
                             }
                         }
                     } catch (_: Exception) {
                     }
                 }
 
-                AnimeIndoServerType.CEPAT -> {
+                ServerType.MP4 -> {
                     try {
-                        resolveXtwapLink(fullUrl) { emit(it) }
+                        if (fullUrl.endsWith(".mp4", true) || fullUrl.contains(".mp4?", true)) {
+                            emitDirectVideo("AnimeIndo", "MP4", fullUrl, cleanData, callback)
+                            found = true
+                        } else {
+                            loadExtractor(fullUrl, cleanData, subtitleCallback) {
+                                found = true
+                                callback(it)
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                ServerType.GDRIVE -> {
+                    try {
+                        loadExtractor(fullUrl, cleanData, subtitleCallback) {
+                            found = true
+                            callback(it)
+                        }
                     } catch (_: Exception) {
                     }
                 }
@@ -799,6 +858,7 @@ class AnimeIndo : MainAPI() {
 
         return found
     }
+
 }
 
 enum class AnimeIndoTagCategory(val title: String, val tagsList: List<String>) {
