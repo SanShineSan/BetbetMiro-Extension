@@ -268,15 +268,35 @@ class AnimePlay : MainAPI() {
     ): Boolean {
         val res = app.get(data, headers = mapOf("Accept-Language" to "id-ID,id;q=0.9"))
         val doc = res.document
+        val html = res.text
 
         val iframeSrcs = doc.select("iframe[src]")
             .map { it.attr("src").trim() }
             .filter { it.isNotBlank() }
             .distinct()
 
+        // Keep the proven iframe flow first. Only if it emits no playable links,
+        // fall back to AnimePlay's embedded streamingSources for series pages.
+        if (tryPlayerSources(iframeSrcs, data, subtitleCallback, callback)) return true
+
+        val streamingSrcs = extractStreamingSources(html)
+            .filterNot { it in iframeSrcs }
+            .distinct()
+
+        return tryPlayerSources(streamingSrcs, data, subtitleCallback, callback)
+    }
+
+    // ─── loadLinks helpers ────────────────────────────────────────────────────
+
+    private suspend fun tryPlayerSources(
+        rawSources: List<String>,
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
         var found = false
 
-        for (rawSrc in iframeSrcs) {
+        for (rawSrc in rawSources) {
             val src = when {
                 rawSrc.startsWith("http") -> rawSrc
                 rawSrc.startsWith("//")   -> "https:$rawSrc"
@@ -324,7 +344,20 @@ class AnimePlay : MainAPI() {
         return found
     }
 
-    // ─── loadLinks helpers ────────────────────────────────────────────────────
+    /** Extract fallback player wrappers from AnimePlay RSC/HTML when iframe flow finds no links. */
+    private fun extractStreamingSources(rawHtml: String): List<String> {
+        val clean = rawHtml
+            .replace("\\u0026", "&")
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+
+        return Regex(""""streaming"\s*:\s*"([^"]+)""")
+            .findAll(clean)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+    }
 
     /** Decode base64-wrapped URL from ?url=, ?id=, or ?v= query param */
     private fun unwrapBase64(src: String): String? {
