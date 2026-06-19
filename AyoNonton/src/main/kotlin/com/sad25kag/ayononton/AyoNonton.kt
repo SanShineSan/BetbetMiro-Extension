@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION", "DEPRECATION_ERROR")
+
 package com.sad25kag.ayononton
 
 import com.lagradost.cloudstream3.*
