@@ -723,7 +723,7 @@ class AnimeIndo : MainAPI() {
         return false
     }
 
-    private fun emitDirectVideo(
+    private suspend fun emitDirectVideo(
         sourceName: String,
         linkName: String,
         videoUrl: String,
