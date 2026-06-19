@@ -1,5 +1,6 @@
 package com.sad25kag.animeindo
 
+import android.util.Base64
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
@@ -17,26 +18,54 @@ open class GdrivePlayerTo : ExtractorApi() {
     override var mainUrl = "https://gdriveplayer.to"
     override val requiresReferer = true
 
+    private val activeEmbedKey2 = "sfhasgi783dhq92t7"
+
     private val htmlHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.7,en;q=0.5"
     )
 
-    private fun normalizeEscapedText(text: String): String {
-        var normalized = text
+    private fun safeDecode(value: String, maxRounds: Int = 1): String {
+        var current = value
+        repeat(maxRounds) {
+            val decoded = runCatching { URLDecoder.decode(current, "UTF-8") }.getOrDefault(current)
+            if (decoded == current) return@repeat
+            current = decoded
+        }
+        return current
             .replace("\\/", "/")
             .replace("\\u0026", "&")
             .replace("&amp;", "&")
+            .trim()
+    }
 
-        repeat(2) {
-            normalized = runCatching { URLDecoder.decode(normalized, "UTF-8") }
-                .getOrDefault(normalized)
-                .replace("\\/", "/")
-                .replace("\\u0026", "&")
-                .replace("&amp;", "&")
-        }
-        return normalized
+    private fun shouldDecodeWholeUrl(value: String): Boolean {
+        val lower = value.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("//")) return false
+        return lower.contains("http%3a%2f%2f") ||
+            lower.contains("https%3a%2f%2f") ||
+            lower.contains("%2f")
+    }
+
+    private fun scanVariants(text: String): List<String> {
+        val normalized = text
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+        val variants = linkedSetOf(normalized)
+        variants.add(safeDecode(normalized, 1))
+        variants.add(safeDecode(normalized, 2))
+        return variants.filter { it.isNotBlank() }
+    }
+
+    private fun queryValue(url: String, key: String): String? {
+        val query = url.substringAfter("?", "").substringBefore("#")
+        if (query.isBlank()) return null
+        return query.split("&")
+            .firstOrNull { part -> part.substringBefore("=").equals(key, ignoreCase = true) }
+            ?.substringAfter("=", "")
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun normalizePlayerUrl(rawUrl: String?, baseUrl: String): String? {
@@ -48,21 +77,21 @@ open class GdrivePlayerTo : ExtractorApi() {
             ?.takeIf { it.isNotBlank() }
             ?: return null
 
-        val decoded = runCatching { URLDecoder.decode(cleaned, "UTF-8") }
-            .getOrDefault(cleaned)
-            .replace("\\/", "/")
-            .replace("&amp;", "&")
-            .trim()
-            .trim('"', '\'', '`', ';')
+        val decoded = if (shouldDecodeWholeUrl(cleaned)) {
+            safeDecode(cleaned, 2).trim('"', '\'', '`', ';')
+        } else {
+            cleaned.trim().trim('"', '\'', '`', ';')
+        }
 
-        if (decoded == "#" || decoded.startsWith("javascript:", true)) return null
+        if (decoded == "#" || decoded.startsWith("javascript:", true) || decoded.startsWith("mailto:", true)) return null
 
         val fixed = when {
             decoded.startsWith("http://", true) || decoded.startsWith("https://", true) -> decoded
             decoded.startsWith("//") -> "https:$decoded"
             decoded.startsWith("/") -> "$mainUrl$decoded"
             decoded.startsWith("hlsplaylist.php", true) || decoded.startsWith("subproxy.php", true) ||
-                decoded.startsWith("embed.php", true) || decoded.startsWith("embed2.php", true) -> "$mainUrl/$decoded"
+                decoded.startsWith("embed.php", true) || decoded.startsWith("embed2.php", true) ||
+                decoded.startsWith("download.php", true) || decoded.startsWith("file.js", true) -> "$mainUrl/$decoded"
             else -> {
                 val cleanBase = baseUrl.substringBefore("#").substringBefore("?")
                 val baseDir = if (cleanBase.substringAfter("://", "").contains("/")) {
@@ -86,17 +115,58 @@ open class GdrivePlayerTo : ExtractorApi() {
 
     private fun isGdrivePlayerUrl(url: String): Boolean {
         val lower = url.lowercase()
-        return lower.contains("gdriveplayer.to/") || lower.contains("/embed.php?") || lower.contains("/embed2.php?")
+        return lower.contains("gdriveplayer.to/") ||
+            lower.contains("/embed.php?") ||
+            lower.contains("/embed2.php?") ||
+            lower.contains("/download.php?") ||
+            lower.contains("/file.js")
+    }
+
+    private fun isDownloadUrl(url: String): Boolean {
+        return url.contains("/download.php?", ignoreCase = true) && url.contains("link=", ignoreCase = true)
+    }
+
+    private fun buildEmbed2FromDownload(downloadUrl: String): String? {
+        if (!isDownloadUrl(downloadUrl)) return null
+        val link = queryValue(downloadUrl, "link") ?: return null
+        val key = queryValue(downloadUrl, "key") ?: ""
+        val key2 = queryValue(downloadUrl, "key2") ?: activeEmbedKey2
+        val noAdult = queryValue(downloadUrl, "no_adult") ?: "yes"
+        return "$mainUrl/embed2.php?link=$link&key=$key&key2=$key2&no_adult=$noAdult"
+    }
+
+    private fun decodeBase64Url(value: String): String? {
+        val decoded = safeDecode(value, 1)
+            .replace('-', '+')
+            .replace('_', '/')
+            .replace(" ", "+")
+            .trim()
+        val padded = decoded + "=".repeat((4 - decoded.length % 4) % 4)
+        return runCatching { String(Base64.decode(padded, Base64.DEFAULT), Charsets.UTF_8) }
+            .getOrNull()
+            ?.replace("\\/", "/")
+            ?.replace("&amp;", "&")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun normalizeDriveUrl(url: String): String {
+        return url.replace("/view", "/preview")
+            .substringBefore("?")
+            .let { clean ->
+                if (clean.contains("/preview", true)) clean else clean.trimEnd('/') + "/preview"
+            }
     }
 
     private fun collectUrls(text: String, baseUrl: String, patterns: List<Regex>): List<String> {
-        val normalized = normalizeEscapedText(text)
         val candidates = linkedSetOf<String>()
 
-        for (pattern in patterns) {
-            for (match in pattern.findAll(normalized)) {
-                val raw = match.groups[1]?.value ?: match.value
-                normalizePlayerUrl(raw, baseUrl)?.let { candidates.add(it) }
+        for (scan in scanVariants(text)) {
+            for (pattern in patterns) {
+                for (match in pattern.findAll(scan)) {
+                    val raw = match.groups[1]?.value ?: match.value
+                    normalizePlayerUrl(raw, baseUrl)?.let { candidates.add(it) }
+                }
             }
         }
 
@@ -111,7 +181,7 @@ open class GdrivePlayerTo : ExtractorApi() {
                 Regex("""(?i)(?:https?:)?//gdriveplayer\.to/hlsplaylist\.php[^"'<>\\\s]+"""),
                 Regex("""(?i)/hlsplaylist\.php\?[^"'<>\\\s]+"""),
                 Regex("""(?i)(?<![A-Za-z0-9_./-])hlsplaylist\.php\?[^"'<>\\\s]+"""),
-                Regex("""(?i)(?:file|url|src)\s*[:=]\s*["']([^"']*(?:hlsplaylist\.php|\.m3u8)[^"']*)["']"""),
+                Regex("""(?i)(?:file|url|src|sources)\s*[:=]\s*["']([^"']*(?:hlsplaylist\.php|\.m3u8)[^"']*)["']"""),
                 Regex("""(?i)(?:https?:)?//[^"'<>\\\s]+\.m3u8(?:\?[^"'<>\\\s]+)?""")
             )
         ).filter { isHlsUrl(it) }
@@ -130,17 +200,41 @@ open class GdrivePlayerTo : ExtractorApi() {
         )
     }
 
+    private fun collectDriveUrls(text: String, baseUrl: String): List<String> {
+        val drives = linkedSetOf<String>()
+        collectUrls(
+            text,
+            baseUrl,
+            listOf(
+                Regex("""(?i)(https?://drive\.google\.com/file/d/[^/"'<>\\\s]+/(?:view|preview)(?:\?[^"'<>\\\s]+)?)"""),
+                Regex("""(?i)(https?://[^"'<>\\\s]+/file/d/[^/"'<>\\\s]+/(?:view|preview)(?:\?[^"'<>\\\s]+)?)""")
+            )
+        ).forEach { drives.add(normalizeDriveUrl(it)) }
+
+        collectSubtitleUrls(text, baseUrl).forEach { subProxy ->
+            queryValue(subProxy, "u")?.let { encoded ->
+                decodeBase64Url(encoded)?.takeIf { it.contains("drive.google.com/file/d/", true) }?.let { drive ->
+                    drives.add(normalizeDriveUrl(drive))
+                }
+            }
+        }
+
+        return drives.toList()
+    }
+
     private fun collectEmbedUrls(text: String, baseUrl: String): List<String> {
         return collectUrls(
             text,
             baseUrl,
             listOf(
                 Regex("""(?i)(?:https?:)?//[^"'<>\\\s]*gdriveplayer[^"'<>\\\s]*/embed2?\.php\?[^"'<>\\\s]+"""),
+                Regex("""(?i)(?:https?:)?//[^"'<>\\\s]*gdriveplayer[^"'<>\\\s]*/download\.php\?[^"'<>\\\s]+"""),
                 Regex("""(?i)/embed2?\.php\?[^"'<>\\\s]+"""),
+                Regex("""(?i)/download\.php\?[^"'<>\\\s]+"""),
                 Regex("""(?i)(?<![A-Za-z0-9_./-])embed2?\.php\?[^"'<>\\\s]+"""),
-                Regex("""(?i)(?:src|href|data-video|data-url|data-iframe|data-src|data-link|file|url)\s*[:=]\s*["']([^"']*(?:gdriveplayer[^"']*/embed2?\.php|/embed2?\.php)[^"']*)["']"""),
-                Regex("""(?i)(?:https?:)?//drive\.google\.com/file/d/[^/"'<>\\\s]+/preview(?:\?[^"'<>\\\s]+)?"""),
-                Regex("""(?i)https?://[^"'<>\\\s]+/file/d/[^/"'<>\\\s]+/preview(?:\?[^"'<>\\\s]+)?""")
+                Regex("""(?i)(?<![A-Za-z0-9_./-])download\.php\?[^"'<>\\\s]+"""),
+                Regex("""(?i)(?:src|href|data-video|data-url|data-iframe|data-src|data-link|file|url)\s*[:=]\s*["']([^"']*(?:gdriveplayer[^"']*/(?:embed2?\.php|download\.php)|/(?:embed2?\.php|download\.php))[^"']*)["']"""),
+                Regex("""(?i)(?:src|href)\s*=\s*["']([^"']*file\.js[^"']*)["']""")
             )
         )
     }
@@ -192,6 +286,10 @@ open class GdrivePlayerTo : ExtractorApi() {
         val seenPages = linkedSetOf<String>()
         val queue = mutableListOf(firstUrl to firstReferer)
 
+        buildEmbed2FromDownload(firstUrl)?.let { embedUrl ->
+            if (queue.none { it.first.equals(embedUrl, true) }) queue.add(embedUrl to firstReferer)
+        }
+
         suspend fun emitPlaylist(rawPlaylistUrl: String, playerUrl: String): Boolean {
             val playlistUrl = normalizePlayerUrl(rawPlaylistUrl, playerUrl) ?: return false
             if (!isHlsUrl(playlistUrl)) return false
@@ -213,11 +311,19 @@ open class GdrivePlayerTo : ExtractorApi() {
         }
 
         var index = 0
-        while (index < queue.size && index < 12) {
+        while (index < queue.size && index < 20) {
             val (currentUrl, pageReferer) = queue[index]
             index += 1
 
             if (!seenPages.add(currentUrl.substringBefore("#"))) continue
+
+            buildEmbed2FromDownload(currentUrl)?.let { embedUrl ->
+                if (seenPages.none { it.equals(embedUrl.substringBefore("#"), true) } &&
+                    queue.none { it.first.equals(embedUrl, true) }
+                ) {
+                    queue.add(embedUrl to pageReferer)
+                }
+            }
 
             if (isHlsUrl(currentUrl)) {
                 emitPlaylist(currentUrl, pageReferer)
@@ -225,7 +331,7 @@ open class GdrivePlayerTo : ExtractorApi() {
             }
 
             if (currentUrl.contains("drive.google.com/file/d/", true)) {
-                runCatching { loadExtractor(currentUrl, pageReferer, subtitleCallback, countedCallback) }
+                runCatching { loadExtractor(normalizeDriveUrl(currentUrl), pageReferer, subtitleCallback, countedCallback) }
                 if (emitted.isNotEmpty()) return
                 continue
             }
@@ -237,6 +343,12 @@ open class GdrivePlayerTo : ExtractorApi() {
                     headers = htmlHeaders + mapOf("Referer" to pageReferer)
                 ).text
             }.getOrNull() ?: continue
+
+            if (pageText.startsWith("#EXTM3U")) {
+                emitPlaylist(currentUrl, pageReferer)
+                if (emitted.isNotEmpty()) return
+                continue
+            }
 
             val unpacked = runCatching { getAndUnpack(pageText) }.getOrDefault("")
             val scanText = if (unpacked.isBlank()) pageText else "$pageText\n$unpacked"
@@ -250,18 +362,30 @@ open class GdrivePlayerTo : ExtractorApi() {
             }
             if (emitted.isNotEmpty()) return
 
+            for (driveUrl in collectDriveUrls(scanText, currentUrl)) {
+                runCatching { loadExtractor(driveUrl, currentUrl, subtitleCallback, countedCallback) }
+                if (emitted.isNotEmpty()) return
+            }
+
             val nested = linkedSetOf<String>()
             nested.addAll(collectEmbedUrls(scanText, currentUrl))
             nested.addAll(collectNestedUrls(scanText, currentUrl))
 
             for (nestedUrl in nested) {
                 val fixedUrl = normalizePlayerUrl(nestedUrl, currentUrl) ?: continue
+                val embedUrl = buildEmbed2FromDownload(fixedUrl)
+                if (embedUrl != null && seenPages.none { it.equals(embedUrl.substringBefore("#"), true) }) {
+                    queue.add(embedUrl to currentUrl)
+                }
+
                 if (isHlsUrl(fixedUrl)) {
                     emitPlaylist(fixedUrl, currentUrl)
                 } else if (fixedUrl.contains("drive.google.com/file/d/", true)) {
-                    runCatching { loadExtractor(fixedUrl, currentUrl, subtitleCallback, countedCallback) }
+                    runCatching { loadExtractor(normalizeDriveUrl(fixedUrl), currentUrl, subtitleCallback, countedCallback) }
                 } else if (isGdrivePlayerUrl(fixedUrl) && seenPages.none { it.equals(fixedUrl.substringBefore("#"), true) }) {
                     queue.add(fixedUrl to currentUrl)
+                } else {
+                    runCatching { loadExtractor(fixedUrl, currentUrl, subtitleCallback, countedCallback) }
                 }
             }
 
