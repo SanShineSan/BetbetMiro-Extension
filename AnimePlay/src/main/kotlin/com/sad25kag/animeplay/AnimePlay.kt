@@ -406,7 +406,7 @@ class AnimePlay : MainAPI() {
         }
     }
 
-    private fun emitDirectLink(
+    private suspend fun emitDirectLink(
         rawUrl: String,
         label: String,
         referer: String,
