@@ -225,8 +225,6 @@ class AnimePlay : MainAPI() {
                 tags            = genres
                 this.year       = year
                 this.showStatus = showStatus
-                addMalId(tracker?.malId)
-                addAniListId(tracker?.aniId?.toIntOrNull())
             }
         }
     }
