@@ -1,22 +1,20 @@
-@file:Suppress("DEPRECATION", "DEPRECATION_ERROR")
-
 package com.sad25kag.ayononton
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.M3u8Helper.Companion.generateM3u8
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.net.URI
 
 /**
  * AyoNonton Provider — ayononton.live
  *
- * Platform : WordPress + MuviPro/idmuvi theme (Terbit21 clone)
- * x-powered-by: TERBIT21.COM
- *
- * Build fix:
- * - CloudStream's current newExtractorLink API accepts source/name/url/type as positional args.
- * - referer and quality must be set inside the builder block.
+ * Source family: WordPress + MuviPro/idmuvi theme using the Terbit21 player API.
+ * Main resolver rule: never use play-ads.php as a final player. It exposes a loading
+ * placeholder; the usable player is the real t21 endpoint behind the iframe/server type.
  */
 class AyoNonton : MainAPI() {
 
@@ -33,75 +31,29 @@ class AyoNonton : MainAPI() {
     )
 
     private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    private val T21_API = "https://t21.press"
+    private val t21Api = "https://t21.press"
 
     override val mainPage = mainPageOf(
-        "$mainUrl/latest/"               to "Terbaru",
-        "$mainUrl/populer/"              to "Populer",
-        "$mainUrl/trending-minggu-ini/"  to "Trending Minggu Ini",
-        "$mainUrl/rating/"               to "Rating Tertinggi",
-        "$mainUrl/genre/action/"         to "Aksi",
-        "$mainUrl/genre/drama/"          to "Drama",
-        "$mainUrl/genre/comedy/"         to "Komedi",
-        "$mainUrl/genre/horror/"         to "Horor",
-        "$mainUrl/genre/thriller/"       to "Thriller",
-        "$mainUrl/genre/romance/"        to "Romansa",
-        "$mainUrl/genre/animation/"      to "Animasi",
-        "$mainUrl/genre/sci-fi/"         to "Sci-Fi",
-        "$mainUrl/genre/biography/"      to "Biografi",
-        "$mainUrl/genre/crime/"          to "Kriminal",
-        "$mainUrl/genre/fantasy/"        to "Fantasi",
+        "$mainUrl/latest/"              to "Terbaru",
+        "$mainUrl/populer/"             to "Populer",
+        "$mainUrl/trending-minggu-ini/" to "Trending Minggu Ini",
+        "$mainUrl/rating/"              to "Rating Tertinggi",
+        "$mainUrl/genre/action/"        to "Aksi",
+        "$mainUrl/genre/drama/"         to "Drama",
+        "$mainUrl/genre/comedy/"        to "Komedi",
+        "$mainUrl/genre/horror/"        to "Horor",
+        "$mainUrl/genre/thriller/"      to "Thriller",
+        "$mainUrl/genre/romance/"       to "Romansa",
+        "$mainUrl/genre/animation/"     to "Animasi",
+        "$mainUrl/genre/sci-fi/"        to "Sci-Fi",
+        "$mainUrl/genre/biography/"     to "Biografi",
+        "$mainUrl/genre/crime/"         to "Kriminal",
+        "$mainUrl/genre/fantasy/"       to "Fantasi",
     )
-
-    private fun parseListingPage(doc: Document): List<SearchResponse> {
-        return doc.select("article.item").mapNotNull { art ->
-            val anchor = art.selectFirst("a[itemprop=url]") ?: return@mapNotNull null
-            val href = anchor.absUrl("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-
-            val rawTitle = anchor.attr("title").ifBlank { anchor.ownText() }
-            val title = rawTitle
-                .removePrefix("Nonton Film: ")
-                .removePrefix("Nonton Series: ")
-                .removePrefix("Nonton ")
-                .trim()
-                .ifBlank { href.trimEnd('/').substringAfterLast('/') }
-
-            val poster = bestPoster(art)
-            val tvType = detectType(title, art.attr("itemtype"))
-
-            if (tvType == TvType.TvSeries) {
-                newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
-            } else {
-                newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
-            }
-        }
-    }
-
-    private fun bestPoster(el: org.jsoup.nodes.Element): String? {
-        el.selectFirst("source[srcset]")?.attr("srcset")
-            ?.split(",")
-            ?.lastOrNull()
-            ?.trim()
-            ?.split("\\s+".toRegex())
-            ?.firstOrNull { it.startsWith("http") }
-            ?.let { return it }
-
-        el.selectFirst("img[itemprop=image], img[data-src], img[src]")?.let { img ->
-            val src = img.absUrl("data-src").ifBlank { img.absUrl("src") }
-            if (src.startsWith("http")) return src
-        }
-        return null
-    }
-
-    private fun detectType(title: String, itemtype: String): TvType {
-        if (itemtype.contains("TVSeries", ignoreCase = true)) return TvType.TvSeries
-        if (title.contains(Regex("""(?i)\b(season|series|s\d+e\d+|episode)\b"""))) return TvType.TvSeries
-        return TvType.Movie
-    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) request.data else request.data.trimEnd('/') + "/page/$page/"
-        val doc = app.get(url, headers = mapOf("User-Agent" to ua)).document
+        val doc = app.get(url, headers = siteHeaders(url)).document
         val items = parseListingPage(doc)
         val hasMore = doc.selectFirst("a.next.page-numbers, .pagination .next, a[rel=next]") != null
 
@@ -112,25 +64,20 @@ class AyoNonton : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val doc = app.get(
-            "$mainUrl/?s=${query.encodeUri()}",
-            headers = mapOf("User-Agent" to ua),
-        ).document
-        return parseListingPage(doc)
+        val url = "$mainUrl/?s=${query.encodeUri()}"
+        return app.get(url, headers = siteHeaders(url)).document.let(::parseListingPage)
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, headers = mapOf("User-Agent" to ua)).document
-        val slug = url.trimEnd('/').substringAfterLast('/')
-
-        val rawTitle = doc.selectFirst("h1[itemprop=name], h1.entry-title, h1")
-            ?.text()?.trim() ?: slug
-
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: doc.selectFirst("img[itemprop=image]")?.absUrl("src")
-
+        val doc = app.get(url, headers = siteHeaders(url)).document
+        val slug = slugFrom(url)
+        val rawTitle = doc.selectFirst("h1[itemprop=name], h1.entry-title, h1")?.text()?.trim().orEmpty()
+            .ifBlank { slug }
+        val title = rawTitle.replace(Regex("""\s*\(\d{4}\)\s*$"""), "").trim().ifBlank { rawTitle }
+        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }
+            ?: doc.selectFirst("img[itemprop=image], .gmr-movie-data img, .content-thumbnail img")?.let(::imageFrom)
         val description = doc.selectFirst(
-            "div.entry-content.clearfix, div.entry-content, div#synopsis, div.gmr-sinopsis"
+            "div.entry-content.clearfix, div.entry-content[itemprop=description], div.entry-content, div#synopsis, div.gmr-sinopsis"
         )?.text()?.trim()
 
         val genres = mutableListOf<String>()
@@ -139,55 +86,50 @@ class AyoNonton : MainAPI() {
         var rating: String? = null
 
         doc.select("div.gmr-moviedata, div.gmr-movie-data").forEach { div ->
-            val label = div.selectFirst("strong")?.text()?.lowercase()?.trim() ?: ""
-            val value = div.text().removePrefix(div.selectFirst("strong")?.text() ?: "").trim()
+            val label = div.selectFirst("strong")?.text()?.lowercase()?.trim().orEmpty()
+            val value = div.text().removePrefix(div.selectFirst("strong")?.text().orEmpty()).trim()
             when {
                 label.contains("genre") -> div.select("a[href*=/genre/]").forEach { genres.add(it.text()) }
                 label.contains("tahun") -> year = value.take(4).toIntOrNull()
                 label.contains("durasi") -> duration = value
-                label.contains("rating") ->
-                    rating = div.selectFirst("span[itemprop=ratingValue], span, .imdb-rating")
-                        ?.text()?.trim()?.ifBlank { null }
+                label.contains("rating") -> rating = div.selectFirst("span[itemprop=ratingValue], .imdb-rating, span")
+                    ?.text()?.trim()?.ifBlank { null }
             }
         }
 
         if (year == null) {
-            year = Regex("""\((\d{4})\)""").find(rawTitle)?.groupValues?.get(1)?.toIntOrNull()
+            year = Regex("""\((\d{4})\)""").find(rawTitle)?.groupValues?.getOrNull(1)?.toIntOrNull()
         }
 
-        val title = rawTitle.replace(Regex("""\s*\(\d{4}\)\s*$"""), "").trim().ifBlank { rawTitle }
-
-        val isSeries = doc.select("div.gmr-moviedata a[href*=/genre/]")
-            .any { it.text().contains(Regex("(?i)series|episode|season")) }
-            || title.contains(Regex("""(?i)\b(season|series|s\d+e?\d*)\b"""))
-
-        val dataToken = "$mainUrl/||$slug"
+        val episodes = parseEpisodes(doc, url, poster, description)
+        val isSeries = episodes.size > 1 || looksLikeSeries(title, doc)
+        val playData = "$mainUrl/||$slug"
 
         return if (isSeries) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(
-                Episode(
-                    data = dataToken,
-                    name = title,
-                    season = 1,
-                    episode = 1,
-                    posterUrl = poster,
-                    description = description,
-                )
-            )) {
+            val finalEpisodes = episodes.ifEmpty {
+                listOf(newEpisode(playData) {
+                    this.name = title
+                    this.season = 1
+                    this.episode = 1
+                    this.posterUrl = poster
+                    this.description = description
+                })
+            }
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, finalEpisodes) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
                 this.tags = genres.distinct()
-                this.rating = rating?.toRatingInt()
+                this.score = Score.from10(rating)
                 this.duration = duration?.filter { it.isDigit() }?.toIntOrNull()
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, dataToken) {
+            newMovieLoadResponse(title, url, TvType.Movie, playData) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
                 this.tags = genres.distinct()
-                this.rating = rating?.toRatingInt()
+                this.score = Score.from10(rating)
                 this.duration = duration?.filter { it.isDigit() }?.toIntOrNull()
             }
         }
@@ -199,233 +141,346 @@ class AyoNonton : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val slug = if (data.contains("||")) data.substringAfterLast("||") else data.trimEnd('/').substringAfterLast('/')
+        val slug = slugFrom(data.substringAfterLast("||"))
+        if (slug.isBlank()) return false
+
+        val detailReferer = "$mainUrl/$slug/"
         var loaded = false
 
-        val apiHtml = try {
+        val apiHtml = runCatching {
             app.post(
-                "$T21_API/data.php",
-                headers = mapOf(
-                    "User-Agent" to ua,
-                    "Referer" to "$mainUrl/$slug/",
-                    "Origin" to mainUrl,
-                    "Content-Type" to "application/x-www-form-urlencoded",
-                ),
+                "$t21Api/data.php",
+                headers = formHeaders(detailReferer, mainUrl),
                 data = mapOf("movie" to slug),
             ).text
-        } catch (_: Exception) { null }
+        }.getOrNull()
 
-        if (apiHtml.isNullOrBlank() || apiHtml.trim() == "none") {
-            loaded = loadDownloadLinks(slug, callback) || loaded
-            return loaded
-        }
-
-        val serverDoc = Jsoup.parse(apiHtml)
-        val servers = serverDoc.select("a[href][class]").filter { a ->
-            val rel = a.attr("rel")
-            !rel.contains("download", ignoreCase = true) &&
-                !a.attr("href").contains("#download", ignoreCase = true)
-        }
-
-        val seen = mutableSetOf<String>()
-
-        for (server in servers) {
-            val cssClass = server.attr("class").uppercase().trim()
-            val serverName = server.text().trim().ifBlank { cssClass }
-
-            val realUrl = when {
-                cssClass.contains("HYDRAX") -> "$T21_API/g-hydrax.php?movie=$slug"
-                cssClass.contains("GDFRAME") -> "$T21_API/gdframe.php?movie=$slug"
-                else -> "$T21_API/p2p.php?movie=$slug"
-            }
-
-            if (!seen.add(realUrl)) continue
-
-            when {
-                cssClass.contains("HYDRAX") ->
-                    if (loadHydrax(realUrl, slug, serverName, subtitleCallback, callback)) loaded = true
-                else ->
-                    if (loadP2POrGdFrame(realUrl, slug, serverName, subtitleCallback, callback)) loaded = true
+        if (!apiHtml.isNullOrBlank() && apiHtml.trim() != "none") {
+            val servers = parseServerEntries(apiHtml, slug)
+            for (server in servers) {
+                val found = when (server.kind) {
+                    PlayerKind.HYDRAX -> loadHydrax(server.url, detailReferer, server.name, subtitleCallback, callback)
+                    PlayerKind.P2P,
+                    PlayerKind.GDFRAME,
+                    PlayerKind.OTHER -> loadPlayerPage(server.url, detailReferer, server.name, subtitleCallback, callback)
+                }
+                loaded = found || loaded
             }
         }
 
-        if (loadDownloadLinks(slug, callback)) loaded = true
+        loaded = loadDownloadLinks(slug, callback) || loaded
         return loaded
     }
 
-    private suspend fun loadHydrax(
-        realUrl: String,
-        slug: String,
-        name: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        return try {
-            val pageHtml = app.get(
-                realUrl,
-                headers = mapOf(
-                    "User-Agent" to ua,
-                    "Referer" to "$mainUrl/$slug/",
-                )
-            ).text
+    private fun parseListingPage(doc: Document): List<SearchResponse> {
+        return doc.select("article.item, article.item-infinite").mapNotNull { art ->
+            val anchor = art.selectFirst("a[itemprop=url], .entry-title a[href], a[href]") ?: return@mapNotNull null
+            val href = anchor.absUrl("href").ifBlank { normalizeUrl(doc.location(), anchor.attr("href")) }
+                ?.takeIf { it.contains(mainUrl) } ?: return@mapNotNull null
+            val rawTitle = anchor.attr("title").ifBlank { anchor.text() }
+            val title = cleanTitle(rawTitle).ifBlank { slugFrom(href).replace('-', ' ') }
+            val poster = bestPoster(art)
+            val type = if (looksLikeSeries(title, art)) TvType.TvSeries else TvType.Movie
 
-            val hydraxUrl = Regex("""src=["'](https?://(?:www\.)?playhydrax\.com/[^"']+)["']""", RegexOption.IGNORE_CASE)
-                .find(pageHtml)?.groupValues?.get(1)
-                ?: Regex("""["'](https?://(?:www\.)?playhydrax\.com/\?v=[^"'\s]+)["']""", RegexOption.IGNORE_CASE)
-                    .find(pageHtml)?.groupValues?.get(1)
-
-            if (hydraxUrl != null) {
-                loadExtractor(hydraxUrl, realUrl, subtitleCallback, callback)
+            if (type == TvType.TvSeries) {
+                newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
             } else {
-                val iframeSrc = Regex("""<iframe[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .find(pageHtml)?.groupValues?.get(1)
-                if (iframeSrc != null) loadExtractor(iframeSrc, realUrl, subtitleCallback, callback) else false
+                newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
             }
-        } catch (_: Exception) { false }
+        }.distinctBy { it.url }
     }
 
-    private suspend fun loadP2POrGdFrame(
-        realUrl: String,
-        slug: String,
-        name: String,
+    private fun parseEpisodes(doc: Document, detailUrl: String, poster: String?, description: String?): List<Episode> {
+        val selector = listOf(
+            ".gmr-listseries a[href]",
+            ".gmr-episode a[href]",
+            ".episode-list a[href]",
+            ".eplister a[href]",
+            "a[href*='/episode/']",
+            "a[href*='/eps/']"
+        ).joinToString(",")
+
+        return doc.select(selector).mapNotNull { a ->
+            val href = a.absUrl("href").ifBlank { normalizeUrl(detailUrl, a.attr("href")) } ?: return@mapNotNull null
+            if (!href.contains(mainUrl) || href == detailUrl) return@mapNotNull null
+            val text = a.attr("title").ifBlank { a.text() }.trim()
+            val number = episodeNumber(text.ifBlank { href })
+            newEpisode(href) {
+                this.name = text.ifBlank { "Episode ${number ?: 1}" }
+                this.season = 1
+                this.episode = number
+                this.posterUrl = poster
+                this.description = description
+            }
+        }.distinctBy { it.data }.sortedBy { it.episode ?: Int.MAX_VALUE }
+    }
+
+    private fun parseServerEntries(apiHtml: String, slug: String): List<ServerEntry> {
+        val doc = Jsoup.parse(apiHtml, t21Api)
+        return doc.select("a[href]").mapNotNull { a ->
+            val href = a.absUrl("href").ifBlank { normalizeUrl(t21Api, a.attr("href")) } ?: return@mapNotNull null
+            if (href.contains("#download", true) || a.attr("rel").contains("download", true)) return@mapNotNull null
+            val cssClass = a.attr("class").uppercase().trim()
+            val label = a.text().trim().ifBlank { cssClass.ifBlank { "SERVER" } }
+            val iframe = href.substringAfter("iframe=", "").substringBefore("&").lowercase()
+            val probe = "$cssClass $iframe ${a.text()}".lowercase()
+            val kind = when {
+                probe.contains("hydrax") -> PlayerKind.HYDRAX
+                probe.contains("gdframe") || probe.contains("gd-frame") -> PlayerKind.GDFRAME
+                probe.contains("p2p") || probe.contains("drive") -> PlayerKind.P2P
+                else -> PlayerKind.OTHER
+            }
+            val realUrl = when (kind) {
+                PlayerKind.HYDRAX -> "$t21Api/g-hydrax.php?movie=$slug"
+                PlayerKind.GDFRAME -> "$t21Api/gdframe.php?movie=$slug"
+                PlayerKind.P2P -> "$t21Api/p2p.php?movie=$slug"
+                PlayerKind.OTHER -> href.takeIf { !it.contains("play-ads.php", true) } ?: "$t21Api/p2p.php?movie=$slug"
+            }
+            ServerEntry(label, realUrl, kind)
+        }.distinctBy { it.url }
+    }
+
+    private suspend fun loadHydrax(
+        playerUrl: String,
+        detailReferer: String,
+        serverName: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        return try {
-            val pageHtml = app.get(
-                realUrl,
-                headers = mapOf(
-                    "User-Agent" to ua,
-                    "Referer" to "$mainUrl/$slug/",
-                )
+        val html = runCatching {
+            app.get(playerUrl, headers = siteHeaders(playerUrl, detailReferer)).text
+        }.getOrNull().orEmpty()
+        val iframe = extractIframeUrl(html)
+        return if (!iframe.isNullOrBlank()) {
+            runCatching { loadExtractor(iframe, playerUrl, subtitleCallback, callback) }.getOrDefault(false)
+        } else {
+            emitMediaLink(name, "$name [$serverName]", extractMediaUrl(html), playerUrl, callback)
+        }
+    }
+
+    private suspend fun loadPlayerPage(
+        playerUrl: String,
+        detailReferer: String,
+        serverName: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val html = runCatching {
+            app.get(playerUrl, headers = siteHeaders(playerUrl, detailReferer)).text
+        }.getOrNull().orEmpty()
+
+        extractIframeUrl(html)?.let { iframe ->
+            val extracted = runCatching { loadExtractor(iframe, playerUrl, subtitleCallback, callback) }.getOrDefault(false)
+            if (extracted) return true
+        }
+
+        extractMediaUrl(html)?.let { media ->
+            if (emitMediaLink(name, "$name [$serverName]", media, playerUrl, callback)) return true
+        }
+
+        val resolver = WebViewResolver(
+            Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""", RegexOption.IGNORE_CASE),
+            userAgent = ua,
+            useOkhttp = true,
+        )
+        val captured = runCatching {
+            app.get(
+                playerUrl,
+                headers = siteHeaders(playerUrl, detailReferer),
+                interceptor = resolver,
+                timeout = 60L,
+            ).url
+        }.getOrNull()
+
+        return emitMediaLink(name, "$name [$serverName]", captured, playerUrl, callback)
+    }
+
+    private suspend fun loadDownloadLinks(slug: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val html = runCatching {
+            app.post(
+                "$t21Api/verifying.php?movie=$slug",
+                headers = formHeaders("https://terbit21.tv/get/?movie=$slug", "https://terbit21.tv"),
+                data = mapOf("movie" to slug),
             ).text
+        }.getOrNull().orEmpty()
+        if (html.isBlank()) return false
 
-            val videoUrl = extractVideoUrl(pageHtml)
+        val doc = Jsoup.parse(html, t21Api)
+        var found = false
+        doc.select("table a[href], a[href*='download'], a[href*='openx']").forEach { a ->
+            val href = a.absUrl("href").ifBlank { normalizeUrl(t21Api, a.attr("href")) } ?: return@forEach
+            if (href.contains("facebook", true) || href.contains("twitter", true) ||
+                href.contains("t.me", true) || href.contains("subscene", true)) return@forEach
+            val rowText = a.closest("tr")?.text()?.uppercase().orEmpty()
+            val quality = qualityFromText(rowText)
+            val provider = a.closest("tr")?.selectFirst("td")?.text()?.trim()?.ifBlank { "Download" } ?: "Download"
+            callback.invoke(
+                newExtractorLink(name, "$name [DL] $provider", href, ExtractorLinkType.VIDEO) {
+                    this.referer = "https://terbit21.tv/"
+                    this.quality = quality
+                    this.headers = siteHeaders(href, "https://terbit21.tv/")
+                }
+            )
+            found = true
+        }
+        return found
+    }
 
-            if (videoUrl != null) {
-                val isM3u8 = videoUrl.contains(".m3u8", ignoreCase = true)
+    private suspend fun emitMediaLink(
+        source: String,
+        label: String,
+        rawUrl: String?,
+        referer: String,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val url = rawUrl?.replace("\\/", "/")?.replace("&amp;", "&")?.trim().orEmpty()
+        if (url.isBlank() || !url.startsWith("http", true)) return false
+        return if (url.contains(".m3u8", true)) {
+            val links = runCatching {
+                generateM3u8(
+                    source = source,
+                    streamUrl = url,
+                    referer = referer,
+                    headers = siteHeaders(url, referer),
+                )
+            }.getOrDefault(emptyList())
+            if (links.isNotEmpty()) {
+                links.forEach(callback)
+                true
+            } else {
                 callback.invoke(
-                    newExtractorLink(
-                        this.name,
-                        "${this.name} [$name]",
-                        videoUrl,
-                        if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                    ) {
-                        this.referer = realUrl
-                        this.quality = Qualities.Unknown.value
+                    newExtractorLink(source, label, url, ExtractorLinkType.M3U8) {
+                        this.referer = referer
+                        this.quality = qualityFromText(url)
+                        this.headers = siteHeaders(url, referer)
                     }
                 )
                 true
-            } else {
-                val resolver = WebViewResolver(
-                    Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""", RegexOption.IGNORE_CASE),
-                    userAgent = ua,
-                    useOkhttp = true,
-                )
-                val capturedUrl = app.get(
-                    realUrl,
-                    headers = mapOf("User-Agent" to ua, "Referer" to "$mainUrl/$slug/"),
-                    interceptor = resolver,
-                    timeout = 60L,
-                ).url
-
-                if (capturedUrl.isNotBlank() && capturedUrl.contains(".m3u8", ignoreCase = true)) {
-                    callback.invoke(
-                        newExtractorLink(
-                            this.name,
-                            "${this.name} [$name]",
-                            capturedUrl,
-                            ExtractorLinkType.M3U8,
-                        ) {
-                            this.referer = realUrl
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    true
-                } else false
             }
-        } catch (_: Exception) { false }
-    }
-
-    private suspend fun loadDownloadLinks(
-        slug: String,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-        return try {
-            val dlHtml = app.post(
-                "$T21_API/verifying.php?movie=$slug",
-                headers = mapOf(
-                    "User-Agent" to ua,
-                    "Referer" to "https://terbit21.tv/get/?movie=$slug",
-                    "Origin" to "https://terbit21.tv",
-                    "Content-Type" to "application/x-www-form-urlencoded",
-                ),
-                data = mapOf("movie" to slug),
-            ).text
-
-            if (dlHtml.isBlank()) return false
-
-            val dlDoc = Jsoup.parse(dlHtml)
-            var found = false
-
-            dlDoc.select("table a[href]").forEach { a ->
-                val href = a.absUrl("href").ifBlank { a.attr("href") }
-                if (href.isBlank() || href.contains("facebook") || href.contains("twitter")
-                    || href.contains("t.me") || href.contains("subscene")) return@forEach
-
-                val row = a.closest("tr")
-                val rowText = row?.text()?.uppercase() ?: ""
-                val quality = when {
-                    rowText.contains("1080") -> Qualities.P1080.value
-                    rowText.contains("720") -> Qualities.P720.value
-                    rowText.contains("480") -> Qualities.P480.value
-                    rowText.contains("540") -> Qualities.P480.value
-                    rowText.contains("360") -> Qualities.P360.value
-                    else -> Qualities.Unknown.value
+        } else {
+            callback.invoke(
+                newExtractorLink(source, label, url, ExtractorLinkType.VIDEO) {
+                    this.referer = referer
+                    this.quality = qualityFromText(url)
+                    this.headers = siteHeaders(url, referer)
                 }
-
-                val provider = row?.selectFirst("td")?.text()?.trim()?.ifBlank { "Download" } ?: "Download"
-
-                callback.invoke(
-                    newExtractorLink(
-                        name,
-                        "$name [DL] $provider",
-                        href,
-                        ExtractorLinkType.VIDEO,
-                    ) {
-                        this.referer = "https://terbit21.tv/"
-                        this.quality = quality
-                    }
-                )
-                found = true
-            }
-            found
-        } catch (_: Exception) { false }
+            )
+            true
+        }
     }
 
-    private fun extractVideoUrl(html: String): String? {
-        Regex("""["']file["']\s*:\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""")
-            .find(html)?.groupValues?.get(1)
-            ?.takeIf { !it.contains("github.com") && !it.contains("loading") }
-            ?.let { return it }
-
-        Regex("""["'](https?://[^"']*\.m3u8[^"']*)["']""")
-            .find(html)?.groupValues?.get(1)
-            ?.takeIf { !it.contains("github.com") }
-            ?.let { return it }
-
-        Regex("""["'](https?://[^"']*\.mp4[^"']*)["']""")
-            .find(html)?.groupValues?.get(1)
-            ?.takeIf { !it.contains("github.com") && !it.contains("loading") }
-            ?.let { return it }
-
-        Regex("""<iframe[^>]+src=["'](https?://(?!ayononton|terbit21\.com|terbit21\.media)[^"']+)["']""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1)
-            ?.let { return it }
-
+    private fun extractMediaUrl(html: String): String? {
+        val normalized = html.replace("\\/", "/").replace("&amp;", "&")
+        listOf(
+            Regex("""["']file["']\s*:\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""", RegexOption.IGNORE_CASE),
+            Regex("""["'](?:src|source)["']\s*:\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""", RegexOption.IGNORE_CASE),
+            Regex("""["'](https?://[^"']*\.(?:m3u8|mp4)[^"']*)["']""", RegexOption.IGNORE_CASE),
+        ).forEach { regex ->
+            regex.find(normalized)?.groupValues?.getOrNull(1)
+                ?.takeIf { !it.contains("github.com", true) && !it.contains("loading", true) }
+                ?.let { return it }
+        }
         return null
     }
 
-    private fun String.encodeUri() =
+    private fun extractIframeUrl(html: String): String? {
+        val normalized = html.replace("\\/", "/").replace("&amp;", "&")
+        return Regex("""<iframe[^>]+src=["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(normalized)?.groupValues?.getOrNull(1)
+            ?.takeIf { !it.contains("ayononton", true) && !it.contains("terbit21.com", true) }
+            ?: Regex("""["'](https?://(?:www\.)?playhydrax\.com/[^"'\s]+)["']""", RegexOption.IGNORE_CASE)
+                .find(normalized)?.groupValues?.getOrNull(1)
+    }
+
+    private fun bestPoster(el: Element): String? {
+        el.selectFirst("source[srcset]")?.attr("srcset")
+            ?.split(",")?.lastOrNull()?.trim()?.split("\\s+".toRegex())
+            ?.firstOrNull { it.startsWith("http") }
+            ?.let { return it }
+        el.selectFirst("img[itemprop=image], img[data-src], img[data-lazy-src], img[src]")?.let(::imageFrom)?.let { return it }
+        return null
+    }
+
+    private fun imageFrom(img: Element): String? {
+        return img.absUrl("data-src").ifBlank { img.absUrl("data-lazy-src") }.ifBlank { img.absUrl("src") }
+            .takeIf { it.startsWith("http") }
+    }
+
+    private fun looksLikeSeries(title: String, doc: Document): Boolean {
+        return parseEpisodes(doc, doc.location(), null, null).isNotEmpty() ||
+            doc.select("div.gmr-moviedata a[href*=/genre/]").any { it.text().contains(Regex("(?i)series|episode|season")) } ||
+            title.contains(Regex("""(?i)\b(season|series|s\d+e?\d*|episode)\b"""))
+    }
+
+    private fun looksLikeSeries(title: String, element: Element): Boolean {
+        return element.attr("itemtype").contains("TVSeries", true) ||
+            title.contains(Regex("""(?i)\b(season|series|s\d+e\d+|episode)\b"""))
+    }
+
+    private fun cleanTitle(raw: String): String {
+        return raw.removePrefix("Nonton Film: ")
+            .removePrefix("Nonton Series: ")
+            .removePrefix("Nonton ")
+            .trim()
+    }
+
+    private fun episodeNumber(text: String): Int? {
+        return Regex("""(?i)(?:episode|eps?|e)\s*([0-9]+)""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Regex("""\b([0-9]{1,4})\b""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun qualityFromText(text: String): Int {
+        return when {
+            text.contains("2160") || text.contains("4K", true) -> Qualities.P2160.value
+            text.contains("1080") -> Qualities.P1080.value
+            text.contains("720") -> Qualities.P720.value
+            text.contains("540") -> Qualities.P480.value
+            text.contains("480") -> Qualities.P480.value
+            text.contains("360") -> Qualities.P360.value
+            else -> Qualities.Unknown.value
+        }
+    }
+
+    private fun slugFrom(url: String): String {
+        return url.substringBefore("?").trimEnd('/').substringAfterLast('/').trim()
+    }
+
+    private fun normalizeUrl(base: String, raw: String?): String? {
+        val value = raw?.trim()?.replace("&amp;", "&")?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching { URI(base.ifBlank { mainUrl }).resolve(value).toString() }.getOrNull()
+    }
+
+    private fun siteHeaders(url: String, referer: String = mainUrl): Map<String, String> {
+        return mapOf(
+            "User-Agent" to ua,
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer" to referer,
+            "Origin" to originOf(referer),
+        )
+    }
+
+    private fun formHeaders(referer: String, origin: String): Map<String, String> {
+        return mapOf(
+            "User-Agent" to ua,
+            "Accept" to "text/html, */*; q=0.01",
+            "Referer" to referer,
+            "Origin" to origin,
+            "Content-Type" to "application/x-www-form-urlencoded",
+            "X-Requested-With" to "XMLHttpRequest",
+        )
+    }
+
+    private fun originOf(url: String): String {
+        return runCatching {
+            val uri = URI(url)
+            "${uri.scheme}://${uri.host}"
+        }.getOrDefault(mainUrl)
+    }
+
+    private fun String.encodeUri(): String =
         java.net.URLEncoder.encode(this, "UTF-8").replace("+", "%20")
+
+    private data class ServerEntry(val name: String, val url: String, val kind: PlayerKind)
+
+    private enum class PlayerKind { HYDRAX, P2P, GDFRAME, OTHER }
 }
