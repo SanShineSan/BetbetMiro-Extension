@@ -1,4 +1,4 @@
-version = 8
+version = 9
 
 cloudstream {
     description = "DonghuaFilm - Nonton Donghua Gratis Sub Indonesia."
