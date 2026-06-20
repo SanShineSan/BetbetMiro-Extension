@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class DonghuaFilmPlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(DonghuaFilm())
+        registerMainAPI(DonghuaFilmCosmetic())
         registerExtractorAPI(DonghuaFilmDailyMotion())
         registerExtractorAPI(DonghuaFilmGeoDailyMotion())
         registerExtractorAPI(DonghuaFilmOdnoklassniki())
