@@ -113,42 +113,38 @@ class Film21 : MainAPI() {
             app.get(pageUrl, headers = baseHeaders, referer = mainUrl)
         }.getOrNull() ?: return null
         val document = response.document
-        val pageText = cleanText(document.text())
-        val rawTitle = document.selectFirst("h1.entry-title, h1, .entry-title, .title h1, meta[property=og:title], title")
-            ?.let { if (it.tagName().equals("meta", true)) it.attr("content") else it.text() }
+        val detailRoot = document.detailRoot()
+        val detailText = cleanText(
+            detailRoot.selectFirst(".entry-content.entry-content-single, .entry-content, .gmr-movie-data, .content-moviedata")?.text()
+                ?: detailRoot.text()
+        )
+        val rawTitle = listOf(
+            detailRoot.selectFirst(".gmr-movie-data-top h1.entry-title[itemprop=name], h1.entry-title[itemprop=name], h1.entry-title, h1[itemprop=name], .entry-title[itemprop=name]")?.text(),
+            document.selectFirst("meta[property=og:image]")?.attr("alt"),
+            document.selectFirst("meta[property=og:title]")?.attr("content"),
+            document.selectFirst("title")?.text()
+        ).firstOrNull { isUsefulTitle(it) }
         val title = cleanTitle(rawTitle).ifBlank { titleFromUrl(pageUrl) }
         if (title.isBlank()) return null
 
         val poster = findPoster(document, pageUrl)
-        val tags = document
-            .select("a[href*='/genre/'], .genre a, .genres a, .category a, .categories a, [rel=category tag]")
-            .map { cleanText(it.text()).substringBefore("(").trim() }
-            .filter { it.length in 2..40 && !it.isBadLabel() }
-            .distinct()
-            .take(20)
-        val actors = document
-            .select("span[itemprop=actors] a, a[href*='/cast/'], a[href*='/actor/'], a[href*='/director/'], [itemprop=director] a, .cast a, .actors a, .director a")
-            .map { cleanText(it.text()) }
-            .filter { it.length in 2..60 && !it.isBadLabel() }
-            .distinct()
-            .take(24)
-        val year = document.selectFirst("a[href*='/year/'], time[datetime]")?.text()?.firstYear()
+        val tags = parseDetailTags(document)
+        val actors = parseDetailActors(document)
+        val year = parseDetailYear(document)
             ?: title.firstYear()
-            ?: pageText.firstYear()
-        val rating = document.selectFirst("[itemprop=ratingValue], .rating, .score, .imdb, .vote, .nilai")
-            ?.text()
-            ?.replace(',', '.')
-            ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
-        val duration = Regex("""(?i)(\d{1,3})\s*(?:min|menit|m)\b""").find(pageText)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val description = cleanDescription(
-            document.selectFirst("meta[property=og:description], meta[name=description], div[itemprop=description] > p, .entry-content p, .post-content p, .description, .desc, .sinopsis, .storyline, [itemprop=description], article p")
-                ?.let { if (it.tagName().equals("meta", true)) it.attr("content") else it.text() }
-        )
-        val trailer = document.selectFirst("a[href*='youtube.com'], a[href*='youtu.be'], .trailer a[href]")
+            ?: detailText.firstYear()
+        val rating = parseDetailRating(document)
+        val duration = parseDetailDuration(document) ?: Regex("""(?i)(\d{1,3})\s*(?:min|menit|m)\b""")
+            .find(detailText)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        val description = parseDetailDescription(document)
+        val trailer = detailRoot.selectFirst("a[href*='youtube.com'], a[href*='youtu.be'], .trailer a[href], .gmr-trailer-popup[href]")
             ?.attr("href")
             ?.takeIf { it.isNotBlank() }
         val episodes = parseEpisodes(document, pageUrl)
-        val tvType = inferType(pageUrl, title, pageText, episodes.size)
+        val tvType = inferType(pageUrl, title, detailText, episodes.size)
 
         return if (tvType == TvType.TvSeries) {
             val finalEpisodes = episodes.ifEmpty {
@@ -554,6 +550,86 @@ class Film21 : MainAPI() {
         }
     }
 
+    private fun Document.detailRoot(): Element {
+        return selectFirst("article[id^=post-], article, main, #primary, .site-main, .gmr-single") ?: body()
+    }
+
+    private fun parseDetailDescription(document: Document): String? {
+        val root = document.detailRoot()
+        val explicit = root.selectFirst(
+            ".entry-content.entry-content-single > p, .entry-content[itemprop=description] > p, .entry-content > p, div[itemprop=description] > p, .description, .desc, .sinopsis, .storyline"
+        )?.text()
+        return cleanDescription(explicit)
+            ?: cleanDescription(document.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content"))
+    }
+
+    private fun parseDetailTags(document: Document): List<String> {
+        val result = linkedSetOf<String>()
+        document.select(".entry-content .gmr-moviedata, .content-moviedata .gmr-moviedata, .gmr-movie-data .gmr-moviedata").forEach { row ->
+            val label = cleanText(row.selectFirst("strong")?.text()).lowercase(Locale.ROOT).trim(':', ' ')
+            if (label == "genre") {
+                row.select("a[href*='/genre/']").forEach { element ->
+                    val value = cleanText(element.text()).substringBefore("(").trim()
+                    if (value.length in 2..40 && !value.isBadLabel()) result.add(value)
+                }
+            }
+        }
+        if (result.isEmpty()) {
+            document.select("meta[property=article:section], meta[property=article:tag]").forEach { meta ->
+                val value = cleanText(meta.attr("content"))
+                if (value.length in 2..40 && !value.isBadLabel()) result.add(value)
+            }
+        }
+        return result.take(20)
+    }
+
+    private fun parseDetailActors(document: Document): List<String> {
+        val result = linkedSetOf<String>()
+        document.select(".entry-content .gmr-moviedata, .content-moviedata .gmr-moviedata, .gmr-movie-data .gmr-moviedata").forEach { row ->
+            val label = cleanText(row.selectFirst("strong")?.text()).lowercase(Locale.ROOT).trim(':', ' ')
+            if (label == "pemain" || label == "cast" || label == "aktor" || label == "actors") {
+                row.select("a[href*='/cast/'], span[itemprop=actors] a, [itemprop=actors] a").forEach { element ->
+                    val value = cleanText(element.text())
+                    if (value.length in 2..60 && !value.isBadLabel()) result.add(value)
+                }
+            }
+        }
+        if (result.isEmpty()) {
+            document.detailRoot().select("span[itemprop=actors] a, a[href*='/cast/'], .cast a, .actors a").forEach { element ->
+                val value = cleanText(element.text())
+                if (value.length in 2..60 && !value.isBadLabel()) result.add(value)
+            }
+        }
+        return result.take(24)
+    }
+
+    private fun parseDetailYear(document: Document): Int? {
+        document.select(".entry-content .gmr-moviedata, .content-moviedata .gmr-moviedata, .gmr-movie-data .gmr-moviedata").forEach { row ->
+            val label = cleanText(row.selectFirst("strong")?.text()).lowercase(Locale.ROOT).trim(':', ' ')
+            if (label == "tahun" || label == "year") {
+                row.text().firstYear()?.let { return it }
+            }
+        }
+        return document.detailRoot().selectFirst("time[datetime]")?.text()?.firstYear()
+    }
+
+    private fun parseDetailDuration(document: Document): Int? {
+        document.select(".entry-content .gmr-moviedata, .content-moviedata .gmr-moviedata, .gmr-movie-data .gmr-moviedata").forEach { row ->
+            val label = cleanText(row.selectFirst("strong")?.text()).lowercase(Locale.ROOT).trim(':', ' ')
+            if (label == "durasi" || label == "duration") {
+                Regex("""(?i)(\d{1,3})\s*(?:min|menit|m)\b""").find(row.text())?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun parseDetailRating(document: Document): Double? {
+        return document.detailRoot().selectFirst("[itemprop=ratingValue], .gmr-meta-rating, .gmr-rating, .rating, .score, .imdb, .vote, .nilai")
+            ?.text()
+            ?.replace(',', '.')
+            ?.let { Regex("""\d+(?:\.\d+)?""").find(it)?.value?.toDoubleOrNull() }
+    }
+
     private fun findPoster(document: Document, baseUrl: String): String? {
         return document.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }?.toAbsoluteUrl(baseUrl)
             ?: document.selectFirst("figure img[data-src], .poster img[data-src], .thumb img[data-src], .content-thumbnail img[data-src], img[itemprop=image][data-src], article img[data-src]")?.imageUrl(baseUrl)
@@ -630,24 +706,34 @@ class Film21 : MainAPI() {
 
     private fun cleanTitle(value: String?): String {
         return cleanText(value)
+            .substringBefore(" - Film21")
+            .substringBefore(" – Film21")
+            .substringBefore(" | Film21")
+            .replace(Regex("""(?i)^film21\s+"""), "")
             .replace(Regex("""(?i)^download\s+streaming\s+film\s+"""), "")
             .replace(Regex("""(?i)^download\s+nonton\s+"""), "")
             .replace(Regex("""(?i)^nonton\s+film\s+"""), "")
             .replace(Regex("""(?i)^nonton\s+"""), "")
             .replace(Regex("""(?i)^tonton\s+film\s+"""), "")
             .replace(Regex("""(?i)^tonton\s+"""), "")
-            .replace(Regex("""(?i)\s+subtitle\s+indonesia.*$"""), "")
+            .replace(Regex("""(?i)\s+(?:lk21|film21)?\s*(?:sub\s*indo|subtitle\s+indonesia).*$"""), "")
             .replace(Regex("""(?i)\s+terbaru$"""), "")
-            .substringBefore(" - Film21")
-            .substringBefore(" – Film21")
-            .substringBefore(" | Film21")
             .trim()
     }
 
     private fun cleanDescription(value: String?): String? {
-        return cleanText(value)
+        var text = cleanText(value)
             .replace(Regex("""(?i)^sinopsis\s*:?\s*"""), "")
-            .takeIf { it.length > 20 }
+            .replace(Regex("""(?i)\s*\[\.\.\.\]\s*$"""), "")
+            .replace(Regex("""(?i)\s*\[…\]\s*$"""), "")
+            .trim()
+        if (text.startsWith("Download Streaming Film", ignoreCase = true) || text.startsWith("Download Nonton", ignoreCase = true)) {
+            text = text.substringAfter("–", text).trim()
+            if (text.startsWith("Download", ignoreCase = true)) {
+                text = text.substringAfter(" - ", text).trim()
+            }
+        }
+        return text.takeIf { it.length > 20 }
     }
 
     private fun cleanText(value: String?): String {
