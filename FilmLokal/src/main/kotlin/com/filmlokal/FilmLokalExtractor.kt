@@ -226,7 +226,7 @@ object FilmLokalExtractor {
 
         document.select(
             "#dooplay_player_response iframe[src], #playcontainer iframe[src], iframe.metaframe[src], " +
-                ".player iframe[src], iframe[src*='playcinematic'], iframe[src*='embed'], source[src]"
+                ".player iframe[src], iframe[src*='embed'], source[src]"
         ).forEach { iframe ->
             normalizeUrl(pageUrl, iframe.attr("src"))?.let { out.add(it) }
         }
@@ -376,30 +376,32 @@ object FilmLokalExtractor {
 
     private fun looksLikeMediaOrPlayer(url: String): Boolean {
         val low = url.lowercase()
+        val sameHost = FilmLokalUtils.isSameHost(url)
         return !isDeniedUrl(low) &&
             (looksLikeHls(url) ||
                 looksLikeDirectMp4(url) ||
                 isKnownExtractorHost(low) ||
-                low.contains("/embed/") ||
-                low.contains("/player/") ||
-                low.contains("/video/") ||
-                low.contains("?embed=") ||
-                low.contains("?source=") ||
-                low.contains("?url="))
+                (sameHost && looksLikeSameHostPlayer(low)))
     }
 
     private fun looksLikeEmbed(url: String): Boolean {
         val low = url.lowercase()
+        val sameHost = FilmLokalUtils.isSameHost(url)
         return !isDeniedUrl(low) &&
             !looksLikeDirectMp4(url) &&
             !looksLikeHls(url) &&
             (isKnownExtractorHost(low) ||
-                low.contains("/embed/") ||
-                low.contains("/player/") ||
-                low.contains("/video/") ||
-                low.contains("?embed=") ||
-                low.contains("?source=") ||
+                (sameHost && looksLikeSameHostPlayer(low)) ||
                 isExternalCandidate(url))
+    }
+
+    private fun looksLikeSameHostPlayer(low: String): Boolean {
+        return low.contains("/embed/") ||
+            low.contains("/player/") ||
+            low.contains("/video/") ||
+            low.contains("?embed=") ||
+            low.contains("?source=") ||
+            low.contains("?url=")
     }
 
     private fun isExternalCandidate(url: String): Boolean {
@@ -410,17 +412,18 @@ object FilmLokalExtractor {
             !low.contains("youtube") &&
             !low.contains("google.") &&
             !low.endsWith(".css") &&
-            !low.endsWith(".js")
+            !low.endsWith(".js") &&
+            isKnownExtractorHost(low)
     }
 
     private fun isKnownExtractorHost(low: String): Boolean {
         return listOf(
-            "myvidplay", "minochinos", "hglink", "streamtape", "dood", "filemoon",
-            "vidhide", "vidguard", "filelions", "streamwish", "streamsb", "sbembed",
-            "voe.sx", "uqload", "mixdrop", "fembed", "doodstream", "streamlare",
-            "playcinematic", "vidsrc", "short.ink", "streamhide", "sbrapid",
-            "lulustream", "wolfstream", "gdplayer", "gdriveplayer", "drive.google",
-            "pixeldrain", "filepress", "hubcloud", "filemoon", "mp4upload"
+            "myvidplay",
+            "dood",
+            "doodstream",
+            "earnvids",
+            "asiastream",
+            "watch.asiastream.cc"
         ).any { low.contains(it) }
     }
 
@@ -445,15 +448,13 @@ object FilmLokalExtractor {
         val embedOrigin = FilmLokalUtils.originOf(embed)
         val pageOrigin = FilmLokalUtils.originOf(pageUrl)
         val low = embed.lowercase()
+        val sameOrigin = embedOrigin == pageOrigin
         return embedOrigin != null &&
             !isDeniedUrl(low) &&
             !looksLikeDirectMp4(embed) &&
             !looksLikeHls(embed) &&
-            (embedOrigin != pageOrigin ||
-                isKnownExtractorHost(low) ||
-                low.contains("/embed/") ||
-                low.contains("/player/") ||
-                low.contains("/video/"))
+            (isKnownExtractorHost(low) ||
+                (sameOrigin && looksLikeSameHostPlayer(low)))
     }
 
     private fun prioritizeCandidates(urls: List<String>): List<String> {
