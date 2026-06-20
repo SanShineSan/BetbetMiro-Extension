@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
@@ -270,17 +271,13 @@ class AyoNonton : MainAPI() {
 
             val tvType = detectType(title, item.attr("itemtype"))
             val poster = item.selectFirst("source[srcset], img[itemprop=image], img[data-src], img[src]")?.let(::imageUrl)
-            val quality = item.selectFirst(".gmr-quality-item, .quality, .mli-quality")?.text()?.trim()
-
             if (tvType == TvType.TvSeries) {
                 newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                     this.posterUrl = poster
-                    quality?.let { addQuality(it) }
                 }
             } else {
                 newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = poster
-                    quality?.let { addQuality(it) }
                 }
             }
         }.distinctBy { it.url }
@@ -470,7 +467,7 @@ class AyoNonton : MainAPI() {
         return found
     }
 
-    private fun emitMedia(
+    private suspend fun emitMedia(
         sourceName: String,
         linkName: String,
         url: String,
@@ -529,7 +526,7 @@ class AyoNonton : MainAPI() {
         }
     }
 
-    private fun collectSubtitlesFromText(pageUrl: String, text: String, subtitleCallback: (SubtitleFile) -> Unit) {
+    private suspend fun collectSubtitlesFromText(pageUrl: String, text: String, subtitleCallback: (SubtitleFile) -> Unit) {
         Regex("""https?://[^'"<>\s]+\.(?:srt|vtt)(?:\?[^'"<>\s]*)?""", RegexOption.IGNORE_CASE)
             .findAll(text)
             .map { it.value }
