@@ -6,10 +6,16 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 object DuniaFilm21Parser {
+    // Broader selectors: primary GMR selectors + generic WordPress article fallbacks
     private val homeCardSelectors = listOf(
         "#gmr-main-load article.item",
         "#gmr-main-load article.item-infinite",
-        ".gmr-module-posts .gmr-item-modulepost"
+        ".gmr-module-posts .gmr-item-modulepost",
+        "#gmr-main-load article",
+        "article.item",
+        "article.item-infinite",
+        ".post-lst article",
+        ".content-area article"
     ).joinToString(",")
 
     fun parseHomeItems(api: MainAPI, document: Document, baseUrl: String, defaultType: TvType = TvType.Movie): List<SearchResponse> {
@@ -20,12 +26,12 @@ object DuniaFilm21Parser {
     }
 
     private fun Element.toSearchResponse(api: MainAPI, baseUrl: String, defaultType: TvType = TvType.Movie): SearchResponse? {
-        val titleElement = selectFirst("h2.entry-title a[href], .entry-title a[href]")
+        val titleElement = selectFirst("h2.entry-title a[href], .entry-title a[href], h3.entry-title a[href]")
         val imageAnchor = selectFirst(".content-thumbnail a[href], a[itemprop=url]")
         val anchor = titleElement ?: imageAnchor ?: selectFirst("a[href]") ?: return null
         val href = anchor.attr("href").absUrlDf21(baseUrl) ?: return null
         if (!href.sameHostDf21(DuniaFilm21Provider.DEFAULT_MAIN_URL)) return null
-        if (href.isNoiseUrlDf21() || href.contains("/Genre/", true) || href.contains("/year/", true)) return null
+        if (href.isNoiseUrlDf21() || href.contains("/Genre/", true) || href.contains("/year/", true) || href.contains("/quality/", true) || href.contains("/country/", true) || href.contains("/author/", true)) return null
 
         val title = listOf(
             titleElement?.text(),
@@ -36,7 +42,7 @@ object DuniaFilm21Parser {
         ).firstOrNull { !it.isNullOrBlank() }?.cleanTitleDf21() ?: return null
 
         if (title.length < 2) return null
-        if (title.equals("Watch Movie", true) || title.equals("Download", true)) return null
+        if (title.equals("Watch Movie", true) || title.equals("Download", true) || title.equals("Watch", true)) return null
 
         val poster = posterUrl(this, baseUrl)
         val type = inferType(title, href, defaultType)
@@ -50,10 +56,11 @@ object DuniaFilm21Parser {
     fun posterUrl(element: Element, baseUrl: String): String? {
         val candidates = mutableListOf<String>()
         element.select(".content-thumbnail img, img.wp-post-image, img, source").forEach { img ->
+            // Priority order: lazy-load attrs first, then real src
             listOf(
                 img.attr("data-src"),
-                img.attr("data-original"),
                 img.attr("data-lazy-src"),
+                img.attr("data-original"),
                 img.attr("data-image"),
                 img.attr("data-poster"),
                 img.attr("poster"),
@@ -94,7 +101,11 @@ object DuniaFilm21Parser {
             document.selectFirst("meta[property=og:image]")?.attr("content"),
             document.selectFirst("meta[name=twitter:image]")?.attr("content"),
             document.selectFirst("article.single-thumb img.wp-post-image")?.attr("src"),
-            document.selectFirst(".content-thumbnail img.wp-post-image")?.attr("src")
+            document.selectFirst(".content-thumbnail img.wp-post-image")?.attr("src"),
+            document.selectFirst(".content-thumbnail img")?.let {
+                listOf(it.attr("data-src"), it.attr("data-lazy-src"), it.attr("src"))
+                    .firstOrNull { v -> v.isNotBlank() && !v.startsWith("data:") }
+            }
         ).firstOrNull { !it.isNullOrBlank() }?.absUrlDf21(pageUrl) ?: posterUrl(document.body(), pageUrl)
     }
 

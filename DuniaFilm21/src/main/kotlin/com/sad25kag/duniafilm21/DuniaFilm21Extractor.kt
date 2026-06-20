@@ -17,11 +17,17 @@ object DuniaFilm21Extractor {
         Regex("""<iframe[^>]+(?:src|data-src)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
         Regex("""(?:data-src|data-embed|data-video|data-url|data-link|data-file)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
         Regex("""(?:file|src|source|video|videoUrl|video_url|hls\d*|url|embed|embed_url|embed_frame_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?:)?//[^"']+(?:\.m3u8|\.mp4|\.webm|\.mpd|\.txt)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video|dl)[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["']((?:https?:)?//[^"']*(?:gdriveplayer\.(?:io|to|me)|hlsplaylist\.php)[^"']*)["']""", RegexOption.IGNORE_CASE),
-        Regex("""["'](https?://[^"']*(?:minochinos|pixibay|abyssplayer|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive\.google)[^"']*)["']""", RegexOption.IGNORE_CASE)
+        Regex("""["']((?:https?:)?//[^"']+(?:\.m3u8|\.mp4|\.webm|\.mpd|\.txt)(?:\?[^"']*)?)["\']""", RegexOption.IGNORE_CASE),
+        Regex("""["']((?:/[^"']*)/(?:embed|player|stream|get|watch|video|dl)[^"']*)["\']""", RegexOption.IGNORE_CASE),
+        Regex("""["']((?:https?:)?//[^"']*(?:gdriveplayer\.(?:io|to|me)|hlsplaylist\.php)[^"']*)["\']""", RegexOption.IGNORE_CASE),
+        Regex("""["'](https?://[^"']*(?:minochinos|morencius|pixibay|abyssplayer|dood|streamtape|filemoon|vidhide|vidguard|voe|mixdrop|streamwish|wishfast|mp4upload|uqload|krakenfiles|streamlare|filelions|gdrive|drive\.google)[^"']*)["\']""", RegexOption.IGNORE_CASE)
     )
+
+    // Detects if a URL is a minochinos or morencius embed URL
+    private fun String.isMinochinosUrl(): Boolean {
+        val lower = lowercase()
+        return lower.contains("minochinos.com") || lower.contains("morencius.com")
+    }
 
     suspend fun load(pageUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val visited = linkedSetOf<String>()
@@ -54,7 +60,8 @@ object DuniaFilm21Extractor {
                     emitDirect(url, referer, ::emit)
                     return
                 }
-                url.contains("minochinos.com/embed/", ignoreCase = true) -> {
+                // Handle both minochinos.com/embed/ and morencius.com/embed/
+                (url.contains("minochinos.com/embed/", ignoreCase = true) || url.contains("morencius.com/embed/", ignoreCase = true)) -> {
                     extractMinochinos(url, ::emit)
                     return
                 }
@@ -92,7 +99,15 @@ object DuniaFilm21Extractor {
         val html = DuniaFilm21Network.getText(pageUrl, DuniaFilm21Provider.DEFAULT_MAIN_URL).cleanDf21()
         val document = DuniaFilm21Parser.parseDocumentFromHtml(html, pageUrl)
 
-        document.select(".gmr-embed-responsive iframe[src], iframe[src], .muvipro-player-tabs a[href], .gmr-download-wrap a[href], a[href*='minochinos.com'], a[href*='gdriveplayer.io'], a[href*='gdriveplayer.to'], a[href*='gdriveplayer.me'], video source[src], source[src], track[src], a[href*='.srt'], a[href*='.vtt'], a[href*='.mp4'], a[href*='.m3u8'], a[href*='.webm']").forEach { element ->
+        // Extended selector: includes morencius.com links alongside minochinos.com
+        document.select(
+            ".gmr-embed-responsive iframe[src], iframe[src], " +
+            ".muvipro-player-tabs a[href], .gmr-download-wrap a[href], " +
+            "a[href*='minochinos.com'], a[href*='morencius.com'], " +
+            "a[href*='gdriveplayer.io'], a[href*='gdriveplayer.to'], a[href*='gdriveplayer.me'], " +
+            "video source[src], source[src], track[src], " +
+            "a[href*='.srt'], a[href*='.vtt'], a[href*='.mp4'], a[href*='.m3u8'], a[href*='.webm']"
+        ).forEach { element ->
             val candidate = listOf("src", "href", "data-src", "data-embed", "data-video", "data-url", "data-link", "data-file")
                 .map { element.attr(it) }
                 .firstOrNull { it.isNotBlank() }
@@ -107,11 +122,32 @@ object DuniaFilm21Extractor {
     }
 
     private suspend fun extractMinochinos(iframeUrl: String, emit: (ExtractorLink) -> Unit) {
-        val iframeHtml = app.get(
-            url = iframeUrl,
-            headers = DuniaFilm21Network.baseHeaders + mapOf("Referer" to DuniaFilm21Provider.DEFAULT_MAIN_URL),
-            referer = DuniaFilm21Provider.DEFAULT_MAIN_URL
-        ).text.cleanDf21()
+        // Normalize: both minochinos.com and morencius.com are treated the same
+        // Try the given URL first, then try the morencius mirror if minochinos
+        val embedUrls = mutableListOf(iframeUrl)
+        if (iframeUrl.contains("minochinos.com", ignoreCase = true)) {
+            embedUrls.add(iframeUrl.replace(
+                Regex("minochinos\.com", RegexOption.IGNORE_CASE), "morencius.com"
+            ))
+        } else if (iframeUrl.contains("morencius.com", ignoreCase = true)) {
+            embedUrls.add(iframeUrl.replace(
+                Regex("morencius\.com", RegexOption.IGNORE_CASE), "minochinos.com"
+            ))
+        }
+
+        var iframeHtml = ""
+        for (tryUrl in embedUrls) {
+            iframeHtml = runCatching {
+                app.get(
+                    url = tryUrl,
+                    headers = DuniaFilm21Network.baseHeaders + mapOf("Referer" to DuniaFilm21Provider.DEFAULT_MAIN_URL),
+                    referer = DuniaFilm21Provider.DEFAULT_MAIN_URL
+                ).text.cleanDf21()
+            }.getOrNull().orEmpty()
+            if (iframeHtml.isNotBlank()) break
+        }
+
+        if (iframeHtml.isBlank()) return
 
         val unpacked = runCatching { getAndUnpack(iframeHtml) }.getOrNull().orEmpty().ifBlank { iframeHtml }
         val fileCode = Regex("""file_code=([^&"']+)""", RegexOption.IGNORE_CASE).find(unpacked)?.groupValues?.getOrNull(1)
@@ -348,7 +384,7 @@ object DuniaFilm21Extractor {
     private fun isKnownExternal(url: String): Boolean {
         val lower = url.lowercase()
         return listOf(
-            "dood", "streamtape", "filemoon", "vidhide", "vidguard", "voe", "mixdrop", "streamwish", "wishfast", "mp4upload", "uqload", "krakenfiles", "streamlare", "filelions", "drive.google", "gdrive", "ok.ru", "streamsb", "sbembed", "upstream", "vidoza", "fembed", "feurl", "gofile", "pixeldrain"
+            "dood", "streamtape", "filemoon", "vidhide", "vidguard", "voe", "mixdrop", "streamwish", "wishfast", "mp4upload", "uqload", "krakenfiles", "streamlare", "filelions", "drive.google", "gdrive", "ok.ru", "streamsb", "sbembed", "upstream", "vidoza", "fembed", "feurl", "gofile", "pixeldrain", "minochinos", "morencius"
         ).any { lower.contains(it) }
     }
 }
