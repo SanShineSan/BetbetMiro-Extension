@@ -187,7 +187,6 @@ class Mp4UploadFix : ExtractorApi() {
             return ct.contains("video") || ct.contains("octet-stream") && looksLikeMp4(bytes)
         }
 
-        // Prefer download2 endpoint on 443 (more compatible than :183 direct stream URLs).
         if (!id.isNullOrBlank()) {
             val download2Url = "$mainUrl/dl?op=download2&id=$id"
             val redirect = runCatching {

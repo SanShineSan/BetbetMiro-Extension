@@ -1,4 +1,3 @@
-
 package com.sad25kag.animesail
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin

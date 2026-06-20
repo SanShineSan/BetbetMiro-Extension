@@ -1,6 +1,7 @@
 package com.sad25kag.animesail
 
 import android.annotation.SuppressLint
+import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -37,12 +38,16 @@ class AnimeSailProvider : MainAPI() {
     override val hasQuickSearch = true
     override var lang = "id"
     override val hasDownloadSupport = true
-    private val debugHarCookieHeader = "_as_ipin_tz=Asia/Jakarta; _as_ipin_lc=id; _as_ipin_ct=ID; _as_turnstile=c900bd78de007c90ed36f5f830c2d8ac322ee9efe5d6f2c69ee39cdcefc335b9"
+
+    // Temporary HAR cookie fallback for debug/prerelease testing only.
+    // Do not keep this path as the final release solution.
+    private val debugHarCookieHeader = "_as_ipin_tz=Asia/Jakarta; _as_ipin_lc=id; _as_ipin_ct=ID; _as_turnstile=b947f867d2678cf86ee44d1d05cb3c5435b6ee85aec03792a6c1bc285e66f3ba"
     private val debugHarUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
     private val debugHarAcceptLanguage = "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     private val debugHarAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
-    private val turnstileInterceptor = TurnstileInterceptor(debugCookieHeader = debugHarCookieHeader)
-
+    private val turnstileInterceptor = TurnstileInterceptor(
+        debugCookieHeaderProvider = { debugHarCookieHeader.takeIf { isDebugHostBuild() } }
+    )
 
     override val supportedTypes = setOf(
         TvType.Anime,
@@ -66,16 +71,34 @@ class AnimeSailProvider : MainAPI() {
         }
     }
 
+    private fun isDebugHostBuild(): Boolean {
+        val context = AcraApplication.context ?: return false
+        val packageName = context.packageName
+        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val isPreRelease = packageName.contains("prerelease", ignoreCase = true) ||
+            packageName.contains("debug", ignoreCase = true)
+        return isDebuggable || isPreRelease
+    }
+
+    private fun requestHeaders(): Map<String, String> {
+        val headers = linkedMapOf(
+            "Accept" to debugHarAccept,
+            "Accept-Language" to debugHarAcceptLanguage,
+            "User-Agent" to if (isDebugHostBuild()) debugHarUserAgent else USER_AGENT
+        )
+
+        if (isDebugHostBuild()) {
+            headers["Cookie"] = debugHarCookieHeader
+        }
+
+        return headers
+    }
+
     private suspend fun request(url: String, ref: String? = null): NiceResponse {
         return app.get(
             url,
             interceptor = turnstileInterceptor,
-            headers = mapOf(
-                "Accept" to debugHarAccept,
-                "Accept-Language" to debugHarAcceptLanguage,
-                "User-Agent" to debugHarUserAgent,
-                "Cookie" to debugHarCookieHeader
-            ),
+            headers = requestHeaders(),
             referer = ref ?: "$mainUrl/"
         )
     }
@@ -110,13 +133,9 @@ class AnimeSailProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, pageRequest: MainPageRequest): HomePageResponse {
         val baseUrl = pageRequest.data.trimEnd('/')
-        val pageUrl = if (page <= 1) {
-            "$baseUrl/"
-        } else {
-            "$baseUrl/page/$page/"
-        }
+        val pageUrl = if (page <= 1) "$baseUrl/" else "$baseUrl/page/$page/"
         val document = request(pageUrl).document
-        val home = document.select("div.listupd article, article").mapNotNull {
+        val home = document.select("div.listupd article, div.listupd .bs, div.listupd .bsx, article, .bsx").mapNotNull {
             it.toSearchResult()
         }.distinctBy { it.url }
 
@@ -131,7 +150,7 @@ class AnimeSailProvider : MainAPI() {
         return if (uri.contains("/anime/")) {
             uri
         } else {
-            var title = uri.substringAfter("$mainUrl/")
+            var title = uri.substringAfter("$mainUrl/").trim('/')
             title = when {
                 (title.contains("-episode")) && !(title.contains("-movie")) -> title.substringBefore("-episode")
                 (title.contains("-movie")) -> title.substringBefore("-movie")
@@ -143,7 +162,7 @@ class AnimeSailProvider : MainAPI() {
 
     private fun Element.toSearchResult(): AnimeSearchResponse? {
         val linkElement = selectFirst(
-            ".tt > h2 > a, h2.entry-title > a, h2 > a, h3 > a, a[rel=bookmark], a[href]"
+            ".tt > h2 > a, .tt > a, .bsx a[href], h2.entry-title > a, h2 > a, h3 > a, a[rel=bookmark], a[href]"
         ) ?: return null
 
         val rawHref = fixUrlNull(
@@ -155,6 +174,7 @@ class AnimeSailProvider : MainAPI() {
 
         val rawTitle = listOfNotNull(
             selectFirst(".tt > h2")?.text(),
+            selectFirst(".tt")?.text(),
             selectFirst("h2.entry-title")?.text(),
             selectFirst("h2")?.text(),
             selectFirst("h3")?.text(),
@@ -211,7 +231,7 @@ class AnimeSailProvider : MainAPI() {
         val encoded = URLEncoder.encode(keyword, "UTF-8")
         val document = request("$mainUrl/?s=$encoded").document
 
-        return document.select("div.listupd article, article").mapNotNull {
+        return document.select("div.listupd article, div.listupd .bs, div.listupd .bsx, article, .bsx").mapNotNull {
             it.toSearchResult()
         }.distinctBy { it.url }
     }
@@ -225,7 +245,7 @@ class AnimeSailProvider : MainAPI() {
         val type = getType(document.select("tbody th:contains(Tipe)").next().text().lowercase())
         val year = document.select("tbody th:contains(Dirilis)").next().text().trim().toIntOrNull()
 
-        val episodes = document.select("ul.daftar > li").mapNotNull {
+        val parsedEpisodes = document.select("ul.daftar > li").mapNotNull {
             val link = fixUrlNull(it.selectFirst("a[href]")?.attr("href")) ?: return@mapNotNull null
             val name = it.selectFirst("a")?.text().orEmpty()
             val episode = Regex("Episode\\s?(\\d+)").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -234,6 +254,10 @@ class AnimeSailProvider : MainAPI() {
                 this.episode = episode
             }
         }.reversed()
+
+        val episodes = if (parsedEpisodes.isEmpty() && type == TvType.AnimeMovie) {
+            listOf(newEpisode(url) { this.name = "Movie" })
+        } else parsedEpisodes
 
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
 
@@ -619,7 +643,7 @@ class AnimeSailProvider : MainAPI() {
 }
 
 class TurnstileInterceptor(
-    private val debugCookieHeader: String? = null,
+    private val debugCookieHeaderProvider: () -> String? = { null },
     private val challengeCookies: List<String> = listOf(
         "cf_clearance",
         "_as_turnstile",
@@ -652,7 +676,7 @@ class TurnstileInterceptor(
     private fun getCookieHeader(url: String, domainUrl: String): String {
         val manager = CookieManager.getInstance()
         val managerCookie = manager.getCookie(url) ?: manager.getCookie(domainUrl) ?: ""
-        return mergeCookieHeaders(managerCookie, debugCookieHeader.orEmpty())
+        return mergeCookieHeaders(managerCookie, debugCookieHeaderProvider().orEmpty())
     }
 
     private fun mergeCookieHeaders(vararg rawHeaders: String): String {
@@ -809,7 +833,8 @@ class TurnstileInterceptor(
         val domainUrl = "${originalRequest.url.scheme}://${originalRequest.url.host}"
 
         if (hasUsableClearance(url, domainUrl)) {
-            val response = proceedBounded(chain, 
+            val response = proceedBounded(
+                chain,
                 originalRequest.newBuilder()
                     .header("Cookie", getCookieHeader(url, domainUrl))
                     .build()
