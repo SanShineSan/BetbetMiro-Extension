@@ -1,18 +1,10 @@
 // use an integer for version numbers
-version = 6
+version = 8
 
 cloudstream {
     language = "id"
-    description = "Nonton film dan series subtitle Indonesia dari ayononton.live — stable parser, current CloudStream API, real t21 player flow, and download support"
+    description = "AyoNonton provider — evidence-based categories and HAR-aligned t21.press 540.php playback resolver"
     authors = listOf("sad25kag")
-
-    /**
-     * Status int as follows:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     */
     status = 1
 
     tvTypes = listOf(
