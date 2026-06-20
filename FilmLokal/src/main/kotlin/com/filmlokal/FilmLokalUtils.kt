@@ -14,17 +14,6 @@ object FilmLokalUtils {
         "Referer" to "${FilmLokalSeeds.MAIN_URL}/"
     )
 
-    val adultLinkSelector = listOf(
-        "a[href*='/21-mph/']",
-        "a[href*='/film-semi/']",
-        "a[href*='/censored/']",
-        "a[href*='/uncensored/']",
-        "a[href*='/live-streaming-igo/']",
-        "a[href*='/jeruk-barat/']",
-        "a[href*='/asian-amateur/']",
-        "a[href*='/jav/']"
-    ).joinToString(",")
-
     fun videoHeaders(referer: String): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "*/*",
@@ -40,41 +29,6 @@ object FilmLokalUtils {
         "drama", "fantasy", "horror", "mystery", "romance", "sci-fi", "thriller",
         "year", "country", "genre", "quality", "tag", "cast", "director", "author",
         "wp-admin", "wp-content", "wp-includes"
-    )
-
-    private val adultPathSegments = setOf(
-        "21-mph",
-        "film-semi",
-        "censored",
-        "uncensored",
-        "live-streaming-igo",
-        "jeruk-barat",
-        "asian-amateur",
-        "jav"
-    )
-
-    private val adultTextSignals = listOf(
-        "21 mph",
-        "film semi",
-        "jeruk censored",
-        "jeruk uncensored",
-        "jeruk live igo",
-        "jeruk barat",
-        "asian amateur",
-        "all jav",
-        "uncensored",
-        "censored",
-        "18+",
-        "18 plus"
-    )
-
-    private val adultWordSignals = listOf(
-        Regex("""(^|[^a-z0-9])jav([^a-z0-9]|$)"""),
-        Regex("""(^|[^a-z0-9])bokep([^a-z0-9]|$)"""),
-        Regex("""(^|[^a-z0-9])porno([^a-z0-9]|$)"""),
-        Regex("""(^|[^a-z0-9])porn([^a-z0-9]|$)"""),
-        Regex("""(^|[^a-z0-9])hentai([^a-z0-9]|$)"""),
-        Regex("""(^|[^a-z0-9])adult([^a-z0-9]|$)""")
     )
 
     fun cleanText(value: String?): String = value.orEmpty()
@@ -140,29 +94,6 @@ object FilmLokalUtils {
         return "${mainUrl.trimEnd('/')}/?s=${query.urlEncoded()}"
     }
 
-    fun isAdultCandidate(url: String? = null, title: String? = null, context: String? = null): Boolean {
-        val rawUrl = url.orEmpty().trim()
-        val pathSegments: List<String> = runCatching {
-            URI(rawUrl).path.orEmpty()
-                .trim('/')
-                .split('/')
-                .map { it.lowercase() }
-                .filter { it.isNotBlank() }
-        }.getOrDefault(emptyList())
-
-        if (pathSegments.any { it in adultPathSegments }) return true
-
-        val normalized = listOfNotNull(rawUrl, title, context)
-            .joinToString(" ")
-            .lowercase()
-            .replace('-', ' ')
-            .replace('_', ' ')
-            .replace(Regex("\\s+"), " ")
-
-        return adultTextSignals.any { normalized.contains(it) } ||
-            adultWordSignals.any { it.containsMatchIn(normalized) }
-    }
-
     fun isValidPoster(url: String?): Boolean {
         val raw = url.orEmpty().trim()
         val low = raw.lowercase()
@@ -201,7 +132,6 @@ object FilmLokalUtils {
 
     fun isVideoUrl(url: String): Boolean {
         if (!isSameHost(url)) return false
-        if (isAdultCandidate(url = url)) return false
         val path = runCatching { URI(url).path.orEmpty().trim('/') }.getOrDefault("")
         if (path.isBlank()) return false
         val parts = path.split('/').filter { it.isNotBlank() }
