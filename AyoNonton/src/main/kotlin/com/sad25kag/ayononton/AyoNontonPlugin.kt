@@ -1,8 +1,8 @@
 package com.sad25kag.ayononton
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 
 @CloudstreamPlugin
 class AyoNontonPlugin : Plugin() {
