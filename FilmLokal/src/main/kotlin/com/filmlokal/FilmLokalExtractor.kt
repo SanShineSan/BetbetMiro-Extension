@@ -77,8 +77,9 @@ object FilmLokalExtractor {
 
         val direct = prioritizeCandidates(extractDirectMedia(pageUrl, document))
         val dooplay = prioritizeCandidates(extractDooplayEmbeds(mainUrl, pageUrl, document))
-        val embeds = prioritizeCandidates(extractEmbeds(pageUrl, document) + dooplay)
-        Log.e(TAG, "captured page=$pageUrl depth=$depth direct=${direct.size} embeds=${embeds.size} dooplay=${dooplay.size}")
+        val muvipro = prioritizeCandidates(extractMuviproEmbeds(mainUrl, pageUrl, document))
+        val embeds = prioritizeCandidates(extractEmbeds(pageUrl, document) + dooplay + muvipro)
+        Log.e(TAG, "captured page=$pageUrl depth=$depth direct=${direct.size} embeds=${embeds.size} dooplay=${dooplay.size} muvipro=${muvipro.size}")
 
         for (url in direct.take(MAX_DIRECT_CANDIDATES)) {
             Log.e(TAG, "direct candidate: $url")
@@ -199,6 +200,7 @@ object FilmLokalExtractor {
     private fun extractDirectMedia(pageUrl: String, document: Document): List<String> {
         val out = linkedSetOf<String>()
         extractAttributeUrls(pageUrl, document).filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
+        extractAsiaStreamDirect(pageUrl, document).forEach { out.add(it) }
 
         val html = normalizedHtml(document)
         keyValueRegex.findAll(html).mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }.filter { looksLikeMediaOrPlayer(it) }.forEach { out.add(it) }
@@ -261,33 +263,136 @@ object FilmLokalExtractor {
                         "type" to type
                     ),
                     referer = pageUrl,
-                    headers = FilmLokalUtils.siteHeaders + mapOf(
-                        "Accept" to "*/*",
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
-                    )
+                    headers = ajaxHeaders()
                 ).text
             }.onFailure {
                 Log.e(TAG, "doo ajax failed post=$post nume=$nume type=$type: ${it.message}")
             }.getOrNull()?.let { normalizedBody(it) }
 
-            ajaxText?.let { body ->
-                ajaxEmbedRegex.findAll(body)
-                    .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
-                    .forEach { out.add(it) }
-
-                iframeRegex.findAll(body)
-                    .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
-                    .forEach { out.add(it) }
-
-                quotedUrlRegex.findAll(body)
-                    .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
-                    .filter { looksLikeMediaOrPlayer(it) || looksLikeEmbed(it) }
-                    .forEach { out.add(it) }
-            }
+            ajaxText?.let { body -> parseAjaxBody(out, pageUrl, body) }
         }
 
         return out.distinct()
+    }
+
+    private suspend fun extractMuviproEmbeds(mainUrl: String, pageUrl: String, document: Document): List<String> {
+        val out = linkedSetOf<String>()
+
+        document.select("#muvipro_player_content_id iframe[src], .muvipro_player_content iframe[src], .tab-content-ajax iframe[src]")
+            .forEach { iframe ->
+                normalizeUrl(pageUrl, iframe.attr("src"))?.let { out.add(it) }
+            }
+
+        val postId = findMuviproPostId(document) ?: return out.distinct()
+        val ajaxUrl = findAjaxUrl(document, pageUrl) ?: "${FilmLokalUtils.originOf(pageUrl) ?: mainUrl}/wp-admin/admin-ajax.php"
+        val tabs = findMuviproTabs(document)
+
+        tabs.forEach { tab ->
+            val ajaxText = runCatching {
+                app.post(
+                    url = ajaxUrl,
+                    data = mapOf(
+                        "action" to "muvipro_player_content",
+                        "tab" to tab,
+                        "post_id" to postId
+                    ),
+                    referer = pageUrl,
+                    headers = ajaxHeaders()
+                ).text
+            }.onFailure {
+                Log.e(TAG, "muvipro ajax failed post_id=$postId tab=$tab: ${it.message}")
+            }.getOrNull()?.let { normalizedBody(it) }
+
+            ajaxText?.let { body -> parseAjaxBody(out, pageUrl, body) }
+        }
+
+        return out.distinct()
+    }
+
+    private fun parseAjaxBody(out: MutableSet<String>, pageUrl: String, body: String) {
+        if (body.startsWith("http", ignoreCase = true)) {
+            normalizeUrl(pageUrl, body)?.let { out.add(it) }
+        }
+
+        ajaxEmbedRegex.findAll(body)
+            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
+            .forEach { out.add(it) }
+
+        iframeRegex.findAll(body)
+            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
+            .forEach { out.add(it) }
+
+        quotedUrlRegex.findAll(body)
+            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
+            .filter { looksLikeMediaOrPlayer(it) || looksLikeEmbed(it) }
+            .forEach { out.add(it) }
+    }
+
+    private fun findMuviproPostId(document: Document): String? {
+        val html = normalizedHtml(document)
+        return document.selectFirst("#muvipro_player_content_id[data-id], .muvipro_player_content[data-id]")
+            ?.attr("data-id")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: Regex("""(?i)<article[^>]+id=["']post-(\d+)["']""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+            ?: Regex("""(?i)\bpostid-(\d+)\b""")
+                .find(document.body()?.className().orEmpty())
+                ?.groupValues
+                ?.getOrNull(1)
+            ?: Regex("""(?i)data-id=["'](\d+)["']""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+            ?: Regex("""(?i)["']post_id["']?\s*[:=]\s*["']?(\d+)""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+    }
+
+    private fun findMuviproTabs(document: Document): List<String> {
+        val tabs = linkedSetOf<String>()
+        document.select("#muvipro_player_content_id .tab-content-ajax[id], .muvipro_player_content .tab-content-ajax[id], .tab-content-ajax[id]")
+            .map { it.id().trim() }
+            .filter { it.matches(Regex("""p\d+""")) }
+            .forEach { tabs.add(it) }
+        if (tabs.isEmpty()) tabs.add("p1")
+        return tabs.toList()
+    }
+
+    private fun extractAsiaStreamDirect(pageUrl: String, document: Document): List<String> {
+        if (!pageUrl.contains("asiastream", ignoreCase = true)) return emptyList()
+
+        val out = linkedSetOf<String>()
+        val html = normalizedHtml(document)
+        val origin = FilmLokalUtils.originOf(pageUrl) ?: return emptyList()
+
+        Regex("""(?i)["']((?:https?:)?//[^"']*/m3u8/[^"']*/master\.txt[^"']*)["']""")
+            .findAll(html)
+            .mapNotNull { normalizeUrl(pageUrl, it.groupValues[1]) }
+            .forEach { out.add(it) }
+
+        Regex("""(?i)sniff\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""")
+            .findAll(html)
+            .forEach { match ->
+                val uid = match.groupValues.getOrNull(1).orEmpty().trim()
+                val md5 = match.groupValues.getOrNull(2).orEmpty().trim()
+                if (uid.isNotBlank() && md5.isNotBlank()) {
+                    out.add("$origin/m3u8/$uid/$md5/master.txt?s=1&cache=1")
+                }
+            }
+
+        return out.distinct()
+    }
+
+    private fun ajaxHeaders(): Map<String, String> {
+        return FilmLokalUtils.siteHeaders + mapOf(
+            "Accept" to "*/*",
+            "X-Requested-With" to "XMLHttpRequest",
+            "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+        )
     }
 
     private fun extractAttributeUrls(pageUrl: String, document: Document): List<String> {
@@ -313,7 +418,7 @@ object FilmLokalExtractor {
 
     private fun findAjaxUrl(document: Document, pageUrl: String): String? {
         val html = normalizedHtml(document)
-        val raw = Regex("""(?i)(?:ajaxurl|admin_ajax|admin-ajax\.php|dooplay_player_ajax)[^"']*["']([^"']*admin-ajax\.php[^"']*)["']""")
+        val raw = Regex("""(?i)(?:ajaxurl|admin_ajax|admin-ajax\.php|doo_player_ajax|muvipro_player_content)[^"']*["']([^"']*admin-ajax\.php[^"']*)["']""")
             .find(html)
             ?.groupValues
             ?.getOrNull(1)
@@ -366,7 +471,7 @@ object FilmLokalExtractor {
 
     private fun looksLikeHls(url: String): Boolean {
         val low = url.lowercase()
-        return low.contains(".m3u8") || low.contains("m3u8") || low.contains("playlist") || low.contains("master.m3u")
+        return low.contains(".m3u8") || low.contains("m3u8") || low.contains("playlist") || low.contains("master.m3u") || low.contains("master.txt")
     }
 
     private fun looksLikeDirectMp4(url: String): Boolean {
