@@ -65,11 +65,8 @@ class SarangFilm21 : MainAPI() {
 
     override val mainPage = mainPageOf(
         "" to "Update Terbaru",
-        "category/trending/" to "Trending",
-        "tv/" to "Series",
         "country/indonesia/" to "Indonesia",
         "category/action/" to "Action",
-        "category/animation/" to "Animation",
         "category/horror/" to "Horror",
         "category/comedy/" to "Comedy",
         "category/science-fiction/" to "Science Fiction"
