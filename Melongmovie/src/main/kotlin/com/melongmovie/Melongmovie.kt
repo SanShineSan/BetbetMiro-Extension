@@ -41,9 +41,6 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Melongmovie : MainAPI() {
-    companion object {
-        var context: android.content.Context? = null
-    }
 
     override var mainUrl = "https://tv12.melongmovies.com"
     override var name = "Melongmovie"
@@ -175,10 +172,12 @@ class Melongmovie : MainAPI() {
         val poster = getPoster(document)
         val plot = parsePlot(document)
         val pageText = getDetailText(document)
-        val episodes = parseEpisodes(document, url, poster, plot)
-        val type = guessType(url, pageText, title, episodes)
         val tags = parseTags(document)
+        val episodes = parseEpisodes(document, url, poster, plot)
+        // guessType uses URL for Asian drama detection — not full body text
+        val type = guessType(url, title, episodes)
         val actors = parseActors(document)
+        // parseRating now returns Double? — no type mismatch with Score.from10()
         val rating = parseRating(document, pageText)
         val year = extractYear(title) ?: extractYear(pageText)
         val duration = parseDuration(pageText)
@@ -208,7 +207,7 @@ class Melongmovie : MainAPI() {
                 this.duration = duration ?: 0
                 this.recommendations = recommendations
                 addActors(actors)
-                addScore(rating)
+                addScore(Score.from10(rating))
                 addTrailer(trailer)
             }
         } else {
@@ -225,7 +224,7 @@ class Melongmovie : MainAPI() {
                 this.duration = duration ?: 0
                 this.recommendations = recommendations
                 addActors(actors)
-                addScore(rating)
+                addScore(Score.from10(rating))
                 addTrailer(trailer)
             }
         }
@@ -327,8 +326,11 @@ class Melongmovie : MainAPI() {
     private fun parseCards(document: Document): List<SearchResponse> {
         val results = linkedMapOf<String, SearchResponse>()
 
+        // DooPlay standard selectors first, then custom/fallback variants
         document.select(
-            ".los article.box, " +
+            "article.movies, " +
+                "article.tvshows, " +
+                ".los article.box, " +
                 "div.los article, " +
                 "article.box, " +
                 "article:has(a):has(img), " +
@@ -381,7 +383,8 @@ class Melongmovie : MainAPI() {
         if (title.length < 2) return null
 
         val poster = fixUrlNull(image?.getImageAttr())
-        val type = guessType(href, text(), title, emptyList())
+        // Use card element text for type detection — narrower context than full page body
+        val type = guessType(href, title, emptyList())
 
         return if (type == TvType.TvSeries || type == TvType.AsianDrama) {
             newTvSeriesSearchResponse(title, href, type) {
@@ -402,7 +405,11 @@ class Melongmovie : MainAPI() {
         val episodes = linkedMapOf<String, Episode>()
 
         document.select(
-            ".episode-list a[href], " +
+            // DooPlay standard episode list
+            ".episodios li a[href], " +
+                ".episodios ul li a[href], " +
+                // Generic fallbacks
+                ".episode-list a[href], " +
                 ".eplister a[href], " +
                 ".episodelist a[href], " +
                 ".les-content a[href], " +
@@ -495,12 +502,18 @@ class Melongmovie : MainAPI() {
             .map { Actor(it) }
     }
 
-    private fun parseRating(document: Document, pageText: String): String? {
-        return document.selectFirst(".rating, .imdb, [itemprop=ratingValue]")?.text()
+    /**
+     * Returns rating as Double? so Score.from10(rating) compiles without type mismatch.
+     */
+    private fun parseRating(document: Document, pageText: String): Double? {
+        return document.selectFirst(".rating, .imdb, [itemprop=ratingValue]")
+            ?.text()
+            ?.toDoubleOrNull()
             ?: Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
                 .find(pageText)
                 ?.groupValues
                 ?.getOrNull(1)
+                ?.toDoubleOrNull()
     }
 
     private fun parseTrailer(document: Document): String? {
@@ -530,6 +543,9 @@ class Melongmovie : MainAPI() {
         directLinks: MutableSet<String>,
         embedLinks: MutableSet<String>
     ) {
+        // Extract nonce from page — DooPlay modern requires it for admin-ajax
+        val nonce = extractNonce(document)
+
         val options = document.select(
             "#playeroptionsul li[data-post][data-nume][data-type], " +
                 ".dooplay_player_option[data-post][data-nume][data-type], " +
@@ -545,15 +561,18 @@ class Melongmovie : MainAPI() {
             if (post.isBlank() || nume.isBlank() || type.isBlank()) return@forEach
             if (nume.contains("trailer", true) || option.text().contains("trailer", true)) return@forEach
 
+            val ajaxData = mutableMapOf(
+                "action" to "doo_player_ajax",
+                "post" to post,
+                "nume" to nume,
+                "type" to type
+            )
+            if (nonce.isNotBlank()) ajaxData["nonce"] = nonce
+
             val ajaxText = runCatching {
                 app.post(
                     "$mainUrl/wp-admin/admin-ajax.php",
-                    data = mapOf(
-                        "action" to "doo_player_ajax",
-                        "post" to post,
-                        "nume" to nume,
-                        "type" to type
-                    ),
+                    data = ajaxData,
                     referer = pageUrl,
                     headers = headers + mapOf(
                         "X-Requested-With" to "XMLHttpRequest",
@@ -564,8 +583,60 @@ class Melongmovie : MainAPI() {
                 ).text.cleanEscaped()
             }.getOrNull().orEmpty()
 
-            parsePlayerPayload(ajaxText, pageUrl, directLinks, embedLinks)
+            // Parse admin-ajax response
+            if (ajaxText.isNotBlank() && ajaxText != "0" && ajaxText != "-1") {
+                parsePlayerPayload(ajaxText, pageUrl, directLinks, embedLinks)
+            }
+
+            // Fallback: DooPlay REST API v2 (/wp-json/dooplayer/v2/post/{id}/player)
+            if (directLinks.isEmpty() && embedLinks.isEmpty()) {
+                val wpJsonText = runCatching {
+                    app.get(
+                        "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
+                        headers = headers + mapOf("X-WP-Nonce" to nonce),
+                        referer = pageUrl,
+                        interceptor = cfInterceptor,
+                        timeout = 18L
+                    ).text.cleanEscaped()
+                }.getOrNull().orEmpty()
+
+                if (wpJsonText.isNotBlank() && wpJsonText != "0") {
+                    parsePlayerPayload(wpJsonText, pageUrl, directLinks, embedLinks)
+                }
+            }
         }
+    }
+
+    /**
+     * Extracts DooPlay nonce from page HTML.
+     * DooPlay injects it as a JS variable: dooplay_ajax_params = { "nonce": "..." }
+     * or as a hidden input: <input id="dooplay-ajax-nonce" value="...">
+     */
+    private fun extractNonce(document: Document): String {
+        // Method 1: JS variable (most common in DooPlay)
+        val scriptNonce = document.select("script").asSequence()
+            .map { it.data() }
+            .filter { it.contains("nonce", ignoreCase = true) }
+            .flatMap { script ->
+                sequenceOf(
+                    Regex(""""nonce"\s*:\s*"([^"]+)""").find(script)?.groupValues?.getOrNull(1),
+                    Regex("""nonce\s*[:=]\s*["']([a-zA-Z0-9]+)["']""").find(script)?.groupValues?.getOrNull(1)
+                )
+            }
+            .filterNotNull()
+            .firstOrNull()
+
+        if (!scriptNonce.isNullOrBlank()) return scriptNonce
+
+        // Method 2: hidden input
+        return document.selectFirst(
+            "input#dooplay-ajax-nonce, " +
+                "input[name=dooplay-ajax-nonce], " +
+                "input[name=nonce], " +
+                "[data-nonce]"
+        )?.let { el ->
+            el.attr("value").ifBlank { el.attr("data-nonce") }
+        }?.trim() ?: ""
     }
 
     private suspend fun collectMuviproAjax(
@@ -768,12 +839,12 @@ class Melongmovie : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
-        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
             .forEach { urls.add(it) }
 
-        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
             .forEach { urls.add(it) }
@@ -903,7 +974,8 @@ class Melongmovie : MainAPI() {
             "page/",
             "movie-lists",
             "series-list",
-            "popular",
+            // Use "popular/" not "popular" to avoid blocking slugs like "popular-zombie-2024"
+            "popular/",
             "advanced-search",
             "cara-download",
             "privacy",
@@ -966,14 +1038,26 @@ class Melongmovie : MainAPI() {
             ?: attr("src").takeIf { it.isNotBlank() }
     }
 
-    private fun guessType(url: String, body: String, title: String, episodes: List<Episode>): TvType {
-        val text = "$url $body $title"
+    /**
+     * Determines content type from URL and episode list.
+     * Asian drama is detected via URL country path only — not full body text,
+     * to avoid misclassifying films that merely mention Korea/China in plot.
+     */
+    private fun guessType(url: String, title: String, episodes: List<Episode>): TvType {
+        val urlLower = url.lowercase()
         return when {
-            url.contains("/series/", true) -> TvType.TvSeries
+            urlLower.contains("/series/") -> TvType.TvSeries
             Regex("""\bS\d+\s*EP\d+""", RegexOption.IGNORE_CASE).containsMatchIn(title) -> TvType.TvSeries
             episodes.size > 1 -> TvType.TvSeries
-            episodes.isNotEmpty() && Regex("""(?:episode|eps?|ep)\s*[-:]?\s*\d+""", RegexOption.IGNORE_CASE).containsMatchIn(text) -> TvType.TvSeries
-            text.contains("korea", true) || text.contains("china", true) || text.contains("thailand", true) -> TvType.AsianDrama
+            episodes.isNotEmpty() && Regex("""(?:episode|eps?|ep)\s*[-:]?\s*\d+""", RegexOption.IGNORE_CASE)
+                .containsMatchIn("$urlLower $title") -> TvType.TvSeries
+            // Asian drama: URL country path only (reliable; not body text)
+            urlLower.contains("/country/south-korea") ||
+                urlLower.contains("/country/korea") ||
+                urlLower.contains("/country/china") ||
+                urlLower.contains("/country/thailand") ||
+                urlLower.contains("/country/japan") ||
+                urlLower.contains("/country/hong-kong") -> TvType.AsianDrama
             else -> TvType.Movie
         }
     }
@@ -984,51 +1068,29 @@ class Melongmovie : MainAPI() {
 
     private fun extractEpisodeNumber(text: String): Int? {
         return Regex("""(?:episode|eps?|ep)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""\bEP\s*(\d+)""", RegexOption.IGNORE_CASE)
-                .find(text)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toIntOrNull()
+                .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun extractSeasonNumber(text: String): Int? {
         return Regex("""(?:season|s)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun parseDuration(text: String): Int? {
         val h = Regex("""(\d+)\s*(?:h|hr|hour|jam)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
-
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val m = Regex("""(\d+)\s*(?:m|min|menit)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
-
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val total = h * 60 + m
         return total.takeIf { it > 0 }
     }
 
     private fun parseScore(text: String): Score? {
         val rating = Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-
-        return Score.from10(rating)
+            .find(text)?.groupValues?.getOrNull(1)
+        return Score.from10(rating?.toDoubleOrNull())
     }
 
     private fun qualityFromUrl(url: String): Int {
@@ -1074,17 +1136,20 @@ class Melongmovie : MainAPI() {
         val value = listOf(attr("src"), attr("data-src"), attr("alt"), attr("class"), attr("id"))
             .joinToString(" ")
             .lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
+            value.contains("avatar") || value.contains("loading")
     }
 
     private fun isBadPosterUrl(url: String): Boolean {
         val value = url.lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading") || value.contains("blank")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
+            value.contains("avatar") || value.contains("loading") || value.contains("blank")
     }
 
     private fun isBadMetadataText(text: String): Boolean {
         val value = text.lowercase()
-        return value.contains("bookmark") || value.contains("alamat melongmovie") || value.contains("silahkan") || value.contains("download")
+        return value.contains("bookmark") || value.contains("alamat melongmovie") ||
+            value.contains("silahkan") || value.contains("download")
     }
 
     private fun String.cleanEscaped(): String {
