@@ -7,8 +7,10 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.toNewSearchResponseList
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 
 
@@ -343,22 +345,71 @@ class Midasxxi : MainAPI() {
             callback(link)
         }
 
-        suspend fun emitExtractor(rawUrl: String?) {
-            val cleaned = rawUrl?.trim()?.takeIf { it.isNotBlank() } ?: return
-            if (cleaned.startsWith("javascript:", true)) return
-            val fixed = fixUrl(cleaned)
+        suspend fun emitExtractor(rawUrl: String?, baseUrl: String = pageUrl) {
+            val cleaned = rawUrl?.cleanEscaped()?.trim()?.takeIf { it.isNotBlank() } ?: return
+            if (cleaned.startsWith("javascript:", true) || cleaned.startsWith("#")) return
+            val fixed = normalizePlayerUrl(cleaned, baseUrl)
+            if (!fixed.startsWith("http", true)) return
             if (!emitted.add(fixed)) return
 
             if (fixed.contains("youtube", true) || fixed.contains("youtu.be", true)) return
 
-            found = loadExtractor(fixed, pageUrl, subtitleCallback, wrappedCallback) || found
+            loadExtractor(fixed, pageUrl, subtitleCallback, wrappedCallback)
         }
 
-        // Initial iframe already rendered on some pages.
-        document.select("#dooplay_player_response iframe[src], #playcontainer iframe[src], iframe.metaframe[src], iframe[src*='playcinematic'], iframe[src*='midasfilm'], source[src]")
-            .forEach { iframe ->
-                emitExtractor(iframe.attr("src"))
+        suspend fun emitPlayerPayload(rawPayload: String?, baseUrl: String = pageUrl) {
+            decodePayloadCandidates(rawPayload).forEach { payload ->
+                extractPlayerUrls(payload, baseUrl).forEach { playerUrl ->
+                    emitExtractor(playerUrl, baseUrl)
+                }
             }
+        }
+
+        // Initial iframe/source already rendered on some pages.
+        document.select(
+            "#dooplay_player_response iframe[src], #playcontainer iframe[src], .player iframe[src], .player embed[src], " +
+                ".video-content iframe[src], .movieplay iframe[src], iframe.metaframe[src], " +
+                "iframe[src*='playcinematic'], iframe[src*='midasfilm'], iframe[src*='dailymotion'], " +
+                "iframe[src*='ok.ru'], iframe[src*='rumble'], video[src], source[src]"
+        ).forEach { element ->
+            emitPlayerPayload(
+                element.attr("data-src")
+                    .ifBlank { element.attr("src") }
+                    .ifBlank { element.attr("data") },
+                pageUrl
+            )
+        }
+
+        // Some current player templates expose server choices as encoded option values.
+        document.select(
+            "#dooplay_player_response option[value], #playcontainer option[value], #playeroptions option[value], " +
+                "#playeroptionsul option[value], .player option[value], .server option[value], .servers option[value], " +
+                ".mobius option[value], .mirror option[value], select option[value]"
+        ).forEach { option ->
+            emitPlayerPayload(option.attr("value"), pageUrl)
+        }
+
+        document.select(
+            "#dooplay_player_response [data-embed], #dooplay_player_response [data-iframe], " +
+                "#dooplay_player_response [data-src], #dooplay_player_response [data-url], " +
+                "#dooplay_player_response [data-video], #dooplay_player_response [data-file], #dooplay_player_response [data-link], " +
+                "#playcontainer [data-embed], #playcontainer [data-iframe], #playcontainer [data-src], #playcontainer [data-url], " +
+                "#playcontainer [data-video], #playcontainer [data-file], #playcontainer [data-link], " +
+                ".player [data-embed], .player [data-iframe], .player [data-src], .player [data-url], " +
+                ".player [data-video], .player [data-file], .player [data-link], " +
+                ".server [data-embed], .server [data-iframe], .server [data-src], .server [data-url], " +
+                ".server [data-video], .server [data-file], .server [data-link], " +
+                ".servers [data-embed], .servers [data-iframe], .servers [data-src], .servers [data-url], " +
+                ".servers [data-video], .servers [data-file], .servers [data-link], " +
+                ".mobius [data-embed], .mobius [data-iframe], .mobius [data-src], .mobius [data-url], " +
+                ".mobius [data-video], .mobius [data-file], .mobius [data-link], " +
+                ".mirror [data-embed], .mirror [data-iframe], .mirror [data-src], .mirror [data-url], " +
+                ".mirror [data-video], .mirror [data-file], .mirror [data-link]"
+        ).forEach { element ->
+            listOf("data-embed", "data-iframe", "data-src", "data-url", "data-video", "data-file", "data-link").forEach { attr ->
+                emitPlayerPayload(element.attr(attr), pageUrl)
+            }
+        }
 
         val defaultType = if (pageUrl.contains("/episodes/", true) || pageUrl.contains("/tvshows/", true)) {
             "tv"
@@ -376,7 +427,6 @@ class Midasxxi : MainAPI() {
             }
             .filterNot { (_, nume, _) -> nume.equals("trailer", true) }
             .distinctBy { (id, nume, type) -> "$id|$nume|$type" }
-            .take(4)
             .forEach { (id, nume, type) ->
                 if (id.isBlank() || nume.isBlank() || type.isBlank()) return@forEach
 
@@ -393,16 +443,15 @@ class Midasxxi : MainAPI() {
 
                 val json = ajaxResp.parsedSafe<ResponseHash>() ?: runCatching {
                     AppUtils.parseJson<ResponseHash>(ajaxResp.text.replace("\\/", "/"))
-                }.getOrNull() ?: return@forEach
+                }.getOrNull()
 
-                // Current site response is plain URL, for example:
-                // {"embed_url":"https://playcinematic.com/video/xxx","type":"iframe"}
-                // HAR also shows midasfilm.com using the same player flow.
-                val rawEmbed = json.embed_url.trim()
-                if (rawEmbed.startsWith("http", true) || rawEmbed.startsWith("//")) {
-                    emitExtractor(rawEmbed)
+                if (json == null) {
+                    emitPlayerPayload(ajaxResp.text, pageUrl)
                     return@forEach
                 }
+
+                val rawEmbed = json.embed_url.trim()
+                emitPlayerPayload(rawEmbed, pageUrl)
 
                 // Fallback for old encrypted flow (kept for compatibility with mirrors).
                 if (json.key.isNullOrBlank()) return@forEach
@@ -412,7 +461,7 @@ class Midasxxi : MainAPI() {
                     ?.fixBloat()
                     ?: return@forEach
 
-                emitExtractor(decrypted)
+                emitPlayerPayload(decrypted, pageUrl)
             }
 
         return found
@@ -431,6 +480,119 @@ class Midasxxi : MainAPI() {
         return null to null
     }
 
+    private fun extractPlayerUrls(payload: String, baseUrl: String): List<String> {
+        val results = linkedSetOf<String>()
+        val clean = payload.cleanEscaped().trim()
+        if (clean.isBlank()) return emptyList()
+
+        if (isDirectPlayerCandidate(clean)) {
+            results.add(normalizePlayerUrl(clean, baseUrl))
+        }
+
+        val parsed = Jsoup.parse(clean, baseUrl)
+        parsed.select(
+            "iframe[src], iframe[data-src], embed[src], object[data], video[src], video source[src], source[src], " +
+                "[data-embed], [data-iframe], [data-src], [data-url], [data-video], [data-file], [data-link]"
+        ).forEach { element ->
+            listOf("data-embed", "data-iframe", "data-src", "data-url", "data-video", "data-file", "data-link", "data", "src").forEach { attr ->
+                val value = element.attr(attr).cleanEscaped().trim()
+                if (isDirectPlayerCandidate(value)) {
+                    results.add(normalizePlayerUrl(value, baseUrl))
+                }
+            }
+        }
+
+        extractUrlCandidates(clean).forEach {
+            results.add(normalizePlayerUrl(it, baseUrl))
+        }
+
+        return results.toList()
+    }
+
+    private fun extractUrlCandidates(text: String): List<String> {
+        val clean = text.cleanEscaped()
+        val results = linkedSetOf<String>()
+
+        Regex("""https?://[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { it.value }
+            .forEach { results.add(it) }
+
+        Regex("""(?<!:)//[^"'\\\s<>]+""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .map { "https:${it.value}" }
+            .forEach { results.add(it) }
+
+        return results.toList()
+    }
+
+    private fun decodePayloadCandidates(rawPayload: String?): List<String> {
+        val clean = rawPayload?.cleanEscaped()?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val seeds = linkedSetOf(clean)
+        runCatching { URLDecoder.decode(clean, "UTF-8") }
+            .getOrNull()
+            ?.cleanEscaped()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { seeds.add(it) }
+
+        Regex("""atob\(["']([^"']+)["']\)""", RegexOption.IGNORE_CASE)
+            .findAll(clean)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .forEach { seeds.add(it) }
+
+        val results = linkedSetOf<String>()
+        seeds.forEach { seed ->
+            results.add(seed)
+            val base64Body = seed.substringAfter("base64,", seed).trim()
+            if (looksLikeBase64(base64Body)) {
+                runCatching { safeBase64Decode(base64Body) }
+                    .getOrNull()
+                    ?.cleanEscaped()
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { results.add(it) }
+            }
+        }
+
+        return results.toList()
+    }
+
+    private fun isDirectPlayerCandidate(value: String): Boolean {
+        val clean = value.cleanEscaped().trim()
+        if (clean.isBlank()) return false
+        if (clean.startsWith("<", true)) return false
+        if (clean.startsWith("javascript:", true) || clean.startsWith("#")) return false
+        if (clean.startsWith("http", true) || clean.startsWith("//")) return true
+        return clean.startsWith("/") && (
+            clean.contains("/embed", true) ||
+                clean.contains("/video", true) ||
+                clean.contains("/stream", true) ||
+                clean.contains(".m3u8", true) ||
+                clean.contains(".mp4", true) ||
+                clean.contains(".webm", true) ||
+                clean.contains(".mkv", true)
+            )
+    }
+
+    private fun looksLikeBase64(value: String): Boolean {
+        val compact = value.trim()
+        if (compact.length < 12 || compact.length % 4 == 1) return false
+        if (compact.contains("<") || compact.contains(">") || compact.contains("http", true)) return false
+        return compact.matches(Regex("""[A-Za-z0-9+/=_-]+"""))
+    }
+
+    private fun normalizePlayerUrl(url: String, baseUrl: String): String {
+        val clean = url.cleanEscaped().trim()
+        if (clean.isBlank()) return ""
+        return when {
+            clean.startsWith("http", true) -> clean
+            clean.startsWith("//") -> "https:$clean"
+            clean.startsWith("/") -> getBaseUrl(baseUrl).trimEnd('/') + clean
+            else -> runCatching { URI(baseUrl).resolve(clean).toString() }.getOrDefault(clean)
+        }
+    }
+
     private fun generateKey(r: String, m: String): String {
         val rList = r.split("\\x").toTypedArray()
         var n = ""
@@ -442,8 +604,8 @@ class Midasxxi : MainAPI() {
     }
 
     private fun safeBase64Decode(input: String): String {
-        var paddedInput = input
-        val remainder = input.length % 4
+        var paddedInput = input.trim().replace("-", "+").replace("_", "/")
+        val remainder = paddedInput.length % 4
         if (remainder != 0) {
             paddedInput += "=".repeat(4 - remainder)
         }
@@ -452,6 +614,18 @@ class Midasxxi : MainAPI() {
 
     private fun String.fixBloat(): String {
         return this.replace("\"", "").replace("\\", "")
+    }
+
+    private fun String.cleanEscaped(): String {
+        return this
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .trim()
     }
 
 
