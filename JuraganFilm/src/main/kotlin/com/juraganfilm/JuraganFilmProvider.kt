@@ -48,7 +48,7 @@ class JuraganFilmProvider : MainAPI() {
         }
     }
 
-    override var mainUrl = "https://tv44.juragan.film"
+    override var mainUrl = "https://tv45.juragan.film"
     override var name = "JuraganFilm"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -710,7 +710,8 @@ class JuraganFilmProvider : MainAPI() {
     }
 
     private fun isDetailUrl(url: String): Boolean {
-        val value = url.lowercase()
+        val fixed = fixUrl(url, mainUrl) ?: return false
+        val value = fixed.lowercase()
         if (!value.startsWith(mainUrl.lowercase())) return false
         if (isBadUrl(value)) return false
         val path = runCatching { URI(value).path.orEmpty().trim('/') }.getOrDefault(value)
@@ -816,12 +817,24 @@ class JuraganFilmProvider : MainAPI() {
     private fun fixUrl(url: String?, baseUrl: String): String? {
         val clean = url.cleanEscaped().trim().trim('"', '\'', ',', ';')
         if (clean.isBlank() || clean == "#" || clean.startsWith("javascript:", true) || clean.startsWith("mailto:", true)) return null
-        return when {
+        val resolved = when {
             clean.startsWith("http", true) -> clean
             clean.startsWith("//") -> "https:$clean"
             clean.startsWith("/") -> origin(baseUrl) + clean
             else -> runCatching { URI(baseUrl).resolve(clean).toString() }.getOrNull()
-        }
+        } ?: return null
+
+        return normalizeJuraganDomain(resolved)
+    }
+
+    private fun normalizeJuraganDomain(url: String): String {
+        val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
+        val activeHost = runCatching { URI(mainUrl).host.orEmpty().lowercase() }.getOrDefault("")
+        if (!host.endsWith(".juragan.film") || host == activeHost) return url
+        return url.replaceFirst(
+            Regex("https?://" + Regex.escape(host), RegexOption.IGNORE_CASE),
+            "https://$activeHost"
+        )
     }
 
     private fun origin(url: String): String = runCatching {
