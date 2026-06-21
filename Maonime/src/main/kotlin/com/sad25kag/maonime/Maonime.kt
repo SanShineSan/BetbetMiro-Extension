@@ -17,7 +17,7 @@ class Maonime : MainAPI() {
     override var lang = "id"
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    private val maodriveUrl = "https://maodrive.xyz"
+    private val maodriveUrl = "https://maodrive.biz.id"
     private val maodriveUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
 
     private val browserHeaders = mapOf(
@@ -163,7 +163,7 @@ class Maonime : MainAPI() {
             val playerUrl = candidate.decodeUrlText().toAbsoluteUrl(data) ?: continue
             if (emitDirect(playerUrl, hostLabel(playerUrl), data)) continue
 
-            if (playerUrl.contains("maodrive.xyz/", true)) {
+            if (playerUrl.isMaodriveUrl()) {
                 resolveMaodrive(playerUrl, data, emitted, callback)
                 continue
             }
@@ -184,7 +184,7 @@ class Maonime : MainAPI() {
             for (nestedUrl in nested.take(25)) {
                 if (emitDirect(nestedUrl, hostLabel(playerUrl), playerUrl)) continue
                 val fixedNested = nestedUrl.toAbsoluteUrl(playerUrl) ?: continue
-                if (fixedNested.contains("maodrive.xyz/", true)) {
+                if (fixedNested.isMaodriveUrl()) {
                     resolveMaodrive(fixedNested, playerUrl, emitted, callback)
                 } else {
                     runCatching { loadExtractor(fixedNested, playerUrl, subtitleCallback, countedCallback) }
@@ -313,6 +313,7 @@ class Maonime : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ) {
         val fixedPlayerUrl = playerUrl.toAbsoluteUrl(maodriveUrl) ?: return
+        val maodriveBase = fixedPlayerUrl.maodriveOrigin() ?: maodriveUrl
         val videoId = Regex("""/videos/([A-Za-z0-9_-]+)""").find(fixedPlayerUrl)?.groupValues?.getOrNull(1)
 
         val response = runCatching {
@@ -350,10 +351,9 @@ class Maonime : MainAPI() {
             .forEach { media -> addMedia(qualityFromUrl(media), media) }
 
         // HAR evidence: Maodrive playback succeeds through /stream/360/{id}/__001 with
-        // Referer=https://maodrive.xyz/videos/{id}, Range=bytes=0-, and no Origin header.
+        // Referer=https://maodrive.biz.id/videos/{id}, Range=bytes=0-, and no Origin header.
         if (!videoId.isNullOrBlank()) {
-            val absoluteStreamUrl = "$maodriveUrl/stream/360/$videoId/__001"
-            addMedia("360p", absoluteStreamUrl)
+            addMedia("360p", "$maodriveBase/stream/360/$videoId/__001")
         }
 
         for ((label, url) in sources) {
@@ -368,26 +368,33 @@ class Maonime : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ) {
         val normalized = html.decodeHtmlSource()
-        val ids = linkedSetOf<String>()
+        val videos = linkedMapOf<String, String>()
 
-        Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
-            .findAll(normalized)
-            .forEach { match -> ids.add(match.groupValues[1]) }
+        fun collectMaodriveVideos(text: String?) {
+            val value = text?.decodeHtmlSource()?.trim()?.takeIf { it.isNotBlank() } ?: return
+            maodriveVideoRegex.findAll(value).forEach { match ->
+                val base = "https://${match.groupValues[1].removePrefix("www.")}"
+                val id = match.groupValues[2]
+                videos.putIfAbsent(id, base)
+            }
+        }
+
+        collectMaodriveVideos(normalized)
         Regex("""(?:src|value|data-src|data-url|data-file|data-player|data-video|data-iframe|data-embed)\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .findAll(normalized)
             .forEach { match ->
                 val raw = match.groupValues[1].decodeUrlText()
-                Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
-                    .find(raw)?.groupValues?.getOrNull(1)?.let { ids.add(it) }
-                runCatching { base64Decode(raw) }.getOrNull()?.decodeUrlText()?.let { decoded ->
-                    Regex("""https?://(?:www\.)?maodrive\.xyz/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
-                        .find(decoded)?.groupValues?.getOrNull(1)?.let { ids.add(it) }
+                collectMaodriveVideos(raw)
+                raw.decodeLoose()?.let { collectMaodriveVideos(it) }
+                runCatching { base64Decode(raw) }.getOrNull()?.let { decoded ->
+                    collectMaodriveVideos(decoded)
+                    decoded.decodeLoose()?.let { collectMaodriveVideos(it) }
                 }
             }
 
-        ids.forEach { id ->
-            val playerUrl = "$maodriveUrl/videos/$id"
-            val streamUrl = "$maodriveUrl/stream/360/$id/__001"
+        videos.forEach { (id, base) ->
+            val playerUrl = "$base/videos/$id"
+            val streamUrl = "$base/stream/360/$id/__001"
             emitMaodriveDirect(streamUrl, "360p", playerUrl, emitted, callback)
         }
     }
@@ -525,7 +532,7 @@ class Maonime : MainAPI() {
         if (isDirectMediaLike()) return true
         if (listOf("/embed", "/iframe", "/player", "/e/", "/v/").any { value.contains(it) }) return true
         return listOf(
-            "maodrive.xyz", "iframe", "embed", "player",
+            "maodrive.", "maodrive.xyz", "maodrive.biz.id", "iframe", "embed", "player",
             "streamsb", "streamtape", "streamwish", "streamhide", "streamruby", "streamlare", "streamhub", "streamvid",
             "vidhide", "vidguard", "vidmoly", "vidcloud", "vidoza",
             "filemoon", "filelions", "dood", "mp4upload", "blogger", "googlevideo", "ok.ru", "uqload", "mixdrop", "voe.sx", "short.ink"
@@ -556,6 +563,19 @@ class Maonime : MainAPI() {
     private fun String.pathLower(): String = runCatching {
         URI(this).path.orEmpty().lowercase(Locale.ROOT)
     }.getOrDefault(this)
+
+    private val maodriveVideoRegex = Regex("""https?://(?:www\.)?(maodrive\.(?:biz\.id|xyz))/videos/([A-Za-z0-9_-]+)""", RegexOption.IGNORE_CASE)
+
+    private fun String.isMaodriveUrl(): Boolean = runCatching {
+        val host = URI(this).host?.removePrefix("www.") ?: return@runCatching false
+        host == "maodrive.biz.id" || host == "maodrive.xyz"
+    }.getOrDefault(false)
+
+    private fun String.maodriveOrigin(): String? = runCatching {
+        val uri = URI(this)
+        val host = uri.host?.removePrefix("www.") ?: return@runCatching null
+        if (host == "maodrive.biz.id" || host == "maodrive.xyz") "${uri.scheme}://${uri.host}" else null
+    }.getOrNull()
 
     private fun qualityFromUrl(url: String): String? = Regex("""/(\d{3,4})(?:/|p\b)""").find(url)?.groupValues?.getOrNull(1)?.let { "${it}p" }
 
