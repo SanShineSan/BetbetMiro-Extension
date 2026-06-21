@@ -1,12 +1,12 @@
-package com.sad25kag.xiaomitvplus
+package com.sad25kag.iptvorg
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
-class XiaomiTVPlusPlugin : Plugin() {
+class IPTVOrgPlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(XiaomiTVPlusProvider())
+        registerMainAPI(IPTVOrgProvider())
     }
 }
