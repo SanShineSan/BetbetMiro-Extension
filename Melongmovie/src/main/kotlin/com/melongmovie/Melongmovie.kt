@@ -1,6 +1,7 @@
 package com.melongmovie
 
 import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -17,7 +18,7 @@ import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -33,6 +34,7 @@ import com.lagradost.cloudstream3.utils.getPacked
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.nicehttp.NiceResponse
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -41,6 +43,11 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Melongmovie : MainAPI() {
+    companion object {
+        private const val CF_USER_MSG =
+            "Terkena perlindungan Cloudflare. Silakan tap ikon Web/Bumi di kanan atas (Open in Browser), " +
+                "centang verifikasi manusia, lalu kembali dan reload halaman ini."
+    }
 
     override var mainUrl = "https://tv12.melongmovies.com"
     override var name = "Melongmovie"
@@ -100,24 +107,79 @@ class Melongmovie : MainAPI() {
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     )
 
-    private val cfInterceptor by lazy { CloudflareKiller() }
+    /**
+     * AnimeSail-style Cloudflare resolver.
+     * Semua request halaman source Melongmovie masuk lewat WebViewResolver,
+     * bukan cookie manual atau custom Turnstile interceptor.
+     */
+    private val cloudflareResolver = WebViewResolver(
+        interceptUrl = Regex("""^${Regex.escape(mainUrl)}(?:/.*)?$"""),
+        useOkhttp = false
+    )
+
+    private suspend fun request(
+        url: String,
+        ref: String? = null,
+        timeout: Long = 25L
+    ): NiceResponse {
+        return app.get(
+            url = url,
+            referer = ref ?: "$mainUrl/",
+            interceptor = cloudflareResolver,
+            timeout = timeout
+        )
+    }
+
+    private fun isChallengeResponse(response: NiceResponse): Boolean {
+        val status = response.code
+        if (status == 403 || status == 503) return true
+
+        val body = response.text
+        if (body.isBlank()) return false
+
+        val title = response.document.title()
+        val hints = listOf(
+            "<title>Just a moment</title>",
+            "Just a moment",
+            "Checking your Browser",
+            "cf-challenge",
+            "cf-browser-verification",
+            "cf-turnstile",
+            "challenge-platform",
+            "challenges.cloudflare.com",
+            "turnstile",
+            "/cdn-cgi/challenge-platform/",
+            "Attention Required",
+            "<title>Loading..</title>",
+            "Aktifkan JavaScript"
+        )
+
+        return title.contains("Just a moment", ignoreCase = true) ||
+            title.equals("Loading..", ignoreCase = true) ||
+            hints.any { body.contains(it, ignoreCase = true) }
+    }
+
+    private fun requireSourceResponse(response: NiceResponse): NiceResponse {
+        if (isChallengeResponse(response)) throwCfError()
+        return response
+    }
+
+    private fun throwCfError(): Nothing {
+        throw ErrorLoadingException(CF_USER_MSG)
+    }
 
     override suspend fun getMainPage(
         page: Int,
-        request: MainPageRequest
+        pageRequest: MainPageRequest
     ): HomePageResponse {
-        val url = buildMainPageUrl(request.data, page)
-        val document = app.get(
-            url,
-            headers = headers,
-            interceptor = cfInterceptor,
-            timeout = 25L
-        ).document
+        val url = buildMainPageUrl(pageRequest.data, page)
+        val response = requireSourceResponse(request(url))
+        val document = response.document
 
         val items = parseCards(document).distinctBy { it.url }
 
         return newHomePageResponse(
-            request.name,
+            pageRequest.name,
             items,
             hasNext = hasNextPage(document, page)
         )
@@ -137,15 +199,15 @@ class Melongmovie : MainAPI() {
         )
 
         for (url in attempts) {
-            val document = runCatching {
-                app.get(
-                    url,
-                    headers = headers,
-                    interceptor = cfInterceptor,
-                    timeout = 25L
-                ).document
-            }.getOrNull() ?: continue
+            val response = try {
+                requireSourceResponse(request(url))
+            } catch (e: ErrorLoadingException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            } ?: continue
 
+            val document = response.document
             val results = parseCards(document).distinctBy { it.url }
             if (results.isNotEmpty()) return results
         }
@@ -154,12 +216,8 @@ class Melongmovie : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(
-            url,
-            headers = headers,
-            interceptor = cfInterceptor,
-            timeout = 25L
-        ).document
+        val response = requireSourceResponse(request(url))
+        val document = response.document
 
         val title = listOf(
             document.selectFirst("h1.entry-title, h1")?.text(),
@@ -237,13 +295,7 @@ class Melongmovie : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = normalizeUrl(data, mainUrl)
-        val response = app.get(
-            pageUrl,
-            headers = headers,
-            referer = mainUrl,
-            interceptor = cfInterceptor,
-            timeout = 25L
-        )
+        val response = requireSourceResponse(request(pageUrl, ref = mainUrl))
 
         val document = response.document
         val html = response.text.cleanEscaped()
@@ -578,7 +630,7 @@ class Melongmovie : MainAPI() {
                         "X-Requested-With" to "XMLHttpRequest",
                         "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                     ),
-                    interceptor = cfInterceptor,
+                    interceptor = cloudflareResolver,
                     timeout = 18L
                 ).text.cleanEscaped()
             }.getOrNull().orEmpty()
@@ -591,12 +643,14 @@ class Melongmovie : MainAPI() {
             // Fallback: DooPlay REST API v2 (/wp-json/dooplayer/v2/post/{id}/player)
             if (directLinks.isEmpty() && embedLinks.isEmpty()) {
                 val wpJsonText = runCatching {
-                    app.get(
-                        "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
-                        headers = headers + mapOf("X-WP-Nonce" to nonce),
-                        referer = pageUrl,
-                        interceptor = cfInterceptor,
-                        timeout = 18L
+                    requireSourceResponse(
+                        app.get(
+                            "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
+                            headers = mapOf("X-WP-Nonce" to nonce),
+                            referer = pageUrl,
+                            interceptor = cloudflareResolver,
+                            timeout = 18L
+                        )
                     ).text.cleanEscaped()
                 }.getOrNull().orEmpty()
 
@@ -669,7 +723,7 @@ class Melongmovie : MainAPI() {
                         "X-Requested-With" to "XMLHttpRequest",
                         "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                     ),
-                    interceptor = cfInterceptor,
+                    interceptor = cloudflareResolver,
                     timeout = 18L
                 ).text.cleanEscaped()
             }.getOrNull().orEmpty()
@@ -750,13 +804,17 @@ class Melongmovie : MainAPI() {
     private suspend fun resolveNestedLinks(url: String, referer: String): List<String> {
         if (isBadPlayableUrl(url)) return emptyList()
 
-        val response = runCatching {
+        val response = try {
             if (url.startsWith(mainUrl, true)) {
-                app.get(url, headers = headers, referer = referer, interceptor = cfInterceptor, timeout = 18L)
+                requireSourceResponse(request(url, ref = referer, timeout = 18L))
             } else {
                 app.get(url, headers = headers, referer = referer, timeout = 18L)
             }
-        }.getOrNull() ?: return emptyList()
+        } catch (e: ErrorLoadingException) {
+            throw e
+        } catch (_: Exception) {
+            return emptyList()
+        }
 
         val results = linkedSetOf<String>()
         val text = response.text.cleanEscaped()
@@ -839,12 +897,12 @@ class Melongmovie : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
-        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
+        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
             .forEach { urls.add(it) }
 
-        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
+        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
             .forEach { urls.add(it) }
@@ -1068,28 +1126,50 @@ class Melongmovie : MainAPI() {
 
     private fun extractEpisodeNumber(text: String): Int? {
         return Regex("""(?:episode|eps?|ep)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
             ?: Regex("""\bEP\s*(\d+)""", RegexOption.IGNORE_CASE)
-                .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                .find(text)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
     }
 
     private fun extractSeasonNumber(text: String): Int? {
         return Regex("""(?:season|s)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
     }
 
     private fun parseDuration(text: String): Int? {
         val h = Regex("""(\d+)\s*(?:h|hr|hour|jam)""", RegexOption.IGNORE_CASE)
-            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: 0
+
         val m = Regex("""(\d+)\s*(?:m|min|menit)""", RegexOption.IGNORE_CASE)
-            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: 0
+
         val total = h * 60 + m
         return total.takeIf { it > 0 }
     }
 
     private fun parseScore(text: String): Score? {
         val rating = Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
-            .find(text)?.groupValues?.getOrNull(1)
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+
         return Score.from10(rating?.toDoubleOrNull())
     }
 
@@ -1136,20 +1216,17 @@ class Melongmovie : MainAPI() {
         val value = listOf(attr("src"), attr("data-src"), attr("alt"), attr("class"), attr("id"))
             .joinToString(" ")
             .lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
-            value.contains("avatar") || value.contains("loading")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading")
     }
 
     private fun isBadPosterUrl(url: String): Boolean {
         val value = url.lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
-            value.contains("avatar") || value.contains("loading") || value.contains("blank")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading") || value.contains("blank")
     }
 
     private fun isBadMetadataText(text: String): Boolean {
         val value = text.lowercase()
-        return value.contains("bookmark") || value.contains("alamat melongmovie") ||
-            value.contains("silahkan") || value.contains("download")
+        return value.contains("bookmark") || value.contains("alamat melongmovie") || value.contains("silahkan") || value.contains("download")
     }
 
     private fun String.cleanEscaped(): String {
