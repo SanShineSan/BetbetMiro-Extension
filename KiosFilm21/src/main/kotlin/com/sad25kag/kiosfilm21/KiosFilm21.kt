@@ -26,6 +26,9 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -55,6 +58,12 @@ class KiosFilm21 : MainAPI() {
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+    )
+
+    private val abyssHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "Origin" to "https://playhydrax.com",
+        "Referer" to "https://playhydrax.com/"
     )
 
     override val mainPage = mainPageOf(
@@ -100,7 +109,10 @@ class KiosFilm21 : MainAPI() {
             }.getOrNull() ?: return@forEach
 
             parseCards(document).forEach { item ->
-                if (item.name.contains(cleanQuery, ignoreCase = true) || item.url.contains(cleanQuery.slugQuery(), ignoreCase = true)) {
+                if (
+                    item.name.contains(cleanQuery, ignoreCase = true) ||
+                    item.url.contains(cleanQuery.slugQuery(), ignoreCase = true)
+                ) {
                     results[item.url] = item
                 }
             }
@@ -123,15 +135,20 @@ class KiosFilm21 : MainAPI() {
             referer = "$mainUrl/"
         ).document
 
-        val title = document.selectFirst("h1.entry-title, h1[itemprop=name], h1[itemprop=headline], h1, meta[property=og:title], meta[name=title]")
-            ?.let { if (it.hasAttr("content")) it.attr("content") else it.text() }
+        val title = document.selectFirst(
+            "h1.entry-title, h1[itemprop=name], h1[itemprop=headline], h1, " +
+                "meta[property=og:title], meta[name=title]"
+        )?.let { if (it.hasAttr("content")) it.attr("content") else it.text() }
             ?.cleanTitle()
             ?.takeIf { it.isNotBlank() && !it.isUiText() }
             ?: fixedUrl.slugTitle()
 
-        val poster = document.selectFirst("meta[property=og:image], meta[name=twitter:image], .gmr-movie-data img, .content-thumbnail img, img.wp-post-image, img")
-            ?.let { if (it.hasAttr("content")) it.attr("content") else it.getImageAttr() }
-            ?.let { fixUrlNull(it) }
+        val poster = document.selectFirst(
+            "meta[property=og:image], meta[name=twitter:image], " +
+                ".gmr-movie-data img, .content-thumbnail img, .gmr-featured-image img, " +
+                ".entry-content img, img.wp-post-image, img"
+        )?.let { if (it.hasAttr("content")) it.attr("content") else it.getImageAttr() }
+            ?.let { fixUrlNull(it) ?: resolveUrl(it, fixedUrl) }
             ?.takeIf { !isBadImage(it) }
 
         val description = extractDescription(document)
@@ -148,7 +165,9 @@ class KiosFilm21 : MainAPI() {
             .distinct()
             .take(20)
 
-        val year = extractYear(title) ?: document.selectFirst("a[href*='/year/']")?.text()?.toIntOrNull() ?: extractYear(document.text())
+        val year = extractYear(title)
+            ?: document.selectFirst("a[href*='/year/']")?.text()?.toIntOrNull()
+            ?: extractYear(document.text())
 
         val recommendations = parseCards(document)
             .filter { it.url != fixedUrl }
@@ -215,8 +234,12 @@ class KiosFilm21 : MainAPI() {
             ".player-wrap iframe[src], " +
                 ".gmr-pagi-player iframe[src], " +
                 ".gmr-embed-responsive iframe[src], " +
+                ".gmr-embed-responsive iframe[data-src], " +
+                ".gmr-player iframe[src], " +
+                ".gmr-player iframe[data-src], " +
                 "iframe[src], iframe[data-src], embed[src], source[src], " +
-                "a[href*='abyssplayer'], a[href*='embed'], a[href*='player'], a[href*='stream']"
+                "a[href*='abyssplayer'], a[href*='playhydrax'], " +
+                "a[href*='embed'], a[href*='player'], a[href*='stream']"
         ).forEach { element ->
             listOf(
                 element.attr("src"),
@@ -246,6 +269,11 @@ class KiosFilm21 : MainAPI() {
         val fixed = resolveUrl(link, referer) ?: return false
         if (isBadPlaybackUrl(fixed)) return false
 
+        if (isAbyssPlayer(fixed)) {
+            val abyssFound = resolveAbyssPlayer(fixed, callback)
+            if (abyssFound) return true
+        }
+
         if (tryEmitDirect(fixed, referer, callback)) return true
 
         if (runCatching { loadExtractor(fixed, referer, subtitleCallback, callback) }.getOrDefault(false)) {
@@ -262,19 +290,26 @@ class KiosFilm21 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val response = runCatching {
-            app.get(link, headers = siteHeaders, referer = referer, timeout = 25L)
+            app.get(link, headers = if (isAbyssPlayer(link)) abyssHeaders else siteHeaders, referer = referer, timeout = 25L)
         }.getOrNull() ?: return false
 
         val html = response.text.decodeEscaped()
         val doc = Jsoup.parse(html, link)
         val candidates = linkedSetOf<String>()
 
+        if (isAbyssPlayer(link)) {
+            resolveAbyssPlayer(link, callback).takeIf { it }?.let { return true }
+        }
+
         extractMediaUrls(html, link).forEach { candidates.add(it) }
 
         Regex("""(?:const|let|var)\s+datas\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .findAll(html)
-            .mapNotNull { runCatching { String(android.util.Base64.decode(it.groupValues[1], android.util.Base64.DEFAULT), Charsets.UTF_8) }.getOrNull() }
-            .forEach { decoded ->
+            .mapNotNull {
+                runCatching {
+                    String(android.util.Base64.decode(it.groupValues[1], android.util.Base64.DEFAULT), Charsets.UTF_8)
+                }.getOrNull()
+            }.forEach { decoded ->
                 extractMediaUrls(decoded, link).forEach { candidates.add(it) }
             }
 
@@ -291,6 +326,49 @@ class KiosFilm21 : MainAPI() {
             found = tryEmitDirect(next, link, callback) ||
                 runCatching { loadExtractor(next, link, subtitleCallback, callback) }.getOrDefault(false) ||
                 found
+        }
+
+        return found
+    }
+
+    private suspend fun resolveAbyssPlayer(
+        url: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val doc = runCatching {
+            app.get(url, headers = abyssHeaders, referer = "https://playhydrax.com/").document
+        }.getOrNull() ?: return false
+
+        val scriptData = doc.select("script").joinToString("\n") { it.data() + "\n" + it.html() }
+        val encrypted = Regex("""const\s+datas\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(scriptData)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() }
+            ?: return false
+
+        val response = runCatching {
+            app.post(
+                "https://enc-dec.app/api/dec-abyss",
+                headers = abyssHeaders,
+                requestBody = """{"text":"$encrypted"}"""
+                    .toRequestBody("application/json".toMediaType()),
+                timeout = 25L
+            ).text
+        }.getOrNull() ?: return false
+
+        val json = runCatching { JSONObject(response).optJSONObject("result") }.getOrNull() ?: return false
+        val sources = json.optJSONArray("sources") ?: return false
+        var found = false
+
+        for (i in 0 until sources.length()) {
+            val src = sources.optJSONObject(i) ?: continue
+            if (!src.optBoolean("status", false)) continue
+
+            val srcUrl = src.optString("url").takeIf { it.isNotBlank() } ?: continue
+            val fixed = resolveUrl(srcUrl, "https://playhydrax.com/") ?: continue
+
+            found = tryEmitDirect(fixed, "https://playhydrax.com/", callback) || found
         }
 
         return found
@@ -405,7 +483,11 @@ class KiosFilm21 : MainAPI() {
         }
     }
 
-    private fun parseEpisodes(document: Document, fallbackUrl: String, poster: String?): List<com.lagradost.cloudstream3.Episode> {
+    private fun parseEpisodes(
+        document: Document,
+        fallbackUrl: String,
+        poster: String?
+    ): List<com.lagradost.cloudstream3.Episode> {
         val episodes = linkedMapOf<String, com.lagradost.cloudstream3.Episode>()
 
         document.select(
@@ -538,9 +620,13 @@ class KiosFilm21 : MainAPI() {
         ).distinct()
 
         candidates.forEach { box ->
-            box.selectFirst("img[src], img[data-src], img[data-lazy-src], img[data-original], source[srcset], source[data-srcset]")
-                ?.getImageAttr()
-                ?.let { fixUrlNull(it) }
+            val image = box.selectFirst(
+                "img[data-src], img[data-lazy-src], img[data-original], img[data-img], img[data-image], " +
+                    "img[data-poster], img[src], source[data-srcset], source[srcset]"
+            ) ?: return@forEach
+
+            image.getImageAttr()
+                ?.let { raw -> resolveUrl(raw, mainUrl) ?: fixUrlNull(raw) }
                 ?.takeIf { !isBadImage(it) }
                 ?.let { return it }
         }
@@ -550,18 +636,25 @@ class KiosFilm21 : MainAPI() {
 
     private fun Element.getImageAttr(): String? {
         return when {
-            hasAttr("data-src") -> attr("abs:data-src").ifBlank { attr("data-src") }
-            hasAttr("data-lazy-src") -> attr("abs:data-lazy-src").ifBlank { attr("data-lazy-src") }
-            hasAttr("data-original") -> attr("abs:data-original").ifBlank { attr("data-original") }
-            hasAttr("data-img") -> attr("abs:data-img").ifBlank { attr("data-img") }
-            hasAttr("data-image") -> attr("abs:data-image").ifBlank { attr("data-image") }
-            hasAttr("data-poster") -> attr("abs:data-poster").ifBlank { attr("data-poster") }
-            hasAttr("poster") -> attr("abs:poster").ifBlank { attr("poster") }
-            hasAttr("data-srcset") -> attr("abs:data-srcset").ifBlank { attr("data-srcset") }.split(",").lastOrNull()?.substringBefore(" ")?.trim()
-            hasAttr("srcset") -> attr("abs:srcset").ifBlank { attr("srcset") }.split(",").lastOrNull()?.substringBefore(" ")?.trim()
-            hasAttr("src") -> attr("abs:src").ifBlank { attr("src") }
+            hasAttr("data-src") -> attr("data-src")
+            hasAttr("data-lazy-src") -> attr("data-lazy-src")
+            hasAttr("data-original") -> attr("data-original")
+            hasAttr("data-img") -> attr("data-img")
+            hasAttr("data-image") -> attr("data-image")
+            hasAttr("data-poster") -> attr("data-poster")
+            hasAttr("poster") -> attr("poster")
+            hasAttr("data-srcset") -> pickSrcSet(attr("data-srcset"))
+            hasAttr("srcset") -> pickSrcSet(attr("srcset"))
+            hasAttr("src") -> attr("src")
             else -> null
         }
+    }
+
+    private fun pickSrcSet(srcset: String): String? {
+        return srcset.split(",")
+            .map { it.trim().substringBefore(" ").trim() }
+            .filter { it.isNotBlank() }
+            .lastOrNull()
     }
 
     private fun isProviderUrl(url: String): Boolean {
@@ -636,6 +729,11 @@ class KiosFilm21 : MainAPI() {
             lower.endsWith(".gif") ||
             lower.endsWith(".css") ||
             lower.endsWith(".js")
+    }
+
+    private fun isAbyssPlayer(url: String): Boolean {
+        val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
+        return host.contains("abyssplayer.com") || host.contains("playhydrax.com")
     }
 
     private fun isBadPlaybackUrl(url: String): Boolean {
