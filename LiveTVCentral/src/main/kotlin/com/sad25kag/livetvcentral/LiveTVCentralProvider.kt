@@ -23,6 +23,8 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import java.net.URI
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -49,10 +51,10 @@ class LiveTVCentralProvider : MainAPI() {
         "united-states" to "United States"
     )
 
+    // Sitemap-sourced channel list cache, keyed by country slug
     private val countryCache = ConcurrentHashMap<String, List<LiveChannel>>()
-
-    @Volatile
-    private var sitemapLoaded = false
+    // Flag to avoid fetching sitemap more than once per session
+    @Volatile private var sitemapLoaded = false
 
     private val siteHeaders = mapOf(
         "User-Agent" to USER_AGENT,
@@ -61,9 +63,12 @@ class LiveTVCentralProvider : MainAPI() {
         "Cache-Control" to "no-cache"
     )
 
+    // ─── MainPage ────────────────────────────────────────────────────────────────
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val countrySlug = request.data
 
+        // Load sitemap once to populate all country caches
         if (!sitemapLoaded) {
             runCatching { loadSitemap() }.onFailure { logError(it) }
         }
@@ -78,6 +83,8 @@ class LiveTVCentralProvider : MainAPI() {
         )
     }
 
+    // ─── Search ───────────────────────────────────────────────────────────────────
+
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -90,52 +97,52 @@ class LiveTVCentralProvider : MainAPI() {
 
         return countryCache.values
             .flatten()
-            .filter { channel ->
-                channel.title.lowercase(Locale.ROOT).contains(keyword) ||
-                    channel.country.name.lowercase(Locale.ROOT).contains(keyword)
-            }
+            .filter { it.title.lowercase(Locale.ROOT).contains(keyword) }
             .distinctBy { it.channelUrl }
             .take(SEARCH_LIMIT)
             .map { it.toSearchResponse() }
     }
 
+    // ─── Load ────────────────────────────────────────────────────────────────────
+
     override suspend fun load(url: String): LoadResponse {
+        // url is the real /tv/SLUG URL
         val channelUrl = url.substringBefore("?")
+
         val document = runCatching {
             app.get(channelUrl, headers = siteHeaders, referer = "$mainUrl/", timeout = 25L).document
-        }.getOrElse {
-            throw ErrorLoadingException("Failed to load: $channelUrl")
-        }
+        }.getOrElse { throw ErrorLoadingException("Failed to load: $channelUrl") }
 
+        // Title: from breadcrumb last item, og:title, or h1
         val title = document.selectFirst("ol.breadcrumb li:last-child, .breadcrumb li:last-child")
-            ?.text()
-            ?.trim()
+            ?.text()?.trim()
             ?.ifBlank { null }
             ?: document.selectFirst("meta[property=og:title]")
                 ?.attr("content")
-                ?.replace(
-                    Regex("""[\u00bb\u00ab\u300a\u300b]\s*|【[^】]*】|\s*Live\s*TV\s*Central.*""", RegexOption.IGNORE_CASE),
-                    ""
-                )
+                ?.replace(Regex("""[\u00bb\u00ab\u300a\u300b]\s*|【[^】]*】|\s*Live\s*TV\s*Central.*""", RegexOption.IGNORE_CASE), "")
                 ?.trim()
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: channelUrl.slugTitle()
 
+        // Poster: channel logo from /imgs/tvs/ pattern (evidence: img/tvs/581.jpg)
         val poster = document.selectFirst("img[src*='/imgs/tvs/']")?.absUrl("src")
             ?: document.selectFirst("meta[property=og:image]")
                 ?.attr("content")
                 ?.toAbsoluteUrl(mainUrl)
 
+        // Description: meta description or first paragraph
         val description = document.selectFirst("meta[name=description]")
-            ?.attr("content")
-            ?.trim()
+            ?.attr("content")?.trim()
             ?.ifBlank { null }
             ?: document.selectFirst(".channel-description, .description, article p, main p")
-                ?.text()
-                ?.trim()
+                ?.text()?.trim()
 
+        // Country: from breadcrumb second-to-last link pointing to /country/
         val countryLink = document.select("ol.breadcrumb a[href*='/country/'], .breadcrumb a[href*='/country/']").lastOrNull()
-        val countryName = countryLink?.text()?.trim().orEmpty()
+        val countrySlug = countryLink?.attr("href")?.substringAfterLast("/country/")?.trimEnd('/') ?: ""
+        val countryName = countryLink?.text()?.trim() ?: ""
+
+        // Collect playback candidates from detail page
         val playbackData = buildPlaybackData(document, channelUrl)
 
         return newLiveStreamLoadResponse(
@@ -151,17 +158,23 @@ class LiveTVCentralProvider : MainAPI() {
         }
     }
 
+    // ─── LoadLinks ───────────────────────────────────────────────────────────────
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data is a pipe-separated list of candidate URLs: "url1|url2|..."
+        // First entry is the channel URL (referer), rest are playback candidates
         val parts = data.split("|").map { it.trim() }.filter { it.isNotBlank() }
         if (parts.isEmpty()) return false
 
         val channelUrl = parts.first()
         val candidates = parts.drop(1).distinct()
+
+        // If no candidates were pre-resolved, re-fetch the detail page
         val resolved = candidates.ifEmpty {
             runCatching {
                 val doc = app.get(channelUrl, headers = siteHeaders, referer = "$mainUrl/", timeout = 25L).document
@@ -173,7 +186,8 @@ class LiveTVCentralProvider : MainAPI() {
 
         for (candidate in resolved.take(MAX_LINKS_PER_CHANNEL)) {
             when {
-                candidate.lowercase(Locale.ROOT).contains(".m3u8") -> {
+                // Direct m3u8
+                candidate.lowercase().contains(".m3u8") -> {
                     callback.invoke(
                         newExtractorLink(
                             source = name,
@@ -188,8 +202,8 @@ class LiveTVCentralProvider : MainAPI() {
                     )
                     emitted = true
                 }
-
-                candidate.substringBefore("?").substringBefore("#").lowercase(Locale.ROOT).endsWith(".mp4") -> {
+                // Direct mp4
+                candidate.lowercase().substringBefore("?").endsWith(".mp4") -> {
                     callback.invoke(
                         newExtractorLink(
                             source = name,
@@ -204,14 +218,14 @@ class LiveTVCentralProvider : MainAPI() {
                     )
                     emitted = true
                 }
-
+                // Known embeds: try CloudStream extractor
                 candidate.isKnownEmbedHost() -> {
                     val didLoad = runCatching {
                         loadExtractor(candidate, channelUrl, subtitleCallback, callback)
                     }.getOrDefault(false)
                     if (didLoad) emitted = true
                 }
-
+                // Fallback: emit as VIDEO link so CloudStream can open in WebView
                 else -> {
                     callback.invoke(
                         newExtractorLink(
@@ -233,6 +247,20 @@ class LiveTVCentralProvider : MainAPI() {
         return emitted
     }
 
+    // ─── Sitemap loader ──────────────────────────────────────────────────────────
+
+    /**
+     * Fetches /sitemap.html once and populates countryCache for all supported countries.
+     *
+     * Evidence-backed sitemap structure (2026-06-21):
+     *   <ul><li>
+     *     <a href="/country/SLUG">X Tv Channels</a>  ← country heading
+     *     <ul><li><a href="/tv/SLUG">Channel Title</a></li>...</ul>
+     *   </li></ul>
+     *
+     * Channel URLs: /tv/SLUG
+     * No poster available in sitemap — loaded lazily on detail page.
+     */
     private suspend fun loadSitemap() {
         val document = app.get(
             "$mainUrl/sitemap.html",
@@ -242,49 +270,48 @@ class LiveTVCentralProvider : MainAPI() {
         ).document
 
         val tempMap = mutableMapOf<String, MutableList<LiveChannel>>()
+
+        // Supported country slugs set for fast lookup
         val supportedSlugs = countries.map { it.slug }.toSet()
 
+        // Walk sitemap: each country block is a <li> containing an <a href="/country/SLUG">
+        // followed by a nested <ul> of channel links
         document.select("li").forEach { li ->
             val countryLink = li.selectFirst("> a[href*='/country/']")
-                ?: li.selectFirst("a[href*='/country/']")
-                ?: return@forEach
+                ?: li.selectFirst("a[href*='/country/']") ?: return@forEach
 
             val countrySlug = countryLink.attr("href")
-                .substringAfterLast("/country/")
-                .trimEnd('/')
+                .substringAfterLast("/country/").trimEnd('/')
                 .lowercase(Locale.ROOT)
 
             if (countrySlug !in supportedSlugs) return@forEach
 
-            val country = countries.firstOrNull { it.slug == countrySlug }
-                ?: Country(
-                    slug = countrySlug,
-                    name = countryLink.text()
-                        .replace(Regex("""\s*[Tt]v\s*[Cc]hannels?"""), "")
-                        .trim()
-                        .ifBlank { countrySlug.slugTitle() }
-                )
+            val countryName = countries.firstOrNull { it.slug == countrySlug }?.name
+                ?: countryLink.text().trim()
+                    .replace(Regex("\\s*[Tt]v\\s*[Cc]hannels?"), "")
+                    .trim()
 
+            val country = Country(countrySlug, countryName)
             val list = tempMap.getOrPut(countrySlug) { mutableListOf() }
 
+            // Channel links are nested <a href="/tv/SLUG">
             li.select("a[href*='/tv/']").forEach { channelLink ->
-                val href = channelLink.attr("href").trim()
-                val channelUrl = href.toAbsoluteUrl(mainUrl) ?: return@forEach
-                val path = runCatching { URI(channelUrl).path.orEmpty() }.getOrDefault("")
-                if (!path.startsWith("/tv/")) return@forEach
-
-                val title = channelLink.text().trim().ifBlank { channelUrl.slugTitle() }
+                val channelPath = channelLink.attr("href")
+                if (!channelPath.startsWith("/tv/")) return@forEach
+                val channelUrl = "$mainUrl$channelPath"
+                val title = channelLink.text().trim().ifBlank { channelPath.slugTitle() }
                 if (title.isBlank()) return@forEach
 
                 list += LiveChannel(
                     title = title,
                     country = country,
                     channelUrl = channelUrl,
-                    posterUrl = null
+                    posterUrl = null // loaded on demand from detail page
                 )
             }
         }
 
+        // Push into cache; keep original sitemap order
         tempMap.forEach { (slug, channels) ->
             countryCache[slug] = channels.distinctBy { it.channelUrl }
         }
@@ -292,6 +319,17 @@ class LiveTVCentralProvider : MainAPI() {
         sitemapLoaded = true
     }
 
+    // ─── Detail page helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Builds playback data string from detail page.
+     * Format: "channelUrl|candidate1|candidate2|..."
+     *
+     * Evidence from /tv/sctv:
+     * - Player iframe/embed URL appears as plain <a href="..."> in body
+     * - "Open Live Stream" link: <a href="https://www.sctv.co.id/live-streaming">
+     * - Other channels listed at bottom as related: <a href="/tv/..."><img ...>
+     */
     private fun buildPlaybackData(document: Document, channelUrl: String): String {
         val candidates = extractPlaybackCandidates(document, channelUrl)
         return (listOf(channelUrl) + candidates).joinToString("|")
@@ -299,48 +337,56 @@ class LiveTVCentralProvider : MainAPI() {
 
     private fun extractPlaybackCandidates(document: Document, channelUrl: String): List<String> {
         val candidates = linkedSetOf<String>()
-        val pageHtml = document.html()
 
-        MEDIA_URL_REGEX.findAll(pageHtml).forEach { match ->
+        // 1. Direct media URLs in page text
+        val pageText = document.html()
+        MEDIA_URL_REGEX.findAll(pageText).forEach { match ->
             match.value.unescapeJs().toAbsoluteUrl(channelUrl)?.let { candidates.add(it) }
         }
 
+        // 2. All <a href> that look like player/stream pages (not navigation/social)
         document.select("a[href]").forEach { a ->
             val href = a.attr("href").trim()
             if (href.isBlank() || href.startsWith("#") || href.startsWith("mailto:") ||
                 href.startsWith("tel:") || href.startsWith("javascript:")) return@forEach
 
             val abs = href.toAbsoluteUrl(channelUrl) ?: return@forEach
-            val lower = abs.lowercase(Locale.ROOT)
-            if (SKIP_PATTERNS.any { lower.contains(it.lowercase(Locale.ROOT)) }) return@forEach
 
+            // Skip: same-site navigation, social, footer links
+            if (SKIP_PATTERNS.any { abs.lowercase().contains(it) }) return@forEach
+
+            // Include: embed/player/stream URLs from other domains OR direct media
+            val absLower = abs.lowercase(Locale.ROOT)
             when {
                 abs.isDirectMedia() -> candidates.add(abs)
-                !abs.startsWith(mainUrl) && PLAYER_HINTS.any { lower.contains(it) } -> candidates.add(abs)
+                !abs.startsWith(mainUrl) && PLAYER_HINTS.any { absLower.contains(it) } -> candidates.add(abs)
                 abs.isKnownEmbedHost() -> candidates.add(abs)
-                a.text().contains("Open Live Stream", ignoreCase = true) -> candidates.add(abs)
-                a.attr("title").contains("Open", ignoreCase = true) -> candidates.add(abs)
+                a.text().contains("Open Live Stream", ignoreCase = true) ||
+                    a.attr("title").contains("Open", ignoreCase = true) -> candidates.add(abs)
             }
         }
 
+        // 3. iframes
         document.select("iframe[src]").forEach { iframe ->
-            iframe.attr("src")
-                .toAbsoluteUrl(channelUrl)
+            iframe.attr("src").toAbsoluteUrl(channelUrl)
                 ?.takeIf { it.isNotBlank() && !it.startsWith(mainUrl) }
                 ?.let { candidates.add(it) }
         }
 
-        document.select("video[src], source[src]").forEach { element ->
-            element.attr("src").toAbsoluteUrl(channelUrl)?.let { candidates.add(it) }
+        // 4. video/source tags
+        document.select("video[src], source[src]").forEach { el ->
+            el.attr("src").toAbsoluteUrl(channelUrl)?.let { candidates.add(it) }
         }
 
         return candidates.toList()
     }
 
+    // ─── SearchResponse helper ─────────────────────────────────────────────────────
+
     private fun LiveChannel.toSearchResponse(): SearchResponse {
         return newLiveSearchResponse(
-            name = "$title • ${country.name}",
-            url = channelUrl,
+            name = "${title} • ${country.name}",
+            url = channelUrl, // real /tv/SLUG URL
             type = TvType.Live
         ).apply {
             posterUrl = this@toSearchResponse.posterUrl
@@ -357,6 +403,8 @@ class LiveTVCentralProvider : MainAPI() {
         }
     }
 
+    // ─── Data classes ───────────────────────────────────────────────────────────────
+
     data class Country(
         val slug: String,
         val name: String
@@ -368,6 +416,8 @@ class LiveTVCentralProvider : MainAPI() {
         val channelUrl: String,
         val posterUrl: String?
     )
+
+    // ─── Constants ────────────────────────────────────────────────────────────────
 
     companion object {
         private const val PAGE_SIZE = 48
@@ -387,6 +437,7 @@ class LiveTVCentralProvider : MainAPI() {
             Country("united-states", "United States")
         )
 
+        // Known embed/player host fragments that CloudStream extractors may handle
         val KNOWN_EMBED_HOSTS = listOf(
             "youtube.com", "youtu.be",
             "dailymotion.com", "dai.ly",
@@ -414,6 +465,8 @@ class LiveTVCentralProvider : MainAPI() {
         )
     }
 }
+
+// ─── Extension functions ──────────────────────────────────────────────────────────────────
 
 private fun String.toAbsoluteUrl(baseUrl: String): String? {
     val value = trim().trim('"', '\'', ' ')
@@ -462,3 +515,6 @@ private fun String.originOrNull(): String? {
         "$scheme://$host$port"
     }.getOrNull()
 }
+
+private val String.KNOWN_EMBED_HOSTS: List<String>
+    get() = LiveTVCentralProvider.KNOWN_EMBED_HOSTS
