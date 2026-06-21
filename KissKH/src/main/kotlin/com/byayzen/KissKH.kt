@@ -67,6 +67,8 @@ class KissKH : MainAPI() {
     private val userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
 
+    // ─── Homepage ───────────────────────────────────────────────────────────────
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = categoryPageUrl(request.data, page)
         val document = app.get(url, referer = mainUrl).document
@@ -78,9 +80,11 @@ class KissKH : MainAPI() {
                 list = results,
                 isHorizontalImages = true
             ),
-            hasNext = document.selectFirst("a.next.page-numbers, a.page-numbers.next") != null || results.isNotEmpty()
+            hasNext = document.selectFirst("a.next.page-numbers, a.page-numbers.next, .pagination a[href*='page']") != null
         )
     }
+
+    // ─── Search ─────────────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<SearchResponse> {
         val html = app.post(
@@ -107,27 +111,69 @@ class KissKH : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
+    // ─── Load ────────────────────────────────────────────────────────────────────
+
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url.substringBefore("?"), referer = mainUrl).document
-        val title = document.selectFirst("h1.wp-block-post-title")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" - Kisskh")?.trim()
+        val cleanUrl = url.substringBefore("?")
+        val document = app.get(cleanUrl, referer = mainUrl).document
+
+        // Title: page now uses plain <h1>, not h1.wp-block-post-title
+        val title = document.selectFirst("h1")
+            ?.text()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("meta[property=og:title]")
+                ?.attr("content")
+                ?.substringBefore(" - Kisskh")
+                ?.trim()
             ?: return null
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
-            ?: document.selectFirst("figure.post-backdrop img, img.wp-post-image")?.absUrl("src")?.trim()
-        val plot = document.selectFirst("#accordion-item-2-panel p, .wp-block-post-content p")?.text()?.trim()
-            ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        // Poster from og:image (reliable in static HTML)
+        val poster = document.selectFirst("meta[property=og:image]")
+            ?.attr("content")
+            ?.trim()
+            ?.ifBlank { null }
+            ?: document.selectFirst("figure.post-backdrop img, img.wp-post-image")
+                ?.absUrl("src")
+                ?.trim()
+
+        val plot = document.selectFirst("#accordion-item-2-panel p, .wp-block-post-content p, .description p")
+            ?.text()
+            ?.trim()
+            ?: document.selectFirst("meta[property=og:description]")
+                ?.attr("content")
+                ?.trim()
+
         val tags = document.select(".taxonomy-category a").map { it.text().trim() }.filter { it.isNotBlank() }
-        val status = document.selectFirst(".release-status")?.text()?.trim()
-        val year = document.selectFirst(".release-year")?.text()?.trim()?.toIntOrNull()
-        val totalEpisodes = document.selectFirst(".total-episode")?.text()?.episodeNumber() ?: 1
-        val bloggerPostId = document.selectFirst("#Sdachkun1[data-post-id], [data-post-id]")?.attr("data-post-id")?.trim()
-            ?: throw ErrorLoadingException("Missing Blogger post id")
+
+        // Status & year from visible page text (e.g. "ongoing", "2026")
+        val pageText = document.body().text()
+        val status = when {
+            pageText.contains("completed", ignoreCase = true) -> ShowStatus.Completed
+            pageText.contains("ongoing", ignoreCase = true) -> ShowStatus.Ongoing
+            else -> null
+        }
+        val year = Regex("\\b(20\\d{2})\\b").find(pageText)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+        // Total episodes: look for "Total N" pattern in page text
+        val totalEpisodes = Regex("(?i)(?:total|episode)[^\\d]*(\\d+)").find(pageText)
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: document.selectFirst(".total-episode, [class*='total']")
+                ?.text()?.episodeNumber()
+            ?: 1
+
+        // bloggerPostId: data-post-id is JS-rendered in the current theme.
+        // Reliable path: WP REST API by slug, then parse content for the Blogger post ID
+        // embedded as a script/attribute in the post's HTML content.
+        val slug = cleanUrl.trimEnd('/').substringAfterLast('/')
+        val bloggerPostId = fetchBloggerPostIdViaRestApi(slug, cleanUrl)
+            ?: throw ErrorLoadingException("Could not resolve Blogger post ID for: $cleanUrl")
 
         val episodes = (1..totalEpisodes.coerceAtLeast(1)).map { episodeNumber ->
             newEpisode(
                 encodeLoadData(
                     KissLoadData(
-                        pageUrl = url.substringBefore("?"),
+                        pageUrl = cleanUrl,
                         title = title,
                         episode = episodeNumber,
                         bloggerPostId = bloggerPostId,
@@ -141,7 +187,7 @@ class KissKH : MainAPI() {
 
         return newTvSeriesLoadResponse(
             title,
-            url.substringBefore("?"),
+            cleanUrl,
             if (totalEpisodes > 1) TvType.TvSeries else TvType.Movie,
             episodes
         ) {
@@ -150,13 +196,11 @@ class KissKH : MainAPI() {
             this.year = year
             this.plot = plot
             this.tags = tags
-            this.showStatus = when {
-                status.equals("completed", ignoreCase = true) -> ShowStatus.Completed
-                status.equals("ongoing", ignoreCase = true) -> ShowStatus.Ongoing
-                else -> null
-            }
+            this.showStatus = status
         }
     }
+
+    // ─── LoadLinks ───────────────────────────────────────────────────────────────
 
     override suspend fun loadLinks(
         data: String,
@@ -167,11 +211,12 @@ class KissKH : MainAPI() {
         val loadData = decodeLoadData(data) ?: KissLoadData(pageUrl = data.substringBefore("?"))
         val pageUrl = loadData.pageUrl.substringBefore("?")
         val episodeUrl = "$pageUrl?episode=${loadData.episode}"
+
         val bloggerPostId = loadData.bloggerPostId ?: run {
-            app.get(pageUrl, referer = mainUrl).document
-                .selectFirst("#Sdachkun1[data-post-id], [data-post-id]")
-                ?.attr("data-post-id")
-                ?.trim()
+            // Fallback: try to re-resolve from page HTML (data-post-id may appear in JS-heavy render)
+            val doc = app.get(pageUrl, referer = mainUrl).document
+            doc.selectFirst("#Sdachkun1[data-post-id], [data-post-id]")?.attr("data-post-id")?.trim()
+                ?: fetchBloggerPostIdViaRestApi(pageUrl.trimEnd('/').substringAfterLast('/'), pageUrl)
         } ?: return false
 
         val content = fetchBloggerContent(bloggerPostId, pageUrl) ?: return false
@@ -226,29 +271,73 @@ class KissKH : MainAPI() {
         return loaded
     }
 
+    // ─── Helpers ─────────────────────────────────────────────────────────────────
+
     private fun categoryPageUrl(path: String, page: Int): String {
         val cleanPath = path.trim().ifBlank { "/category/latest-update/" }
         val base = if (cleanPath.startsWith("http")) cleanPath else "$mainUrl$cleanPath"
         return if (page <= 1) base else base.trimEnd('/') + "/page/$page/"
     }
 
+    /**
+     * Evidence-backed card selector (from crawl 2026-06-21):
+     * Homepage/category pages render cards as:
+     *   <li>
+     *     <a href="URL"><img ...> EP.X</a>
+     *     <h2><a href="URL">Title</a></h2>
+     *   </li>
+     * Both the list page and category archive pages share this pattern.
+     */
     private fun parsePostCards(document: Document): List<SearchResponse> {
-        return document.select("li.wp-block-post").mapNotNull { card ->
-            val titleElement = card.selectFirst("h2.wp-block-post-title a[href], .wp-block-post-title a[href]")
-                ?: return@mapNotNull null
-            val title = titleElement.text().trim().ifBlank { return@mapNotNull null }
-            val href = titleElement.absUrl("href").ifBlank { return@mapNotNull null }
-            val poster = card.selectFirst("img.wp-post-image, img")?.let { img ->
-                img.attr("data-src").ifBlank { img.absUrl("src") }.ifBlank { img.absUrl("data-src") }
+        // Primary: ul > li containing both an img link and an h2 title link
+        val cards = document.select("ul > li, li")
+            .filter { li ->
+                li.selectFirst("h2 > a[href], h2 a[href]") != null &&
+                    li.selectFirst("a[href] > img, a[href] img") != null
             }
-            val episodeCount = card.selectFirst(".episode")?.text()?.episodeNumber()
 
-            newAnimeSearchResponse(title, href, TvType.AsianDrama) {
-                this.posterUrl = poster
-                this.posterHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
-                addSub(episodeCount)
+        if (cards.isNotEmpty()) {
+            return cards.mapNotNull { it.toPostCard() }.distinctBy { it.url }
+        }
+
+        // Fallback: any article/div card with img + title link
+        return document.select(
+            "article, .movie-card, li.wp-block-post, div.post-item"
+        ).mapNotNull { it.toPostCard() }.distinctBy { it.url }
+    }
+
+    private fun Element.toPostCard(): SearchResponse? {
+        val titleLink = selectFirst("h2 > a[href], h2 a[href], h3 > a[href], .movie-title")?.let {
+            if (it.tagName() == "a") it else it.parent()
+        } ?: selectFirst("a[href]:has(img)")
+        val title = selectFirst("h2 a, h3 a")?.text()?.trim()
+            ?: selectFirst(".movie-title")?.text()?.trim()
+            ?: titleLink?.attr("title")?.trim()
+            ?: return null
+        if (title.isBlank()) return null
+
+        val href = (selectFirst("h2 a[href], h3 a[href]")
+            ?: selectFirst("a[href]:has(img)"))
+            ?.absUrl("href")
+            ?.ifBlank { null }
+            ?: return null
+
+        val poster = selectFirst("img")?.let { img ->
+            img.attr("data-src").ifBlank {
+                img.absUrl("src").ifBlank { img.absUrl("data-src") }
             }
-        }.distinctBy { it.url }
+        }?.ifBlank { null }
+
+        val epText = selectFirst("a[href] > img")?.parent()?.text()
+            ?: selectFirst("a[href]")?.text().orEmpty()
+        val episodeCount = Regex("EP\\.?(\\d+)", RegexOption.IGNORE_CASE)
+            .find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+        return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
+            this.posterUrl = poster
+            this.posterHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
+            addSub(episodeCount)
+        }
     }
 
     private fun parseSearchCards(document: Document): List<SearchResponse> {
@@ -258,7 +347,7 @@ class KissKH : MainAPI() {
                 ?: return@mapNotNull null
             val href = card.absUrl("href").ifBlank { return@mapNotNull null }
             val poster = card.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifBlank { img.absUrl("src") }.ifBlank { img.absUrl("data-src") }
+                img.attr("data-src").ifBlank { img.absUrl("src").ifBlank { img.absUrl("data-src") } }
             }
             val episodeCount = card.selectFirst(".episode")?.text()?.episodeNumber()
 
@@ -268,6 +357,42 @@ class KissKH : MainAPI() {
                 addSub(episodeCount)
             }
         }.distinctBy { it.url }
+    }
+
+    /**
+     * Resolve Blogger post ID via WordPress REST API.
+     * The current theme no longer embeds data-post-id in static HTML;
+     * it is injected via JS. WP REST API is the reliable static alternative.
+     *
+     * Endpoint: /wp-json/wp/v2/posts?slug=SLUG&_fields=id,content
+     * The Blogger post ID is embedded inside the post content HTML as
+     * a data-post-id attribute or as a script variable.
+     */
+    private suspend fun fetchBloggerPostIdViaRestApi(slug: String, refererUrl: String): String? {
+        return runCatching {
+            val apiUrl = "$mainUrl/wp-json/wp/v2/posts?slug=${slug}&_fields=id,content"
+            val json = app.get(
+                apiUrl,
+                headers = mapOf("User-Agent" to userAgent, "Accept" to "application/json"),
+                referer = refererUrl
+            ).text
+
+            val root = mapper.readTree(json)
+            val postEntry = if (root.isArray && root.size() > 0) root[0] else return@runCatching null
+
+            // Try: data-post-id attribute in rendered content
+            val renderedContent = postEntry.at("/content/rendered").asText("").ifBlank {
+                postEntry.at("/content").asText("")
+            }
+
+            val dataPostIdPattern = Regex("""data-post-id=["'](\d+)["']""", RegexOption.IGNORE_CASE)
+            val scriptVarPattern = Regex("""postId[\s]*[:=][\s]*["']?(\d+)["']?""", RegexOption.IGNORE_CASE)
+            val sdachkunPattern = Regex("""Sdachkun\d+[^>]*data-post-id=["'](\d+)["']""", RegexOption.IGNORE_CASE)
+
+            dataPostIdPattern.find(renderedContent)?.groupValues?.getOrNull(1)
+                ?: sdachkunPattern.find(renderedContent)?.groupValues?.getOrNull(1)
+                ?: scriptVarPattern.find(renderedContent)?.groupValues?.getOrNull(1)
+        }.getOrNull()
     }
 
     private suspend fun fetchBloggerContent(postId: String, refererUrl: String): String? {
@@ -330,17 +455,13 @@ class KissKH : MainAPI() {
         return matched.ifEmpty { sources.getOrNull(safeEpisodeIndex)?.let { listOf(it) } ?: sources.take(1) }
     }
 
-    private fun encodeLoadData(data: KissLoadData): String {
-        return mapper.writeValueAsString(data)
-    }
+    private fun encodeLoadData(data: KissLoadData): String = mapper.writeValueAsString(data)
 
-    private fun decodeLoadData(data: String): KissLoadData? {
-        return runCatching { mapper.readValue<KissLoadData>(data) }.getOrNull()
-    }
+    private fun decodeLoadData(data: String): KissLoadData? =
+        runCatching { mapper.readValue<KissLoadData>(data) }.getOrNull()
 
-    private fun String.episodeNumber(): Int? {
-        return Regex("(\\d+)").find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
-    }
+    private fun String.episodeNumber(): Int? =
+        Regex("(\\d+)").find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
     private fun String.subtitleLabelFromUrl(): String {
         val lower = substringBeforeLast('?').substringAfterLast('/').substringBeforeLast('.').lowercase()
