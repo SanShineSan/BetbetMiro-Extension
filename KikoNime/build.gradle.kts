@@ -2,12 +2,12 @@ android {
     namespace = "com.BetbetMiro.kikonime"
 }
 
-version = 3
+version = 4
 
 cloudstream {
     language = "id"
     description = "Nonton donghua dan anime subtitle Indonesia dari KikoNime"
-    authors = listOf("sad25kag")
+    authors = listOf("BetbetMiro")
     status = 1
     tvTypes = listOf(
         "Anime",
