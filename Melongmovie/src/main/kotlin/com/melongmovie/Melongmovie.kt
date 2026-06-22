@@ -2,7 +2,6 @@ package com.melongmovie
 
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.Episode
-import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
@@ -101,43 +100,15 @@ class Melongmovie : MainAPI() {
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     )
 
-    private val turnstileInterceptor by lazy { TurnstileInterceptor() }
+    private val turnstileInterceptor = TurnstileInterceptor("_as_turnstile")
 
-    private suspend fun request(
-        url: String,
-        referer: String? = null,
-        extraHeaders: Map<String, String> = emptyMap()
-    ): NiceResponse {
-        val response = app.get(
+    private suspend fun request(url: String, ref: String? = null): NiceResponse {
+        return app.get(
             url,
-            headers = headers + extraHeaders,
-            referer = referer ?: mainUrl,
-            interceptor = turnstileInterceptor
+            interceptor = turnstileInterceptor,
+            headers = headers,
+            referer = ref
         )
-
-        if (isChallengePage(response.text)) {
-            throw ErrorLoadingException(
-                "Melongmovie masih tertahan Cloudflare/Turnstile. Buka di browser/WebView lalu coba ulang."
-            )
-        }
-
-        return response
-    }
-
-    private fun isChallengePage(text: String): Boolean {
-        val lower = text.lowercase()
-        return lower.contains("just a moment") ||
-            lower.contains("checking your browser") ||
-            lower.contains("cf-turnstile") ||
-            lower.contains("cf-challenge") ||
-            lower.contains("cf_clearance") ||
-            lower.contains("challenges.cloudflare.com") ||
-            lower.contains("/cdn-cgi/challenge-platform/") ||
-            lower.contains("turnstile") ||
-            lower.contains("attention required") ||
-            lower.contains("<title>loading") ||
-            lower.contains("loading..") ||
-            lower.contains("aktifkan javascript")
     }
 
     override suspend fun getMainPage(
@@ -145,7 +116,7 @@ class Melongmovie : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = buildMainPageUrl(request.data, page)
-        val document = this.request(url).document
+        val document = request(url).document
 
         val items = parseCards(document).distinctBy { it.url }
 
@@ -260,7 +231,7 @@ class Melongmovie : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = normalizeUrl(data, mainUrl)
-        val response = request(pageUrl, referer = mainUrl)
+        val response = request(pageUrl, mainUrl)
 
         val document = response.document
         val html = response.text.cleanEscaped()
@@ -608,10 +579,12 @@ class Melongmovie : MainAPI() {
             // Fallback: DooPlay REST API v2 (/wp-json/dooplayer/v2/post/{id}/player)
             if (directLinks.isEmpty() && embedLinks.isEmpty()) {
                 val wpJsonText = runCatching {
-                    request(
+                    app.get(
                         "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
+                        headers = headers + mapOf("X-WP-Nonce" to nonce),
                         referer = pageUrl,
-                        extraHeaders = mapOf("X-WP-Nonce" to nonce)
+                        interceptor = turnstileInterceptor,
+                        timeout = 18L
                     ).text.cleanEscaped()
                 }.getOrNull().orEmpty()
 
@@ -767,7 +740,7 @@ class Melongmovie : MainAPI() {
 
         val response = runCatching {
             if (url.startsWith(mainUrl, true)) {
-                request(url, referer = referer)
+                request(url, referer)
             } else {
                 app.get(url, headers = headers, referer = referer, timeout = 18L)
             }

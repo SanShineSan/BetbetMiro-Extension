@@ -13,9 +13,7 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import java.util.concurrent.atomic.AtomicReference
 
-class TurnstileInterceptor(
-    private val targetCookies: List<String> = listOf("cf_clearance", "_as_turnstile")
-) : Interceptor {
+class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") : Interceptor {
 
     @SuppressLint("SetJavaScriptEnabled", "WebViewClientOnReceivedSslError")
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -25,13 +23,14 @@ class TurnstileInterceptor(
         val cookieManager = CookieManager.getInstance()
 
         cookieManager.setAcceptCookie(true)
+
         cookieManager.setCookie(domainUrl, "_as_ipin_lc=id-ID; path=/; SameSite=Strict")
         cookieManager.setCookie(domainUrl, "_as_ipin_tz=Asia/Jakarta; path=/; SameSite=Strict")
         cookieManager.setCookie(domainUrl, "_as_ipin_ct=ID; path=/; SameSite=Strict")
         cookieManager.flush()
 
         val existingCookies = cookieManager.getCookie(domainUrl) ?: ""
-        if (hasTargetCookie(existingCookies)) {
+        if (existingCookies.contains(targetCookie)) {
             val response = chain.proceed(
                 originalRequest.newBuilder()
                     .header("Cookie", existingCookies)
@@ -40,7 +39,8 @@ class TurnstileInterceptor(
             if (response.code != 403 && response.code != 503) return response
 
             response.close()
-            clearTargetCookies(cookieManager, domainUrl)
+            cookieManager.setCookie(domainUrl, "$targetCookie=; Max-Age=0; path=/; Secure")
+            cookieManager.flush()
         }
 
         val context = AcraApplication.context
@@ -51,24 +51,25 @@ class TurnstileInterceptor(
         val webViewRef = AtomicReference<WebView?>(null)
 
         handler.post {
-            val webView = WebView(context)
-            webViewRef.set(webView)
+            val wv = WebView(context)
+            webViewRef.set(wv)
 
-            cookieManager.setAcceptThirdPartyCookies(webView, true)
+            cookieManager.setAcceptThirdPartyCookies(wv, true)
 
-            webView.settings.apply {
+            wv.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 databaseEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                val userAgent = userAgentRef.get()
-                if (userAgent.isNotBlank()) userAgentString = userAgent
+                val ua = userAgentRef.get()
+                if (ua.isNotBlank()) userAgentString = ua
             }
 
-            userAgentRef.set(webView.settings.userAgentString)
+            userAgentRef.set(wv.settings.userAgentString)
 
-            webView.webViewClient = object : WebViewClient() {
+            wv.webViewClient = object : WebViewClient() {
+
                 @SuppressLint("WebViewClientOnReceivedSslError")
                 override fun onReceivedSslError(
                     view: WebView?,
@@ -84,14 +85,16 @@ class TurnstileInterceptor(
                 }
             }
 
-            webView.loadUrl(url)
+            wv.loadUrl(url)
         }
 
+        var cookieAcquired = false
         for (i in 0 until 60) {
             Thread.sleep(1000)
             val cookies = cookieManager.getCookie(domainUrl) ?: ""
-            if (hasTargetCookie(cookies)) {
+            if (cookies.contains(targetCookie)) {
                 cookieManager.flush()
+                cookieAcquired = true
                 break
             }
         }
@@ -104,24 +107,13 @@ class TurnstileInterceptor(
         }
 
         val finalCookies = cookieManager.getCookie(domainUrl) ?: ""
-        val finalUserAgent = userAgentRef.get()
+        val finalUA = userAgentRef.get()
 
         return chain.proceed(
             originalRequest.newBuilder()
-                .apply { if (finalUserAgent.isNotBlank()) header("User-Agent", finalUserAgent) }
-                .apply { if (finalCookies.isNotBlank()) header("Cookie", finalCookies) }
+                .apply { if (finalUA.isNotBlank()) header("User-Agent", finalUA) }
+                .header("Cookie", finalCookies)
                 .build()
         )
-    }
-
-    private fun hasTargetCookie(cookies: String): Boolean {
-        return targetCookies.any { cookieName -> cookies.contains("$cookieName=") }
-    }
-
-    private fun clearTargetCookies(cookieManager: CookieManager, domainUrl: String) {
-        targetCookies.forEach { cookieName ->
-            cookieManager.setCookie(domainUrl, "$cookieName=; Max-Age=0; path=/; Secure")
-        }
-        cookieManager.flush()
     }
 }
