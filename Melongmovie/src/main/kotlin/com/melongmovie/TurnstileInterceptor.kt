@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.AcraApplication
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -41,14 +42,14 @@ class TurnstileInterceptor(
         val firstResponse = chain.proceed(firstRequest)
 
         if (!needsWebViewChallenge(firstResponse)) {
-            return firstResponse
+            return canonicalizeResponse(firstResponse)
         }
 
         firstResponse.close()
         clearTargetCookies(cookieManager, domainUrl)
 
         val context = AcraApplication.context
-            ?: return chain.proceed(originalRequest.withCookies(existingCookies))
+            ?: return canonicalizeResponse(chain.proceed(originalRequest.withCookies(existingCookies)))
 
         val handler = Handler(Looper.getMainLooper())
         val userAgentRef = AtomicReference(originalRequest.header("User-Agent") ?: "")
@@ -112,12 +113,14 @@ class TurnstileInterceptor(
         val finalCookies = collectCookies(cookieManager, domainUrl, lastUrlRef.get())
         val finalUA = userAgentRef.get()
 
-        return chain.proceed(
+        val finalResponse = chain.proceed(
             originalRequest.newBuilder()
                 .apply { if (finalUA.isNotBlank()) header("User-Agent", finalUA) }
                 .apply { if (finalCookies.isNotBlank()) header("Cookie", finalCookies) }
                 .build()
         )
+
+        return canonicalizeResponse(finalResponse)
     }
 
     private fun needsWebViewChallenge(response: Response): Boolean {
@@ -161,5 +164,29 @@ class TurnstileInterceptor(
 
     private fun Request.withCookies(cookies: String): Request {
         return if (cookies.isBlank()) this else newBuilder().header("Cookie", cookies).build()
+    }
+
+    private fun canonicalizeResponse(response: Response): Response {
+        val body = response.body ?: return response
+        val contentType = body.contentType()
+        val type = contentType?.toString().orEmpty().lowercase()
+
+        if (!type.contains("text") && !type.contains("html") && !type.contains("json") && !type.contains("javascript")) {
+            return response
+        }
+
+        val text = runCatching { body.string() }.getOrNull() ?: return response
+        val fixed = canonicalizeMelongHosts(text)
+
+        return response.newBuilder()
+            .body(fixed.toResponseBody(contentType))
+            .build()
+    }
+
+    private fun canonicalizeMelongHosts(text: String): String {
+        return text
+            .replace("https://tv11.melongmovies.com", "https://tv12.melongmovies.com")
+            .replace("http://tv11.melongmovies.com", "https://tv12.melongmovies.com")
+            .replace("//tv11.melongmovies.com", "//tv12.melongmovies.com")
     }
 }
