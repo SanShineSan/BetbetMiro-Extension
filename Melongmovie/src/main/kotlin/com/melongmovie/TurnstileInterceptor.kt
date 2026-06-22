@@ -10,10 +10,22 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.lagradost.cloudstream3.AcraApplication
 import okhttp3.Interceptor
+import okhttp3.Request
 import okhttp3.Response
 import java.util.concurrent.atomic.AtomicReference
 
-class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") : Interceptor {
+/**
+ * AnimeSail-style Cloudflare/Turnstile request handler adapted for Melongmovie.
+ *
+ * Important flow:
+ * 1) Try the normal request first. If Melongmovie is currently readable, return it immediately.
+ * 2) Only when Cloudflare/Turnstile HTML or 403/503/429 appears, open the same URL in WebView.
+ * 3) Let WebView/JavaScript/CookieManager obtain the challenge cookie.
+ * 4) Continue the original request with WebView cookies + WebView User-Agent.
+ */
+class TurnstileInterceptor(
+    private val targetCookies: List<String> = listOf("cf_clearance", "_as_turnstile")
+) : Interceptor {
 
     @SuppressLint("SetJavaScriptEnabled", "WebViewClientOnReceivedSslError")
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -24,31 +36,24 @@ class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") :
 
         cookieManager.setAcceptCookie(true)
 
-        cookieManager.setCookie(domainUrl, "_as_ipin_lc=id-ID; path=/; SameSite=Strict")
-        cookieManager.setCookie(domainUrl, "_as_ipin_tz=Asia/Jakarta; path=/; SameSite=Strict")
-        cookieManager.setCookie(domainUrl, "_as_ipin_ct=ID; path=/; SameSite=Strict")
-        cookieManager.flush()
+        val existingCookies = collectCookies(cookieManager, domainUrl, url)
+        val firstRequest = originalRequest.withCookies(existingCookies)
+        val firstResponse = chain.proceed(firstRequest)
 
-        val existingCookies = cookieManager.getCookie(domainUrl) ?: ""
-        if (existingCookies.contains(targetCookie)) {
-            val response = chain.proceed(
-                originalRequest.newBuilder()
-                    .header("Cookie", existingCookies)
-                    .build()
-            )
-            if (response.code != 403 && response.code != 503) return response
-
-            response.close()
-            cookieManager.setCookie(domainUrl, "$targetCookie=; Max-Age=0; path=/; Secure")
-            cookieManager.flush()
+        if (!needsWebViewChallenge(firstResponse)) {
+            return firstResponse
         }
 
+        firstResponse.close()
+        clearTargetCookies(cookieManager, domainUrl)
+
         val context = AcraApplication.context
-            ?: return chain.proceed(originalRequest)
+            ?: return chain.proceed(originalRequest.withCookies(existingCookies))
 
         val handler = Handler(Looper.getMainLooper())
         val userAgentRef = AtomicReference(originalRequest.header("User-Agent") ?: "")
         val webViewRef = AtomicReference<WebView?>(null)
+        val lastUrlRef = AtomicReference(url)
 
         handler.post {
             val wv = WebView(context)
@@ -69,7 +74,6 @@ class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") :
             userAgentRef.set(wv.settings.userAgentString)
 
             wv.webViewClient = object : WebViewClient() {
-
                 @SuppressLint("WebViewClientOnReceivedSslError")
                 override fun onReceivedSslError(
                     view: WebView?,
@@ -79,8 +83,9 @@ class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") :
                     handler?.proceed()
                 }
 
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
+                override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                    super.onPageFinished(view, finishedUrl)
+                    if (!finishedUrl.isNullOrBlank()) lastUrlRef.set(finishedUrl)
                     cookieManager.flush()
                 }
             }
@@ -88,13 +93,11 @@ class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") :
             wv.loadUrl(url)
         }
 
-        var cookieAcquired = false
         for (i in 0 until 60) {
             Thread.sleep(1000)
-            val cookies = cookieManager.getCookie(domainUrl) ?: ""
-            if (cookies.contains(targetCookie)) {
+            val cookies = collectCookies(cookieManager, domainUrl, lastUrlRef.get())
+            if (hasTargetCookie(cookies)) {
                 cookieManager.flush()
-                cookieAcquired = true
                 break
             }
         }
@@ -106,14 +109,57 @@ class TurnstileInterceptor(private val targetCookie: String = "_as_turnstile") :
             }
         }
 
-        val finalCookies = cookieManager.getCookie(domainUrl) ?: ""
+        val finalCookies = collectCookies(cookieManager, domainUrl, lastUrlRef.get())
         val finalUA = userAgentRef.get()
 
         return chain.proceed(
             originalRequest.newBuilder()
                 .apply { if (finalUA.isNotBlank()) header("User-Agent", finalUA) }
-                .header("Cookie", finalCookies)
+                .apply { if (finalCookies.isNotBlank()) header("Cookie", finalCookies) }
                 .build()
         )
+    }
+
+    private fun needsWebViewChallenge(response: Response): Boolean {
+        if (response.code == 403 || response.code == 503 || response.code == 429) return true
+
+        val body = runCatching {
+            response.peekBody(256_000).string().lowercase()
+        }.getOrDefault("")
+
+        return body.contains("just a moment") ||
+            body.contains("checking your browser") ||
+            body.contains("cf-turnstile") ||
+            body.contains("challenges.cloudflare.com") ||
+            body.contains("/cdn-cgi/challenge-platform/") ||
+            body.contains("cloudflare") && body.contains("challenge") ||
+            body.contains("<title>loading") ||
+            body.contains("loading..")
+    }
+
+    private fun hasTargetCookie(cookies: String): Boolean {
+        return targetCookies.any { cookies.contains("$it=", ignoreCase = true) }
+    }
+
+    private fun clearTargetCookies(cookieManager: CookieManager, domainUrl: String) {
+        targetCookies.forEach { name ->
+            cookieManager.setCookie(domainUrl, "$name=; Max-Age=0; path=/; Secure")
+        }
+        cookieManager.flush()
+    }
+
+    private fun collectCookies(cookieManager: CookieManager, vararg urls: String?): String {
+        return urls.asSequence()
+            .filterNotNull()
+            .filter { it.isNotBlank() }
+            .flatMap { (cookieManager.getCookie(it) ?: "").split(';').asSequence() }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString("; ")
+    }
+
+    private fun Request.withCookies(cookies: String): Request {
+        return if (cookies.isBlank()) this else newBuilder().header("Cookie", cookies).build()
     }
 }
