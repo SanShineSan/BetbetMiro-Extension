@@ -1,9 +1,9 @@
-version = 4
+version = 6
 
 cloudstream {
     authors = listOf("BetbetMiro")
     language = "id"
-    description = "MovieOn21 Stable Candidate provider v4 dengan resolver t21.press evidence-based untuk host Utama/Hydra, klasifikasi iframe-first, filter ads/loading, dan tanpa kategori dewasa."
+    description = "MovieOn21 provider v6 dengan kategori homepage dirapikan, metadata non-dewasa, dan resolver t21.press Utama/Hydra berbasis HAR."
     status = 1
 
     tvTypes = listOf(

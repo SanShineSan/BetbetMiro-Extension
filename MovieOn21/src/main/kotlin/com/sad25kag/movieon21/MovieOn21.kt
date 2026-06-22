@@ -45,7 +45,8 @@ class MovieOn21 : MainAPI() {
     override val supportedTypes = setOf(
         TvType.Movie,
         TvType.TvSeries,
-        TvType.AsianDrama
+        TvType.AsianDrama,
+        TvType.NSFW
     )
 
     private val t21BaseUrl = "https://t21.press"
@@ -71,6 +72,7 @@ class MovieOn21 : MainAPI() {
         "/genre/romance/" to "Romance",
         "/genre/sci-fi/" to "Sci-fi",
         "/genre/thriller/" to "Thriller",
+        "/genre/adult/" to "Adult",
         "/country/usa/" to "USA",
         "/country/indonesia/" to "Indonesia",
         "/country/india/" to "India",
@@ -147,7 +149,6 @@ class MovieOn21 : MainAPI() {
             .filter { it.length in 2..40 && !it.equals("Trailer", true) && !it.equals("Tonton", true) }
             .distinct()
             .take(24)
-        if (isBlockedAdultContent(pageUrl, title, text, tags)) return null
         val actors = document.select("a[href*='/cast/'], a[href*='/actor/'], a[href*='/director/'], [itemprop=actors] a, [itemprop=director] a")
             .map { cleanText(it.text()) }
             .filter { it.length in 2..60 }
@@ -582,7 +583,6 @@ class MovieOn21 : MainAPI() {
         ).filterNotNull().firstOrNull { it.isUsefulTitle() }?.let { cleanTitle(it) } ?: return null
         val poster = image?.imageUrl(mainUrl) ?: container.styleImage(mainUrl) ?: anchor.findNearbyImage(mainUrl)
         val text = cleanText(container.text())
-        if (isBlockedAdultContent(href, title, text)) return null
         val tvType = inferTvType(href, title, emptyList(), text, false)
         val year = yearFromText(title) ?: yearFromText(text)
         val score = container.selectFirst("[itemprop=ratingValue], .rating, .score, .imdb, .vote, .gmr-rating-item")
@@ -886,30 +886,12 @@ class MovieOn21 : MainAPI() {
             )
     }
 
-    private fun isBlockedAdultContent(url: String, title: String, text: String, tags: List<String> = emptyList()): Boolean {
-        val path = runCatching { URI(url).path.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
-        val clean = cleanText("$path $title ${tags.joinToString(" ")} $text").lowercase(Locale.ROOT)
-        val blockedTerms = listOf(
-            "adult",
-            "18+",
-            "semi",
-            "erotic",
-            "erotis",
-            "bokep",
-            "porn",
-            "porno",
-            "sex",
-            "jav",
-            "dewasa"
-        )
-        return blockedTerms.any { clean.contains(it) }
-    }
-
     private fun inferTvType(url: String, title: String, tags: List<String>, text: String, hasEpisodes: Boolean): TvType {
         val clean = cleanText("$title ${tags.joinToString(" ")} $text").lowercase(Locale.ROOT)
         val path = runCatching { URI(url).path.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
         return when {
             hasEpisodes || path.contains("/episode/") || path.contains("/eps/") || clean.contains("season") || clean.contains("episode") -> TvType.TvSeries
+            clean.contains("adult") || clean.contains("18+") || clean.contains("semi") || clean.contains("erotic") -> TvType.NSFW
             clean.contains("korea") || clean.contains("japan") || clean.contains("china") || clean.contains("thailand") || clean.contains("india") || clean.contains("indonesia") -> TvType.AsianDrama
             else -> TvType.Movie
         }
