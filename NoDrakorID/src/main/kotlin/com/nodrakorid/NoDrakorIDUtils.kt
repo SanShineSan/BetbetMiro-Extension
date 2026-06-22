@@ -5,9 +5,11 @@ import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
-import java.util.Base64
 
 internal object NoDrakorIDUtils {
+    private const val ACTIVE_HOST = "178.128.210.29"
+    private const val LEGACY_HOST = "richemmerson.com"
+
     val browserHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -26,12 +28,22 @@ internal object NoDrakorIDUtils {
     fun absoluteUrl(base: String, raw: String?): String? {
         val value = cleanUrlText(raw ?: return null)
         if (value.isBlank() || value == "#" || value.startsWith("javascript:", true) || value.startsWith("mailto:", true)) return null
-        return when {
+        val resolved = when {
             value.startsWith("//") -> "https:$value"
             value.startsWith("http://", true) || value.startsWith("https://", true) -> value
             value.startsWith("/") -> NoDrakorIDSepeda.MAIN_URL.trimEnd('/') + value
             else -> runCatching { URI(base).resolve(value).toString() }.getOrNull()
-        }?.trim()
+        }?.trim() ?: return null
+        return if (isNoDrakorUrl(resolved)) fetchUrl(resolved) else resolved
+    }
+
+    private fun fetchUrl(raw: String): String {
+        val uri = runCatching { URI(cleanUrlText(raw)) }.getOrNull() ?: return raw
+        val host = uri.host.orEmpty().removePrefix("www.").lowercase()
+        if (!isSourceHost(host)) return raw
+        val path = uri.rawPath?.takeIf { it.isNotBlank() } ?: "/"
+        val query = uri.rawQuery?.let { "?$it" }.orEmpty()
+        return NoDrakorIDSepeda.MAIN_URL.trimEnd('/') + path + query
     }
 
     fun cleanTitle(raw: String?): String = cleanText(raw)
@@ -111,21 +123,25 @@ internal object NoDrakorIDUtils {
         return absoluteUrl(base, content) ?: pickImage(base, doc.selectFirst(".poster img, .thumb img, .image img, article img, img.wp-post-image"), null)
     }
 
-    fun isNoDrakorUrl(url: String): Boolean = runCatching { URI(url).host.orEmpty().contains("richemmerson.com", true) }.getOrDefault(false)
+    fun isNoDrakorUrl(url: String): Boolean = runCatching { isSourceHost(URI(url).host.orEmpty()) }.getOrDefault(false)
+
+    private fun isSourceHost(host: String): Boolean {
+        val clean = host.removePrefix("www.").lowercase()
+        return clean == ACTIVE_HOST || clean == LEGACY_HOST
+    }
 
     fun isContentUrl(url: String): Boolean {
         val lower = url.lowercase()
-        if (!lower.startsWith(NoDrakorIDSepeda.MAIN_URL)) return false
-        val normalized = lower.substringBefore("#").substringBefore("?").trimEnd('/')
-        val root = NoDrakorIDSepeda.MAIN_URL.lowercase().trimEnd('/')
-        if (normalized == root) return false
+        if (!isNoDrakorUrl(url)) return false
+        val path = runCatching { URI(url).path.orEmpty().trimEnd('/') }.getOrDefault("")
+        if (path.isBlank() || path == "/") return false
         if (listOf(
                 "/genre/", "/country/", "/year/", "/tag/", "/page/", "/category/",
                 "/cast/", "/director/", "/author/", "/feed/", "/wp-", "/dmca", "/privacy", "/contact"
             ).any { lower.contains(it) }
         ) return false
-        if (listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".ico").any { normalized.endsWith(it) }) return false
-        return normalized.substringAfterLast('/').isNotBlank()
+        if (listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".ico").any { lower.substringBefore('?').endsWith(it) }) return false
+        return path.substringAfterLast('/').isNotBlank()
     }
 
     fun typeFrom(url: String, title: String, text: String = ""): com.lagradost.cloudstream3.TvType {
@@ -156,108 +172,10 @@ internal object NoDrakorIDUtils {
     fun episodeNumber(text: String?): Int? = Regex("""(?i)(?:episode|eps?|ep)\s*[-:]?\s*(\d+)""").find(text.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
     fun seasonNumber(text: String?): Int? = Regex("""(?i)(?:season|s)\s*[-:]?\s*(\d+)""").find(text.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
 
-    fun extractLabelNear(element: Element?): String {
-        if (element == null) return "NoDrakorID"
-        return cleanText(
-            element.attr("title").ifBlank { element.attr("aria-label") }
-                .ifBlank { element.attr("data-name") }
-                .ifBlank { element.attr("data-label") }
-                .ifBlank { element.attr("data-server") }
-                .ifBlank { element.text() }
-        ).take(48).ifBlank { "NoDrakorID" }
-    }
-
-    fun originOf(url: String): String? = runCatching {
-        val uri = URI(url)
-        "${uri.scheme}://${uri.host}"
-    }.getOrNull()
-
-    fun hostOf(url: String): String = runCatching { URI(url).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
-
-    fun looksDirectVideo(url: String): Boolean {
-        val lower = url.lowercase().substringBefore("#")
-        return listOf(".m3u8", ".mp4", ".mkv", ".mpd", ".webm").any { lower.substringBefore('?').endsWith(it) } ||
-            lower.contains("googlevideo.com/videoplayback") || lower.contains("/get_video?") || lower.contains("videoplayback?")
-    }
-
-    fun isHls(url: String): Boolean = url.lowercase().contains(".m3u8") || url.lowercase().contains("application/x-mpegurl")
-
-    fun isBadAssetUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        val path = lower.substringBefore('?')
-        return listOf(".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".ico", ".woff", ".ttf").any { path.endsWith(it) } ||
-            listOf("doubleclick", "googletagmanager", "google-analytics", "facebook.com", "twitter.com", "youtube.com/embed", "youtube-nocookie.com/embed").any { lower.contains(it) }
-    }
-
-    fun isKnownPlayableHost(url: String): Boolean {
-        val host = hostOf(url)
-        return listOf(
-            "sf21", "vidplayer", "minochinos", "dintezuvio",
-            "jeniusplay", "majorplay", "m3u8play", "e2eplay", "streamwish", "filemoon", "dood", "doodstream", "streamtape", "mp4upload",
-            "hglink", "ghbrisk", "dhcplay", "streamcasthub", "dm21", "meplayer", "gdplayer", "filepress", "blogger.com", "googleusercontent",
-            "googlevideo", "video.google", "lulu", "lulustream", "vidhide", "vidguard", "voe", "mixdrop", "upstream", "filelions", "vidsrc", "embedwish", "player4u",
-            "abyssplayer", "abyss.to", "sssrr.org", "boosterx", "chillx", "jav-vids", "upload18", "earnvid", "hanerix"
-        ).any { host.contains(it) }
-    }
-
-    fun hasSupportedPlayerSignal(html: String): Boolean {
-        val lower = html.lowercase()
-        return looksDirectVideo(lower) || listOf(
-            "sf21.vidplayer.live", "minochinos.com", "dintezuvio.com",
-            "abyssplayer.com", "abyss.to", "sssrr.org", "boosterx.stream", "chillx.top", "jav-vids.xyz", "upload18.org",
-            "streamwish", "filemoon", "dood", "streamtape", "mp4upload", "hglink", "ghbrisk", "dhcplay", "streamcasthub",
-            "dm21embed", "meplayer", "gdplayer", "filepress", "googlevideo", "blogger.com", "vidhide", "vidguard", "filelions",
-            "earnvid", "hanerix"
-        ).any { lower.contains(it) }
-    }
-
     fun hasUnsupportedOnlyPlayer(html: String): Boolean {
         val lower = html.lowercase()
-        val hasUnsupported = listOf(
-            "watch.asiaplayer.site",
-            "bulsis.net/go/"
-        ).any { lower.contains(it) }
-        return hasUnsupported && !hasSupportedPlayerSignal(html)
+        val hasUnsupported = listOf("watch.asiaplayer.site", "bulsis.net/go/").any { lower.contains(it) }
+        val hasSupported = listOf("sf21.vidplayer.live", "minochinos.com", "dintezuvio.com", ".m3u8", ".mp4").any { lower.contains(it) }
+        return hasUnsupported && !hasSupported
     }
-
-    fun isShortenerUrl(url: String): Boolean {
-        val host = hostOf(url)
-        return listOf("semawur", "safelinku", "ouo", "shrink", "short", "linkvertise", "droplink", "terabox").any { host.contains(it) }
-    }
-
-    fun extractUrlsFromText(base: String, text: String): List<String> {
-        val normalized = decodeUrlRepeated(text).replace("\\/", "/")
-        val regex = Regex("""https?:\\?/\\?/[^\"'<>\s)\\]+|//[^\"'<>\s)\\]+""", RegexOption.IGNORE_CASE)
-        return regex.findAll(normalized).mapNotNull { match ->
-            val raw = match.value.replace("\\/", "/").trimEnd(',', ';', '.', ')', ']', '}')
-            absoluteUrl(base, raw)
-        }.distinct().toList()
-    }
-
-    fun decodeBase64Payloads(text: String): List<String> {
-        val output = linkedSetOf<String>()
-        val regexes = listOf(
-            Regex("""atob\(["']([A-Za-z0-9+/=_-]{20,})["']\)""", RegexOption.IGNORE_CASE),
-            Regex("""base64[,=:\s]+["']?([A-Za-z0-9+/=_-]{40,})["']?""", RegexOption.IGNORE_CASE),
-            Regex("""["']([A-Za-z0-9+/=_-]{80,})["']""")
-        )
-        regexes.forEach { regex ->
-            regex.findAll(text).forEach { match ->
-                val value = match.groupValues.getOrNull(1).orEmpty()
-                val decoded = runCatching {
-                    val fixed = value.replace('-', '+').replace('_', '/')
-                    val padded = fixed + "=".repeat((4 - fixed.length % 4) % 4)
-                    String(Base64.getDecoder().decode(padded))
-                }.getOrNull()
-                if (!decoded.isNullOrBlank() && decoded.contains("http", true)) output += decoded
-            }
-        }
-        return output.toList()
-    }
-
-    fun videoHeaders(referer: String): Map<String, String> = mapOf(
-        "Referer" to referer,
-        "User-Agent" to USER_AGENT,
-        "Origin" to (originOf(referer) ?: NoDrakorIDSepeda.MAIN_URL)
-    )
 }
