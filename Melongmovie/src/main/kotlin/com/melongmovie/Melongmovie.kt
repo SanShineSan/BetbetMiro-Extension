@@ -1,8 +1,8 @@
 package com.melongmovie
 
 import com.lagradost.cloudstream3.Actor
-import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
@@ -42,11 +42,6 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Melongmovie : MainAPI() {
-    companion object {
-        private const val CF_USER_MSG =
-            "Terkena perlindungan Cloudflare. Silakan tap ikon Web/Bumi di kanan atas (Open in Browser), " +
-                "centang verifikasi manusia, lalu kembali dan reload halaman ini."
-    }
 
     override var mainUrl = "https://tv12.melongmovies.com"
     override var name = "Melongmovie"
@@ -106,77 +101,56 @@ class Melongmovie : MainAPI() {
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     )
 
-    /**
-     * AnimeSail-style Cloudflare/Turnstile resolver.
-     * Request source Melongmovie dipusatkan lewat WebView + CookieManager interceptor,
-     * lalu parser hanya berjalan setelah response source asli diterima.
-     */
-    private val turnstileInterceptor = TurnstileInterceptor()
+    private val turnstileInterceptor by lazy { TurnstileInterceptor() }
 
     private suspend fun request(
         url: String,
-        ref: String? = null,
-        timeout: Long = 25L
+        referer: String? = null,
+        extraHeaders: Map<String, String> = emptyMap()
     ): NiceResponse {
-        return app.get(
-            url = url,
-            headers = headers,
-            referer = ref ?: "$mainUrl/",
-            interceptor = turnstileInterceptor,
-            timeout = timeout
-        )
-    }
-
-    private fun isChallengeResponse(response: NiceResponse): Boolean {
-        val status = response.code
-        if (status == 403 || status == 503) return true
-
-        val body = response.text
-        if (body.isBlank()) return false
-
-        val title = response.document.title()
-        val hints = listOf(
-            "<title>Just a moment</title>",
-            "Just a moment",
-            "Checking your Browser",
-            "cf-challenge",
-            "cf-browser-verification",
-            "cf-turnstile",
-            "challenge-platform",
-            "challenges.cloudflare.com",
-            "turnstile",
-            "/cdn-cgi/challenge-platform/",
-            "Attention Required",
-            "<title>Loading..</title>",
-            "Aktifkan JavaScript"
+        val response = app.get(
+            url,
+            headers = headers + extraHeaders,
+            referer = referer ?: mainUrl,
+            interceptor = turnstileInterceptor
         )
 
-        return title.contains("Just a moment", ignoreCase = true) ||
-            title.equals("Loading..", ignoreCase = true) ||
-            hints.any { body.contains(it, ignoreCase = true) }
-    }
+        if (isChallengePage(response.text)) {
+            throw ErrorLoadingException(
+                "Melongmovie masih tertahan Cloudflare/Turnstile. Buka di browser/WebView lalu coba ulang."
+            )
+        }
 
-    private fun requireSourceResponse(response: NiceResponse): NiceResponse {
-        if (isChallengeResponse(response)) throwCfError()
         return response
     }
 
-    private fun throwCfError(): Nothing {
-        throw ErrorLoadingException(CF_USER_MSG)
+    private fun isChallengePage(text: String): Boolean {
+        val lower = text.lowercase()
+        return lower.contains("just a moment") ||
+            lower.contains("checking your browser") ||
+            lower.contains("cf-turnstile") ||
+            lower.contains("cf-challenge") ||
+            lower.contains("cf_clearance") ||
+            lower.contains("challenges.cloudflare.com") ||
+            lower.contains("/cdn-cgi/challenge-platform/") ||
+            lower.contains("turnstile") ||
+            lower.contains("attention required") ||
+            lower.contains("<title>loading") ||
+            lower.contains("loading..") ||
+            lower.contains("aktifkan javascript")
     }
 
     override suspend fun getMainPage(
         page: Int,
-        pageRequest: MainPageRequest
+        request: MainPageRequest
     ): HomePageResponse {
-        val url = buildMainPageUrl(pageRequest.data, page)
-        val response = requireSourceResponse(request(url))
-        val document = response.document
+        val url = buildMainPageUrl(request.data, page)
+        val document = this.request(url).document
 
         val items = parseCards(document).distinctBy { it.url }
 
         return newHomePageResponse(
-            pageRequest.name,
+            request.name,
             items,
             hasNext = hasNextPage(document, page)
         )
@@ -196,15 +170,10 @@ class Melongmovie : MainAPI() {
         )
 
         for (url in attempts) {
-            val response = try {
-                requireSourceResponse(request(url))
-            } catch (e: ErrorLoadingException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            } ?: continue
+            val document = runCatching {
+                request(url).document
+            }.getOrNull() ?: continue
 
-            val document = response.document
             val results = parseCards(document).distinctBy { it.url }
             if (results.isNotEmpty()) return results
         }
@@ -213,8 +182,7 @@ class Melongmovie : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val response = requireSourceResponse(request(url))
-        val document = response.document
+        val document = request(url).document
 
         val title = listOf(
             document.selectFirst("h1.entry-title, h1")?.text(),
@@ -292,7 +260,7 @@ class Melongmovie : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = normalizeUrl(data, mainUrl)
-        val response = requireSourceResponse(request(pageUrl, ref = mainUrl))
+        val response = request(pageUrl, referer = mainUrl)
 
         val document = response.document
         val html = response.text.cleanEscaped()
@@ -640,14 +608,10 @@ class Melongmovie : MainAPI() {
             // Fallback: DooPlay REST API v2 (/wp-json/dooplayer/v2/post/{id}/player)
             if (directLinks.isEmpty() && embedLinks.isEmpty()) {
                 val wpJsonText = runCatching {
-                    requireSourceResponse(
-                        app.get(
-                            "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
-                            headers = mapOf("X-WP-Nonce" to nonce),
-                            referer = pageUrl,
-                            interceptor = turnstileInterceptor,
-                            timeout = 18L
-                        )
+                    request(
+                        "$mainUrl/wp-json/dooplayer/v2/post/$post/player",
+                        referer = pageUrl,
+                        extraHeaders = mapOf("X-WP-Nonce" to nonce)
                     ).text.cleanEscaped()
                 }.getOrNull().orEmpty()
 
@@ -801,17 +765,13 @@ class Melongmovie : MainAPI() {
     private suspend fun resolveNestedLinks(url: String, referer: String): List<String> {
         if (isBadPlayableUrl(url)) return emptyList()
 
-        val response = try {
+        val response = runCatching {
             if (url.startsWith(mainUrl, true)) {
-                requireSourceResponse(request(url, ref = referer, timeout = 18L))
+                request(url, referer = referer)
             } else {
                 app.get(url, headers = headers, referer = referer, timeout = 18L)
             }
-        } catch (e: ErrorLoadingException) {
-            throw e
-        } catch (_: Exception) {
-            return emptyList()
-        }
+        }.getOrNull() ?: return emptyList()
 
         val results = linkedSetOf<String>()
         val text = response.text.cleanEscaped()
@@ -894,12 +854,12 @@ class Melongmovie : MainAPI() {
         val urls = linkedSetOf<String>()
         val clean = text.cleanEscaped()
 
-        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+        Regex("""https?://[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { it.value.cleanEscaped().replace(".txt", ".m3u8") }
             .forEach { urls.add(it) }
 
-        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?""", RegexOption.IGNORE_CASE)
+        Regex("""//[^"'\\\s<>]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'\\\s<>]*)?"""  , RegexOption.IGNORE_CASE)
             .findAll(clean)
             .map { "https:${it.value.cleanEscaped().replace(".txt", ".m3u8")}" }
             .forEach { urls.add(it) }
@@ -1123,50 +1083,28 @@ class Melongmovie : MainAPI() {
 
     private fun extractEpisodeNumber(text: String): Int? {
         return Regex("""(?:episode|eps?|ep)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
             ?: Regex("""\bEP\s*(\d+)""", RegexOption.IGNORE_CASE)
-                .find(text)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toIntOrNull()
+                .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun extractSeasonNumber(text: String): Int? {
         return Regex("""(?:season|s)\s*[-:]?\s*(\d+)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun parseDuration(text: String): Int? {
         val h = Regex("""(\d+)\s*(?:h|hr|hour|jam)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
-
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val m = Regex("""(\d+)\s*(?:m|min|menit)""", RegexOption.IGNORE_CASE)
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
-
+            .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val total = h * 60 + m
         return total.takeIf { it > 0 }
     }
 
     private fun parseScore(text: String): Score? {
         val rating = Regex("""\b([0-9](?:\.[0-9])?|10(?:\.0)?)\s*/\s*\d+""")
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-
+            .find(text)?.groupValues?.getOrNull(1)
         return Score.from10(rating?.toDoubleOrNull())
     }
 
@@ -1213,17 +1151,20 @@ class Melongmovie : MainAPI() {
         val value = listOf(attr("src"), attr("data-src"), attr("alt"), attr("class"), attr("id"))
             .joinToString(" ")
             .lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
+            value.contains("avatar") || value.contains("loading")
     }
 
     private fun isBadPosterUrl(url: String): Boolean {
         val value = url.lowercase()
-        return value.contains("close") || value.contains("logo") || value.contains("banner") || value.contains("avatar") || value.contains("loading") || value.contains("blank")
+        return value.contains("close") || value.contains("logo") || value.contains("banner") ||
+            value.contains("avatar") || value.contains("loading") || value.contains("blank")
     }
 
     private fun isBadMetadataText(text: String): Boolean {
         val value = text.lowercase()
-        return value.contains("bookmark") || value.contains("alamat melongmovie") || value.contains("silahkan") || value.contains("download")
+        return value.contains("bookmark") || value.contains("alamat melongmovie") ||
+            value.contains("silahkan") || value.contains("download")
     }
 
     private fun String.cleanEscaped(): String {

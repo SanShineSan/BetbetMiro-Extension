@@ -13,16 +13,6 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * AnimeSail-style Cloudflare/Turnstile interceptor.
- *
- * This intentionally mirrors the proven AnimeSail flow:
- * - open the requested source URL inside Android WebView
- * - let JavaScript / Turnstile / Cloudflare finish in browser context
- * - reuse the WebView cookies and User-Agent for the final OkHttp request
- *
- * No HAR cookie/token is embedded here; cookies are collected live from WebView.
- */
 class TurnstileInterceptor(
     private val targetCookies: List<String> = listOf("cf_clearance", "_as_turnstile")
 ) : Interceptor {
@@ -35,14 +25,12 @@ class TurnstileInterceptor(
         val cookieManager = CookieManager.getInstance()
 
         cookieManager.setAcceptCookie(true)
-
-        // Same browser-context hints used by AnimeSail. They are not HAR/session secrets.
         cookieManager.setCookie(domainUrl, "_as_ipin_lc=id-ID; path=/; SameSite=Strict")
         cookieManager.setCookie(domainUrl, "_as_ipin_tz=Asia/Jakarta; path=/; SameSite=Strict")
         cookieManager.setCookie(domainUrl, "_as_ipin_ct=ID; path=/; SameSite=Strict")
         cookieManager.flush()
 
-        val existingCookies = cookieManager.getCookie(domainUrl).orEmpty()
+        val existingCookies = cookieManager.getCookie(domainUrl) ?: ""
         if (hasTargetCookie(existingCookies)) {
             val response = chain.proceed(
                 originalRequest.newBuilder()
@@ -59,7 +47,7 @@ class TurnstileInterceptor(
             ?: return chain.proceed(originalRequest)
 
         val handler = Handler(Looper.getMainLooper())
-        val userAgentRef = AtomicReference(originalRequest.header("User-Agent").orEmpty())
+        val userAgentRef = AtomicReference(originalRequest.header("User-Agent") ?: "")
         val webViewRef = AtomicReference<WebView?>(null)
 
         handler.post {
@@ -74,8 +62,8 @@ class TurnstileInterceptor(
                 databaseEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                val requestUserAgent = userAgentRef.get()
-                if (requestUserAgent.isNotBlank()) userAgentString = requestUserAgent
+                val userAgent = userAgentRef.get()
+                if (userAgent.isNotBlank()) userAgentString = userAgent
             }
 
             userAgentRef.set(webView.settings.userAgentString)
@@ -101,7 +89,7 @@ class TurnstileInterceptor(
 
         for (i in 0 until 60) {
             Thread.sleep(1000)
-            val cookies = cookieManager.getCookie(domainUrl).orEmpty()
+            val cookies = cookieManager.getCookie(domainUrl) ?: ""
             if (hasTargetCookie(cookies)) {
                 cookieManager.flush()
                 break
@@ -115,7 +103,7 @@ class TurnstileInterceptor(
             }
         }
 
-        val finalCookies = cookieManager.getCookie(domainUrl).orEmpty()
+        val finalCookies = cookieManager.getCookie(domainUrl) ?: ""
         val finalUserAgent = userAgentRef.get()
 
         return chain.proceed(
@@ -127,12 +115,12 @@ class TurnstileInterceptor(
     }
 
     private fun hasTargetCookie(cookies: String): Boolean {
-        return targetCookies.any { cookie -> cookies.contains(cookie, ignoreCase = true) }
+        return targetCookies.any { cookieName -> cookies.contains("$cookieName=") }
     }
 
     private fun clearTargetCookies(cookieManager: CookieManager, domainUrl: String) {
-        targetCookies.forEach { cookie ->
-            cookieManager.setCookie(domainUrl, "$cookie=; Max-Age=0; path=/; Secure")
+        targetCookies.forEach { cookieName ->
+            cookieManager.setCookie(domainUrl, "$cookieName=; Max-Age=0; path=/; Secure")
         }
         cookieManager.flush()
     }
