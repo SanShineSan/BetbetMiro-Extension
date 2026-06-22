@@ -18,11 +18,10 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * AnimeSail-style Cloudflare/Turnstile request handler adapted for Melongmovie.
  *
- * Important flow:
- * 1) Try the normal request first. If Melongmovie is currently readable, return it immediately.
- * 2) Only when Cloudflare/Turnstile HTML or 403/503/429 appears, open the same URL in WebView.
- * 3) Let WebView/JavaScript/CookieManager obtain the challenge cookie.
- * 4) Continue the original request with WebView cookies + WebView User-Agent.
+ * Melongmovie's public tv12 host is currently behind Cloudflare Managed Challenge,
+ * while the same source content is still served from tv11. Keep provider URLs on
+ * mainUrl, but fetch source HTML from the live host and canonicalize returned links
+ * back to mainUrl so the existing parser and detail flow stay stable.
  */
 class TurnstileInterceptor(
     private val targetCookies: List<String> = listOf("cf_clearance", "_as_turnstile")
@@ -31,14 +30,15 @@ class TurnstileInterceptor(
     @SuppressLint("SetJavaScriptEnabled", "WebViewClientOnReceivedSslError")
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
-        val url = originalRequest.url.toString()
-        val domainUrl = "${originalRequest.url.scheme}://${originalRequest.url.host}"
+        val sourceRequest = originalRequest.withLiveMelongHost()
+        val url = sourceRequest.url.toString()
+        val domainUrl = "${sourceRequest.url.scheme}://${sourceRequest.url.host}"
         val cookieManager = CookieManager.getInstance()
 
         cookieManager.setAcceptCookie(true)
 
         val existingCookies = collectCookies(cookieManager, domainUrl, url)
-        val firstRequest = originalRequest.withCookies(existingCookies)
+        val firstRequest = sourceRequest.withCookies(existingCookies)
         val firstResponse = chain.proceed(firstRequest)
 
         if (!needsWebViewChallenge(firstResponse)) {
@@ -49,10 +49,10 @@ class TurnstileInterceptor(
         clearTargetCookies(cookieManager, domainUrl)
 
         val context = AcraApplication.context
-            ?: return canonicalizeResponse(chain.proceed(originalRequest.withCookies(existingCookies)))
+            ?: return canonicalizeResponse(chain.proceed(sourceRequest.withCookies(existingCookies)))
 
         val handler = Handler(Looper.getMainLooper())
-        val userAgentRef = AtomicReference(originalRequest.header("User-Agent") ?: "")
+        val userAgentRef = AtomicReference(sourceRequest.header("User-Agent") ?: "")
         val webViewRef = AtomicReference<WebView?>(null)
         val lastUrlRef = AtomicReference(url)
 
@@ -114,7 +114,7 @@ class TurnstileInterceptor(
         val finalUA = userAgentRef.get()
 
         val finalResponse = chain.proceed(
-            originalRequest.newBuilder()
+            sourceRequest.newBuilder()
                 .apply { if (finalUA.isNotBlank()) header("User-Agent", finalUA) }
                 .apply { if (finalCookies.isNotBlank()) header("Cookie", finalCookies) }
                 .build()
@@ -164,6 +164,18 @@ class TurnstileInterceptor(
 
     private fun Request.withCookies(cookies: String): Request {
         return if (cookies.isBlank()) this else newBuilder().header("Cookie", cookies).build()
+    }
+
+    private fun Request.withLiveMelongHost(): Request {
+        if (!url.host.equals("tv12.melongmovies.com", ignoreCase = true)) return this
+
+        val liveUrl = url.newBuilder()
+            .host("tv11.melongmovies.com")
+            .build()
+
+        return newBuilder()
+            .url(liveUrl)
+            .build()
     }
 
     private fun canonicalizeResponse(response: Response): Response {
