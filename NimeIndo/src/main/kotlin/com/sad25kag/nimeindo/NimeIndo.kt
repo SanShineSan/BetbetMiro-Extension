@@ -26,7 +26,7 @@ class NimeIndo : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    private val chromeUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    private val chromeUa = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
 
     private val siteHeaders = mapOf(
         "User-Agent" to chromeUa,
@@ -34,8 +34,8 @@ class NimeIndo : MainAPI() {
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
         "Cache-Control" to "no-cache",
         "Sec-Ch-Ua" to "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"",
-        "Sec-Ch-Ua-Mobile" to "?0",
-        "Sec-Ch-Ua-Platform" to "\"Windows\"",
+        "Sec-Ch-Ua-Mobile" to "?1",
+        "Sec-Ch-Ua-Platform" to "\"Android\"",
         "Sec-Fetch-Dest" to "document",
         "Sec-Fetch-Mode" to "navigate",
         "Sec-Fetch-Site" to "none",
@@ -211,7 +211,7 @@ class NimeIndo : MainAPI() {
 
             if (fixed.isBlogger()) {
                 resolveBlogger(fixed, candidate.referer).forEach { media ->
-                    if (emitDirect(media, "Blogger", fixed)) hasLinks = true
+                    if (emitBloggerVideoLink(media, candidate.label, emitted, callback)) hasLinks = true
                 }
                 if (hasLinks) return
             }
@@ -491,30 +491,142 @@ class NimeIndo : MainAPI() {
     }
 
     private suspend fun resolveBlogger(url: String, referer: String): List<String> {
-        val results = linkedSetOf<String>()
-        val htmlResponse = runCatching { app.get(url, headers = bloggerHeaders(referer), referer = referer).text }.getOrNull().orEmpty()
-        val cleanHtml = htmlResponse.basicHtmlDecode().unescapeJs()
-        cleanHtml.extractUrls().filter { it.isDirectMedia() }.forEach(results::add)
+        return extractBloggerDirectVideos(url, referer)
+    }
 
-        val token = Regex("""[?&]token=([^&]+)""").find(url)?.groupValues?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }
-            ?: Regex("""token["']?\s*[:=]\s*["']([^"']+)""").find(cleanHtml)?.groupValues?.getOrNull(1)
-        val fsid = Regex("""FdrFJe["']?\s*:\s*["']([^"']+)""").find(cleanHtml)?.groupValues?.getOrNull(1)
-        val bl = Regex("""boq_bloggeruiserver_[0-9A-Za-z._-]+""").find(cleanHtml)?.value
-        if (!token.isNullOrBlank() && !fsid.isNullOrBlank() && !bl.isNullOrBlank()) {
-            val reqId = (System.currentTimeMillis() % 100000).toString()
-            val batchUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute?rpcids=WcwnYd&source-path=%2Fvideo.g&f.sid=${URLEncoder.encode(fsid, "UTF-8")}&bl=$bl&hl=id&_reqid=$reqId&rt=c"
-            val payload = "[[[\"WcwnYd\",\"[\\\"$token\\\",null,0]\",null,\"generic\"]]]"
-            val body = runCatching {
-                app.post(
-                    batchUrl,
-                    data = mapOf("f.req" to payload),
-                    headers = bloggerHeaders(url) + mapOf("Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8", "Origin" to "https://www.blogger.com", "X-Same-Domain" to "1"),
-                    referer = url
-                ).text
-            }.getOrNull().orEmpty().basicHtmlDecode().unescapeJs()
-            body.extractUrls().filter { it.isDirectMedia() }.forEach(results::add)
+    private suspend fun extractBloggerDirectVideos(url: String, referer: String): List<String> {
+        val token = Regex("""[?&]token=([^&]+)""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return emptyList()
+
+        val page = runCatching {
+            app.get(
+                url,
+                referer = referer,
+                headers = mapOf(
+                    "User-Agent" to chromeUa,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+            )
+        }.getOrNull() ?: return emptyList()
+
+        val html = page.text
+        val cookies = page.cookies
+        val fSid = Regex("""FdrFJe":"(-?\d+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: Regex("""FdrFJe["']?\s*:\s*["'](-?\d+)""")
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+            ?: return emptyList()
+        val bl = Regex("""cfb2h":"([^"]+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: Regex("""boq_bloggeruiserver_[0-9A-Za-z._-]+""")
+                .find(html)
+                ?.value
+            ?: return emptyList()
+        val hl = Regex("""lang="([^"]+)""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.ifBlank { null }
+            ?: "id"
+
+        val rpcId = "WcwnYd"
+        val reqId = (System.currentTimeMillis() % 90000L + 10000L).toString()
+        val payload = """[[["$rpcId","[\"$token\",null,0]",null,"generic"]]]"""
+        val apiUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
+            "?rpcids=$rpcId&source-path=%2Fvideo.g&f.sid=$fSid&bl=$bl&hl=$hl&_reqid=$reqId&rt=c"
+
+        val response = runCatching {
+            app.post(
+                apiUrl,
+                data = mapOf("f.req" to payload),
+                referer = url,
+                cookies = cookies,
+                headers = mapOf(
+                    "Origin" to "https://www.blogger.com",
+                    "Accept" to "*/*",
+                    "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
+                    "X-Same-Domain" to "1"
+                )
+            ).text
+        }.getOrNull() ?: return emptyList()
+
+        val decoded = decodeBloggerEscapes(response)
+        return Regex("""https://[^\s"'\\]+""")
+            .findAll(decoded)
+            .map { it.value }
+            .filter { it.contains("googlevideo.com/videoplayback", ignoreCase = true) }
+            .map { decodeBloggerEscapes(it) }
+            .distinct()
+            .toList()
+    }
+
+    private fun decodeBloggerEscapes(input: String): String {
+        var output = input
+        repeat(2) {
+            output = Regex("""\\u([0-9a-fA-F]{4})""").replace(output) { match ->
+                match.groupValues[1].toInt(16).toChar().toString()
+            }
         }
-        return results.toList()
+        return output
+            .replace("\\/", "/")
+            .replace("\\u003d", "=")
+            .replace("\\u0026", "&")
+            .replace("\\=", "=")
+            .replace("\\&", "&")
+            .replace("\\\"", "\"")
+    }
+
+    private fun qualityFromBloggerUrl(url: String): Int {
+        val itag = Regex("""[?&]itag=(\d+)""")
+            .find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        return when (itag) {
+            37, 96, 137, 248, 299 -> Qualities.P1080.value
+            22, 59, 136, 247, 298 -> Qualities.P720.value
+            18, 134, 244 -> Qualities.P360.value
+            135 -> Qualities.P480.value
+            36 -> Qualities.P240.value
+            17 -> Qualities.P144.value
+            else -> Qualities.Unknown.value
+        }
+    }
+
+    private fun emitBloggerVideoLink(
+        videoUrl: String,
+        quality: String?,
+        emitted: MutableSet<String>,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val fixed = videoUrl.trim()
+        if (fixed.isBlank()) return false
+        val key = fixed.normalizedMediaKey()
+        if (!emitted.add(key)) return false
+        callback(
+            newExtractorLink(
+                source = "Blogger",
+                name = "Blogger ${quality.orEmpty()}".trim(),
+                url = fixed,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = "https://www.blogger.com/"
+                this.quality = qualityFromBloggerUrl(fixed).takeIf { it != Qualities.Unknown.value }
+                    ?: quality?.parseQuality()
+                    ?: Qualities.Unknown.value
+                this.headers = mapOf("Referer" to "https://www.blogger.com/")
+            }
+        )
+        return true
     }
 
     private fun mediaHeaders(url: String, referer: String): Map<String, String> {
@@ -525,7 +637,7 @@ class NimeIndo : MainAPI() {
             "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
         )
         return when {
-            lower.contains("googlevideo.com") || lower.contains("videoplayback") -> base + mapOf("Range" to "bytes=0-")
+            lower.contains("googlevideo.com") || lower.contains("videoplayback") -> mapOf("Referer" to "https://www.blogger.com/")
             lower.contains("dmcdn.net") || lower.contains("dailymotion.com") || lower.contains("cdndirector.dailymotion.com") -> base + mapOf("Referer" to "https://geo.dailymotion.com/", "Origin" to "https://geo.dailymotion.com")
             else -> base + mapOf("Referer" to referer, "Origin" to origin(referer), "Range" to "bytes=0-")
         }
@@ -535,7 +647,7 @@ class NimeIndo : MainAPI() {
         val lower = url.lowercase(Locale.ROOT)
         return when {
             lower.contains("dmcdn.net") || lower.contains("dailymotion.com") || lower.contains("cdndirector.dailymotion.com") -> "https://geo.dailymotion.com/"
-            lower.contains("googlevideo.com") || lower.contains("videoplayback") -> ""
+            lower.contains("googlevideo.com") || lower.contains("videoplayback") -> "https://www.blogger.com/"
             else -> referer
         }
     }
@@ -555,8 +667,8 @@ class NimeIndo : MainAPI() {
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
         "Sec-Ch-Ua" to "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"",
-        "Sec-Ch-Ua-Mobile" to "?0",
-        "Sec-Ch-Ua-Platform" to "\"Windows\"",
+        "Sec-Ch-Ua-Mobile" to "?1",
+        "Sec-Ch-Ua-Platform" to "\"Android\"",
         "Referer" to referer
     )
 
