@@ -826,7 +826,7 @@ class CinemaIndo : MainAPI() {
         return when {
             unescaped.startsWith("//") -> "https:$unescaped"
             unescaped.startsWith("http://", true) || unescaped.startsWith("https://", true) -> unescaped
-            else -> fixUrl(unescaped, baseUrl) ?: ""
+            else -> runCatching { URI(baseUrl).resolve(unescaped).toString() }.getOrDefault("")
         }
     }
 
