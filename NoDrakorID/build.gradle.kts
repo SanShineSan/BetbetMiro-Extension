@@ -1,9 +1,9 @@
-version = 9
+version = 10
 
 cloudstream {
     language = "id"
     authors = listOf("sad25kag")
-    description = "NoDrakorID v9 sf21-only playback resolver aligned with HAR evidence from richemmerson.com -> sf21.vidplayer.live encrypted API -> sf21 HLS."
+    description = "NoDrakorID v10 supports IP main URL source aliases while preserving sf21 playback."
 
     status = 1
 
