@@ -407,7 +407,7 @@ class AdikFilm : MainAPI() {
         }
     }
 
-    private fun collectSubtitles(document: Document, baseUrl: String, subtitleCallback: (SubtitleFile) -> Unit) {
+    private suspend fun collectSubtitles(document: Document, baseUrl: String, subtitleCallback: (SubtitleFile) -> Unit) {
         document.select("track[src], a[href*='.srt'], a[href*='.vtt'], a[href*='.ass']").forEach { element ->
             val url = element.firstAttr("src", "href").toAbsoluteUrl(baseUrl)
             if (url != null && url.isSubtitleUrl()) {
