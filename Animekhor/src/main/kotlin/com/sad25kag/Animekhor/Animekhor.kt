@@ -15,7 +15,6 @@ open class Animekhor : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.Anime)
 
     override val mainPage = mainPageOf(
-        "" to "Latest Release",
         "donghua-series/" to "Donghua Series",
         "comic-series/" to "Comic Series",
         "anime/?order=&status=&type=" to "Anime List",
