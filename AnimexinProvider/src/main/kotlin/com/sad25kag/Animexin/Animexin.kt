@@ -29,12 +29,8 @@ class Animexin : MainAPI() {
         "anime/?status=ongoing&order=popular" to "Popular",
         "anime/?" to "Donghua",
         "anime/?status=&type=movie" to "Movies",
-        "genres/action/" to "Action",
-        "genres/adventure/" to "Adventure",
         "genres/demon/" to "Demon",
-        "genres/fantasy/" to "Fantasy",
         "genres/historical/" to "Historical",
-        "genres/martial-arts/" to "Martial Arts",
         "genres/romance/" to "Romance",
         "genres/supernatural/" to "Supernatural"
     )
