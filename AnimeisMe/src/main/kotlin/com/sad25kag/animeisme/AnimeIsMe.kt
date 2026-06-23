@@ -332,10 +332,16 @@ class AnimeIsMe : MainAPI() {
             .sortedWith(compareBy({ it.episode ?: Int.MAX_VALUE }, { it.name ?: "" }))
 
         if (episodes.isNotEmpty()) return episodes
-        if (!pageUrl.isEpisodeContentUrl(title)) return emptyList()
+
+        val hasInlinePlayer = extractCandidates(pageUrl).isNotEmpty()
+        if (!hasInlinePlayer && !pageUrl.isEpisodeContentUrl(title)) return emptyList()
 
         return listOf(newEpisode(pageUrl) {
-            this.name = title.parseEpisodeName() ?: title
+            this.name = when {
+                title.parseEpisodeName() != null -> title.parseEpisodeName()
+                pageUrl.isEpisodeContentUrl(title) -> title
+                else -> "Movie"
+            }
             this.episode = title.parseEpisodeNumber() ?: pageUrl.parseEpisodeNumber()
             this.posterUrl = poster
         })
