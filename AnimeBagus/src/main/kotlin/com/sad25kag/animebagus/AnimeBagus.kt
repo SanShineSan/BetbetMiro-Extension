@@ -443,7 +443,9 @@ class AnimeBagus : MainAPI() {
                     label.contains("movie", true) ||
                     label.contains("terbaru", true) ||
                     path.contains("/episode-", true) ||
-                    fixed.contains("player.tikungan.store", true)
+                    fixed.contains("player.tikungan.store", true) ||
+                    fixed.contains("rockethls.online", true) ||
+                    fixed.contains("abysscdn.com", true)
 
                 if (sameSlug && looksPlayable) candidates.add(fixed)
             }
@@ -550,6 +552,16 @@ class AnimeBagus : MainAPI() {
                     directUrl.contains("player.tikungan.store", ignoreCase = true) ->
                         resolveTikunganBox(server.name, originalUrl, directUrl, callback)
 
+                    directUrl.contains("rockethls.online", ignoreCase = true) ||
+                        directUrl.contains("nzn3.org", ignoreCase = true) ||
+                        server.name.contains("filemoon", ignoreCase = true) ->
+                        resolveRocketHls(server.name, originalUrl, directUrl, subtitleCallback, callback)
+
+                    directUrl.contains("abysscdn.com", ignoreCase = true) ||
+                        server.name.contains("hydrax", ignoreCase = true) ->
+                        resolveGenericServer(server.name.ifBlank { "HYDRAX" }, directUrl, originalUrl, subtitleCallback, callback) ||
+                            resolveGenericServer(server.name.ifBlank { "HYDRAX" }, directUrl, "https://player.tikungan.store/", subtitleCallback, callback)
+
                     directUrl.endsWith(".m3u8", ignoreCase = true) -> {
                         emitM3u8(server.name, directUrl, sourcePage, callback)
                         true
@@ -590,8 +602,9 @@ class AnimeBagus : MainAPI() {
             addPlayerServer(servers, label, raw)
         }
 
-        // Active AnimeBagus pages expose servers via select-player buttons. BOX is the only
-        // supported AnimeBagus playback host now; unstable alternate hosts are ignored.
+        // Active AnimeBagus pages expose servers via select-player buttons, but movie/detail
+        // variants can expose playable URLs as plain anchors/text. Scan anchors and full HTML
+        // with strict host filtering so loadLinks does not miss BOX/FILEMOON/HYDRAX.
         document.select("a[href]").forEach { anchor ->
             val href = anchor.attr("href")
             val label = anchor.text().trim().ifBlank { detectServerName(href) }
@@ -610,9 +623,8 @@ class AnimeBagus : MainAPI() {
 
     private fun addPlayerServer(servers: MutableList<PlayerServer>, label: String, rawUrl: String?) {
         val url = cleanPlayerUrl(rawUrl) ?: return
-        val directUrl = unwrapTikunganUrl(url)
-        if (!isAllowedBoxOrDirectMedia(directUrl)) return
-        servers.add(PlayerServer(label.ifBlank { detectServerName(directUrl) }, url))
+        if (!isPlayableUrl(url)) return
+        servers.add(PlayerServer(label.ifBlank { detectServerName(url) }, url))
     }
 
     private fun addPlayerUrlsFromText(servers: MutableList<PlayerServer>, raw: String?) {
@@ -637,18 +649,17 @@ class AnimeBagus : MainAPI() {
             }
     }
 
-    private fun isAllowedBoxOrDirectMedia(url: String): Boolean {
+    private fun isPlayableUrl(url: String): Boolean {
         val lower = url.lowercase()
         if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
 
-        if (lower.contains("rockethls.online") ||
+        return lower.contains("player.tikungan.store") ||
+            lower.contains("rockethls.online") ||
             lower.contains("nzn3.org") ||
             lower.contains("abysscdn.com") ||
             lower.contains("filemoon") ||
             lower.contains("hydrax") ||
-            lower.contains("r66nv9ed.com")) return false
-
-        return lower.contains("player.tikungan.store") ||
+            lower.contains("r66nv9ed.com") ||
             lower.contains(".m3u8") ||
             lower.contains(".mp4")
     }
@@ -711,6 +722,8 @@ class AnimeBagus : MainAPI() {
     private fun detectServerName(url: String): String {
         val lower = url.lowercase()
         return when {
+            lower.contains("rockethls.online") || lower.contains("nzn3.org") || lower.contains("filemoon") -> "FILEMOON"
+            lower.contains("abysscdn.com") || lower.contains("hydrax") -> "HYDRAX"
             lower.contains("player.tikungan.store") -> "BOX"
             lower.contains(".m3u8") -> "HLS"
             lower.contains(".mp4") -> "MP4"
@@ -743,6 +756,51 @@ class AnimeBagus : MainAPI() {
 
         emitM3u8(serverName.ifBlank { "BOX" }, resolveAgainst(directUrl, m3u8), directUrl, callback)
         return true
+    }
+
+    private suspend fun resolveRocketHls(
+        serverName: String,
+        originalUrl: String,
+        directUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var emitted = false
+        val sourceName = serverName.ifBlank { "FILEMOON" }
+
+        listOf(
+            originalUrl to mainUrl,
+            originalUrl to "https://player.tikungan.store/",
+            directUrl to originalUrl,
+            directUrl to "https://player.tikungan.store/"
+        ).distinct().forEach { (candidate, referer) ->
+            if (!emitted && runCatching { runExtractorLink(sourceName, candidate, referer, subtitleCallback, callback) }.getOrDefault(false)) {
+                emitted = true
+            }
+        }
+
+        val code = Regex("""(?i)/e/([^/?#]+)""").find(directUrl)?.groupValues?.getOrNull(1)
+        if (!code.isNullOrBlank()) {
+            try {
+                val detailsUrl = "https://rockethls.online/api/videos/$code/embed/details"
+                val details = app.get(detailsUrl, referer = directUrl).text
+                val embedFrameUrl = jsonStringValue(details, "embed_frame_url")
+                if (!embedFrameUrl.isNullOrBlank()) {
+                    listOf(
+                        embedFrameUrl to directUrl,
+                        embedFrameUrl to "https://rockethls.online/",
+                        embedFrameUrl to originalUrl
+                    ).distinct().forEach { (candidate, referer) ->
+                        if (!emitted && runCatching { runExtractorLink(sourceName, candidate, referer, subtitleCallback, callback) }.getOrDefault(false)) {
+                            emitted = true
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        return emitted
     }
 
     private suspend fun resolveGenericServer(
