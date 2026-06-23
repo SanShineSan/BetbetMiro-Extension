@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -170,21 +171,101 @@ class AnimeBagus : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val urls = listOf(
-            "$mainUrl/search?q=$encoded",
-            "$mainUrl/search?s=$encoded"
-        )
+        val normalizedQuery = normalizeSearchText(query)
+        if (normalizedQuery.isBlank()) return emptyList()
 
-        urls.forEach { searchUrl ->
-            try {
-                val results = parseCards(app.get(searchUrl, referer = mainUrl).document, false)
-                if (results.isNotEmpty()) return results
-            } catch (_: Exception) {
+        val encoded = URLEncoder.encode(query.trim(), "UTF-8").replace("+", "%20")
+        val apiUrl = "$mainUrl/data/search?keyword=$encoded"
+
+        val apiResults = try {
+            parseSearchApi(app.get(apiUrl, referer = "$mainUrl/search?s=$encoded").text, normalizedQuery)
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        if (apiResults.isNotEmpty()) return apiResults
+
+        // Fallback only when the source API fails; keep it query-filtered so search does not
+        // return homepage/latest grids as false-positive results.
+        return try {
+            parseCards(app.get("$mainUrl/search?s=$encoded", referer = mainUrl).document, false)
+                .filter { it.matchesSearchQuery(normalizedQuery) }
+                .sortedWith(compareByDescending<SearchResponse> { it.searchScore(normalizedQuery) }
+                    .thenBy { it.name.lowercase() })
+                .distinctBy { it.url }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseSearchApi(jsonText: String, normalizedQuery: String): List<SearchResponse> {
+        val hits = JSONObject(jsonText).optJSONArray("hits") ?: return emptyList()
+        val results = mutableListOf<SearchResponse>()
+
+        for (index in 0 until hits.length()) {
+            val document = hits.optJSONObject(index)?.optJSONObject("document") ?: continue
+            val title = document.optString("title").trim().takeIf { it.isNotBlank() } ?: continue
+            val slug = document.optString("slug").trim().trim('/').takeIf { it.isNotBlank() } ?: continue
+            val url = "$mainUrl/$slug"
+            val tvType = apiTypeToTvType(document.optString("type"), title)
+            val poster = buildSearchPosterUrl(document.optString("poster"))
+
+            val response = newAnimeSearchResponse(title, url, tvType) {
+                posterUrl = poster
+            }
+
+            if (response.matchesSearchQuery(normalizedQuery)) {
+                results.add(response)
             }
         }
 
-        return emptyList()
+        return results
+            .sortedWith(compareByDescending<SearchResponse> { it.searchScore(normalizedQuery) }
+                .thenBy { it.name.lowercase() })
+            .distinctBy { it.url }
+    }
+
+    private fun apiTypeToTvType(type: String, title: String): TvType {
+        val value = "$type $title".lowercase()
+        return when {
+            value.contains("movie") -> TvType.AnimeMovie
+            value.contains("ova") || value.contains("special") -> TvType.OVA
+            else -> TvType.Anime
+        }
+    }
+
+    private fun buildSearchPosterUrl(poster: String): String? {
+        val clean = poster.trim().takeIf { it.isNotBlank() } ?: return null
+        return when {
+            clean.startsWith("http://", true) || clean.startsWith("https://", true) -> clean
+            clean.startsWith("/") -> fixUrlNull(clean)
+            else -> "https://img.ablink.sbs/images/thumbnail/$clean"
+        }
+    }
+
+    private fun SearchResponse.matchesSearchQuery(normalizedQuery: String): Boolean {
+        val terms = normalizedQuery.split(" ").filter { it.length >= 2 }
+        if (terms.isEmpty()) return false
+        val haystack = normalizeSearchText("$name ${url.substringAfter(mainUrl, "")}")
+        return terms.all { term -> haystack.contains(term) }
+    }
+
+    private fun SearchResponse.searchScore(normalizedQuery: String): Int {
+        val haystack = normalizeSearchText("$name ${url.substringAfter(mainUrl, "")}")
+        val terms = normalizedQuery.split(" ").filter { it.length >= 2 }
+        var score = 0
+        if (haystack == normalizedQuery) score += 100
+        if (haystack.startsWith(normalizedQuery)) score += 60
+        if (haystack.contains(normalizedQuery)) score += 40
+        score += terms.count { haystack.contains(it) } * 10
+        return score
+    }
+
+    private fun normalizeSearchText(value: String): String {
+        return value.lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     override suspend fun load(url: String): LoadResponse {
