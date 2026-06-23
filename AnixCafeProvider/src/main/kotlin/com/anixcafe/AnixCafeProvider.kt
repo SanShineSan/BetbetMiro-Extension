@@ -100,8 +100,7 @@ class AnixCafeProvider : MainAPI() {
                 addEpisodes(DubStatus.Subbed, episodes)
             }
         } else {
-            val movieData = episodes.firstOrNull()?.data ?: fixedUrl
-            newMovieLoadResponse(title, fixedUrl, type, movieData) {
+            newMovieLoadResponse(title, fixedUrl, type, fixedUrl) {
                 posterUrl = poster
                 this.year = year
                 plot?.let { this.plot = it }
@@ -275,7 +274,8 @@ class AnixCafeProvider : MainAPI() {
         return synopsisElement.text()
             .replace(Regex("""\s+"""), " ")
             .trim()
-            .ifBlank { null }
+            .takeIf { it.isNotBlank() }
+            ?.takeUnless { it.isSeoSynopsisTemplate() }
     }
 
     private fun getType(typeLabel: String?, url: String): TvType {
@@ -305,5 +305,15 @@ class AnixCafeProvider : MainAPI() {
             .replace(Regex("""(?i)\s+Sub\s+Indo.*$"""), "")
             .replace(Regex("""(?i)\s+Episode\s+\d+(?:\.\d+)?.*$"""), "")
             .trim()
+    }
+
+    private fun String.isSeoSynopsisTemplate(): Boolean {
+        val value = lowercase()
+        return value.contains("tonton streaming") &&
+            value.contains("subtitle bahasa indonesia") &&
+            (
+                value.contains("anda juga dapat mengunduh") ||
+                    value.contains("streaming online dengan berbagai kualitas")
+                )
     }
 }
