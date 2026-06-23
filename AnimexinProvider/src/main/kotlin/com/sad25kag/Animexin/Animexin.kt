@@ -147,23 +147,155 @@ class Animexin : MainAPI() {
         val poster = document.select("div.thumb img").attr("src").ifEmpty {
             document.selectFirst("meta[property=og:image]")?.attr("content")?.trim().orEmpty()
         }
-        val description = document.selectFirst("div.entry-content")?.text()?.trim()
+        val description = extractDescription(document)
         val infoText = document.selectFirst(".spe")?.text().orEmpty()
+        val metadata = extractDetailMetadata(document, infoText)
+        val genres = extractGenres(document)
+        val characters = extractCharacters(document)
         val episodes = extractEpisodes(document, poster)
-        val isMovie = infoText.contains("Movie", true)
+        val isMovie = metadata.firstValue("type")?.contains("Movie", true) == true || infoText.contains("Movie", true)
+        val plot = buildDetailPlot(description, metadata, characters)
+        val year = metadata.firstValue("released", "year")?.let { Regex("(19|20)\\d{2}").find(it)?.value?.toIntOrNull() }
 
         return if (!isMovie && episodes.isNotEmpty()) {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = poster
-                this.plot = description
+                this.plot = plot
+                this.tags = genres
+                this.year = year
             }
         } else {
             val movieData = extractWatchPage(document, url) ?: episodes.firstOrNull()?.data ?: url
             newMovieLoadResponse(title, url, TvType.Movie, movieData) {
                 this.posterUrl = poster
-                this.plot = description
+                this.plot = plot
+                this.tags = genres
+                this.year = year
             }
         }
+    }
+
+    private fun extractDescription(document: Document): String? {
+        val candidates = linkedSetOf<String>()
+        document.select(
+            ".entry-content p, .entry-content, .sinopsis, .synopsis, .desc, .entry-content-single, .postbody .bixbox p"
+        ).forEach { element ->
+            val text = element.text().cleanText()
+            if (text.length >= 40 && !isDescriptionNoise(text)) candidates.add(text)
+        }
+        return candidates.maxByOrNull { it.length }
+    }
+
+    private fun isDescriptionNoise(text: String): Boolean {
+        val lower = text.lowercase()
+        return listOf(
+            "download",
+            "streaming",
+            "nonton",
+            "episode",
+            "komentar",
+            "comment",
+            "bookmark",
+            "laporkan",
+            "report"
+        ).any { lower == it || lower.startsWith("$it ") }
+    }
+
+    private fun extractGenres(document: Document): List<String> {
+        return document.select(
+            ".genxed a[href], .genre a[href], .genres a[href], a[href*=/genres/], a[href*=/genre/]"
+        ).map { it.text().cleanText() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun extractCharacters(document: Document): List<String> {
+        return document.select(
+            ".character-list li, .charlist li, .characters li, .cast li, .actor li, .voiceactor li, .bixbox.character li"
+        ).map { it.text().cleanText() }
+            .filter { it.length >= 2 }
+            .distinct()
+            .take(12)
+    }
+
+    private fun extractDetailMetadata(document: Document, infoText: String): Map<String, String> {
+        val metadata = linkedMapOf<String, String>()
+        val labels = listOf(
+            "Rating",
+            "Status",
+            "Network",
+            "Studio",
+            "Released",
+            "Duration",
+            "Country",
+            "Type",
+            "Episodes",
+            "Episode",
+            "Fansub",
+            "Year"
+        )
+
+        fun put(label: String, value: String) {
+            val key = when (label.lowercase()) {
+                "episodes" -> "episode"
+                else -> label.lowercase()
+            }
+            val clean = value.cleanText()
+                .removePrefix(":")
+                .trim()
+            if (clean.isNotBlank() && clean.length <= 80) metadata.putIfAbsent(key, clean)
+        }
+
+        fun parseChunk(raw: String) {
+            val text = raw.cleanText()
+            labels.forEach { label ->
+                val match = Regex("(?i)\\b${Regex.escape(label)}\\s*:?\\s*([^•|]+)").find(text)
+                val value = match?.groupValues?.getOrNull(1)
+                    ?.replace(Regex("(?i)\\b(Rating|Status|Network|Studio|Released|Duration|Country|Type|Episodes?|Fansub|Year)\\b.*$"), "")
+                    ?.trim()
+                if (!value.isNullOrBlank()) put(label, value)
+            }
+        }
+
+        document.select(
+            ".spe span, .spe li, .infox .spe span, .info-content .spe span, .infodetail span, .tsinfo .imptdt"
+        ).forEach { element ->
+            val text = element.text().cleanText()
+            val split = text.split(Regex(":\\s*"), limit = 2)
+            if (split.size == 2) put(split[0], split[1]) else parseChunk(text)
+        }
+
+        parseChunk(infoText)
+        return metadata
+    }
+
+    private fun buildDetailPlot(
+        description: String?,
+        metadata: Map<String, String>,
+        characters: List<String>
+    ): String? {
+        val info = listOfNotNull(
+            metadata.firstValue("status")?.let { "Status: $it" },
+            metadata.firstValue("type")?.let { "Type: $it" },
+            metadata.firstValue("rating")?.let { "Rating: $it" },
+            metadata.firstValue("episode")?.let { "Episode: $it" },
+            metadata.firstValue("released")?.let { "Released: $it" },
+            metadata.firstValue("duration")?.let { "Duration: $it" },
+            metadata.firstValue("studio")?.let { "Studio: $it" },
+            metadata.firstValue("network")?.let { "Network: $it" },
+            metadata.firstValue("country")?.let { "Country: $it" },
+            metadata.firstValue("fansub")?.let { "Fansub: $it" }
+        ).distinct()
+
+        val blocks = mutableListOf<String>()
+        if (info.isNotEmpty()) blocks.add(info.joinToString(" • "))
+        if (characters.isNotEmpty()) blocks.add("Karakter: ${characters.joinToString(", ")}")
+        description?.takeIf { it.isNotBlank() }?.let { blocks.add(it) }
+        return blocks.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+    }
+
+    private fun Map<String, String>.firstValue(vararg keys: String): String? {
+        return keys.firstNotNullOfOrNull { key -> this[key]?.takeIf { it.isNotBlank() } }
     }
 
     private fun extractEpisodes(document: Document, poster: String): List<Episode> {
@@ -179,15 +311,38 @@ class Animexin : MainAPI() {
             val epText = info.selectFirst("div.epl-num, .epl-num, a span")?.text()?.ifBlank { anchor.text() } ?: anchor.text()
             val epnum = episodeRegex.find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Regex("episode-?(\\d+)", RegexOption.IGNORE_CASE).find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val episodeTitle = extractEpisodeTitle(info, anchor, epnum)
+            val episodeDescription = info.selectFirst(".epl-desc, .description, .synopsis")?.text()?.cleanText()
 
             newEpisode(href) {
                 this.episode = epnum
-                this.name = epnum?.let { "Episode $it" } ?: epText.ifBlank { "Episode" }
+                this.name = episodeTitle
                 this.posterUrl = posterEpisode.ifBlank { poster }
+                this.description = episodeDescription
             }
         }
             .distinctBy { it.data.substringBefore("?").trimEnd('/') }
             .sortedBy { it.episode ?: Int.MAX_VALUE }
+    }
+
+    private fun extractEpisodeTitle(info: Element, anchor: Element, epnum: Int?): String {
+        val rawTitle = listOfNotNull(
+            anchor.attr("title").takeIf { it.isNotBlank() },
+            info.selectFirst(".epl-title, .epl-sub, .title, h3, h2")?.text(),
+            anchor.text()
+        ).map { it.cleanText() }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+
+        val title = rawTitle
+            .replace(Regex("(?i)^episode\\s*[-:]?\\s*${epnum ?: ""}\\s*"), "")
+            .cleanText()
+
+        return when {
+            title.isBlank() && epnum != null -> "Episode $epnum"
+            epnum != null && !title.startsWith("$epnum") -> "$epnum. $title"
+            else -> title.ifBlank { "Episode" }
+        }
     }
 
     private fun extractWatchPage(document: Document, detailUrl: String): String? {
