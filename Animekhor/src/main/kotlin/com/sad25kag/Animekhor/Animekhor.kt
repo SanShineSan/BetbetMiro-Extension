@@ -198,7 +198,6 @@ open class Animekhor : MainAPI() {
                 this.posterUrl = fixUrlNull(poster.orEmpty())
                 this.plot = description
                 if (tags.isNotEmpty()) this.tags = tags
-                showStatus?.let { this.showStatus = it }
             }
         }
     }
