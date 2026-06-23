@@ -178,16 +178,50 @@ class Animexin : MainAPI() {
     private fun extractDescription(document: Document): String? {
         val candidates = linkedSetOf<String>()
         document.select(
-            ".entry-content p, .entry-content, .sinopsis, .synopsis, .desc, .entry-content-single, .postbody .bixbox p"
+            ".entry-content p, .sinopsis p, .synopsis p, .desc p, .entry-content-single p, .postbody .bixbox p"
         ).forEach { element ->
             val text = element.text().cleanText()
-            if (text.length >= 40 && !isDescriptionNoise(text)) candidates.add(text)
+            if (text.length >= 40 && !isDescriptionNoise(text)) candidates.add(cleanSynopsisText(text))
         }
+
+        if (candidates.isEmpty()) {
+            listOf(
+                "meta[property=og:description]",
+                "meta[name=description]",
+                "meta[name=twitter:description]"
+            ).mapNotNull { selector -> document.selectFirst(selector)?.attr("content")?.cleanText() }
+                .filter { it.length >= 40 && !isDescriptionNoise(it) }
+                .mapTo(candidates) { cleanSynopsisText(it) }
+        }
+
         return candidates.maxByOrNull { it.length }
+    }
+
+    private fun cleanSynopsisText(text: String): String {
+        return text
+            .replace(Regex("(?i)^\\s*(synopsis|sinopsis)\\s*:?\\s*"), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun isDescriptionNoise(text: String): Boolean {
         val lower = text.lowercase()
+        val metadataHits = listOf(
+            "rating:",
+            "status:",
+            "network:",
+            "studio:",
+            "released:",
+            "duration:",
+            "country:",
+            "type:",
+            "episode:",
+            "episodes:",
+            "fansub:"
+        ).count { lower.contains(it) }
+
+        if (metadataHits >= 3 || lower.startsWith("status:")) return true
+
         return listOf(
             "download",
             "streaming",
@@ -202,10 +236,21 @@ class Animexin : MainAPI() {
     }
 
     private fun extractGenres(document: Document): List<String> {
-        return document.select(
-            ".genxed a[href], .genre a[href], .genres a[href], a[href*=/genres/], a[href*=/genre/]"
-        ).map { it.text().cleanText() }
-            .filter { it.isNotBlank() }
+        val detailScopes = document.select(
+            ".spe, .infox .spe, .info-content .spe, .infodetail, .tsinfo, .entry-content .spe"
+        )
+        val genreAnchors = if (detailScopes.isNotEmpty()) {
+            detailScopes.select("a[href*=/genres/], a[href*=/genre/]")
+        } else {
+            document.select(".genxed a[href*=/genres/], .genxed a[href*=/genre/], .genre-info a[href*=/genres/], .genre-info a[href*=/genre/]")
+        }
+
+        return genreAnchors.map { it.text().cleanText() }
+            .map { it.removePrefix("Genres").removePrefix("Genre").trim(':', '-', '•', ' ') }
+            .filter { genre ->
+                val lower = genre.lowercase()
+                genre.length >= 2 && lower !in setOf("genre", "genres", "status", "type", "episode", "episodes")
+            }
             .distinct()
     }
 
@@ -274,24 +319,9 @@ class Animexin : MainAPI() {
         metadata: Map<String, String>,
         characters: List<String>
     ): String? {
-        val info = listOfNotNull(
-            metadata.firstValue("status")?.let { "Status: $it" },
-            metadata.firstValue("type")?.let { "Type: $it" },
-            metadata.firstValue("rating")?.let { "Rating: $it" },
-            metadata.firstValue("episode")?.let { "Episode: $it" },
-            metadata.firstValue("released")?.let { "Released: $it" },
-            metadata.firstValue("duration")?.let { "Duration: $it" },
-            metadata.firstValue("studio")?.let { "Studio: $it" },
-            metadata.firstValue("network")?.let { "Network: $it" },
-            metadata.firstValue("country")?.let { "Country: $it" },
-            metadata.firstValue("fansub")?.let { "Fansub: $it" }
-        ).distinct()
-
-        val blocks = mutableListOf<String>()
-        if (info.isNotEmpty()) blocks.add(info.joinToString(" • "))
-        if (characters.isNotEmpty()) blocks.add("Karakter: ${characters.joinToString(", ")}")
-        description?.takeIf { it.isNotBlank() }?.let { blocks.add(it) }
-        return blocks.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+        metadata.isNotEmpty()
+        characters.isNotEmpty()
+        return description?.takeIf { it.isNotBlank() }
     }
 
     private fun Map<String, String>.firstValue(vararg keys: String): String? {
@@ -336,11 +366,11 @@ class Animexin : MainAPI() {
 
         val title = rawTitle
             .replace(Regex("(?i)^episode\\s*[-:]?\\s*${epnum ?: ""}\\s*"), "")
+            .replace(epnum?.let { Regex("^\\s*$it\\s*[.:-]\\s*") } ?: Regex("$^"), "")
             .cleanText()
 
         return when {
             title.isBlank() && epnum != null -> "Episode $epnum"
-            epnum != null && !title.startsWith("$epnum") -> "$epnum. $title"
             else -> title.ifBlank { "Episode" }
         }
     }
