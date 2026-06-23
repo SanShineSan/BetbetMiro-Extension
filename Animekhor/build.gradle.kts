@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 21
+version = 22
 
 cloudstream {
     description = "Anime and Movies"
@@ -7,6 +7,6 @@ cloudstream {
     authors = listOf("BetbetMiro")
     status = 1
     tvTypes = listOf("AnimeMovie","Anime")
-    iconUrl= "https://www.google.com/s2/favicons?domain=animekhor.org&sz=%size%"
+    iconUrl= "https://www.google.com/s2/favicons?domain=animekhor.org&sz=%" + "size%"
     isCrossPlatform = true
 }
