@@ -262,20 +262,55 @@ class AnixCafeProvider : MainAPI() {
     }
 
     private fun Document.extractSynopsis(): String? {
-        val synopsisElement = selectFirst(
-            ".single-info.bixbox .infox .info-content .desc, " +
-                ".single-info .info-content .desc, " +
-                ".bigcontent .info-content .desc, " +
-                ".bigcontent .desc, " +
-                ".entry-content p"
-        ) ?: return null
+        val synopsisSelectors = listOf(
+            ".single-info.bixbox .infox .info-content .desc",
+            ".single-info .info-content .desc",
+            ".bigcontent .info-content .desc",
+            ".bigcontent .desc",
+            ".entry-content p",
+            ".entry-content"
+        )
 
-        synopsisElement.select(".colap, script, style").remove()
-        return synopsisElement.text()
+        return synopsisSelectors
+            .asSequence()
+            .flatMap { selector -> select(selector).asSequence() }
+            .mapNotNull { element -> element.cleanedSynopsisText() }
+            .filterNot { it.isSeoSynopsisTemplate() }
+            .distinct()
+            .firstOrNull()
+    }
+
+    private fun Element.cleanedSynopsisText(): String? {
+        val clone = clone()
+        clone.select(".colap, script, style, iframe, .soraddlx, .dlbox, .download, .mirror, .player-embed, #pembed, .megavid").remove()
+        return clone.text()
             .replace(Regex("""\s+"""), " ")
             .trim()
-            .takeIf { it.isNotBlank() }
-            ?.takeUnless { it.isSeoSynopsisTemplate() }
+            .takeIf { it.length > 30 }
+    }
+
+    private fun String.isSeoSynopsisTemplate(): Boolean {
+        val value = lowercase()
+        val markers = listOf(
+            "tonton streaming",
+            "subtitle bahasa indonesia",
+            "anda juga dapat mengunduh",
+            "streaming online",
+            "berbagai kualitas",
+            "720p",
+            "360p",
+            "240p",
+            "480p",
+            "jangan lupa untuk menonton",
+            "jangan lupa klik tombol like",
+            "selalu update di anixverse"
+        )
+        return markers.count { value.contains(it) } >= 3 ||
+            (
+                value.startsWith("download ") &&
+                    value.contains("tonton ") &&
+                    value.contains("subtitle indonesia")
+            )
     }
 
     private fun getType(typeLabel: String?, url: String): TvType {
@@ -305,15 +340,5 @@ class AnixCafeProvider : MainAPI() {
             .replace(Regex("""(?i)\s+Sub\s+Indo.*$"""), "")
             .replace(Regex("""(?i)\s+Episode\s+\d+(?:\.\d+)?.*$"""), "")
             .trim()
-    }
-
-    private fun String.isSeoSynopsisTemplate(): Boolean {
-        val value = lowercase()
-        return value.contains("tonton streaming") &&
-            value.contains("subtitle bahasa indonesia") &&
-            (
-                value.contains("anda juga dapat mengunduh") ||
-                    value.contains("streaming online dengan berbagai kualitas")
-                )
     }
 }
