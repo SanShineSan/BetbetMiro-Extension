@@ -3,6 +3,7 @@ package com.sad25kag.Animekhor
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -168,6 +169,8 @@ open class Animekhor : MainAPI() {
 
         val description = document.selectFirst("div.entry-content, .entry-content, .contentdeks, .entry-content-single")?.text()?.trim()
         val type = document.selectFirst(".spe, .info-content, .infox, .mindesc")?.text().orEmpty()
+        val tags = parseTags(document)
+        val showStatus = parseShowStatus(type)
 
         val episodes = document.select(
             "div.eplister ul li a[href], div.episodelist ul li a[href], div.bixbox.bxcl ul li a[href], .eplister a[href], .episodelist a[href], .episode-list a[href], .episodelist a[href*='episode'], ul li a[href*='episode'], a[href*='subtitles-english'], a[href*='subtitles-indonesian']"
@@ -175,8 +178,9 @@ open class Animekhor : MainAPI() {
             val href = fixUrl(anchor.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null)
             if (!isEpisodeUrl(href) || !isContentUrl(href)) return@mapNotNull null
             val raw = anchor.text().trim().ifBlank { href.substringAfterLast("/").replace("-", " ") }
+            val episodeName = cleanEpisodeName(raw)
             newEpisode(href) {
-                this.name = raw
+                this.name = episodeName
                 this.episode = parseEpisodeNumber(raw, href)
                 this.posterUrl = fixUrlNull(poster.orEmpty())
             }
@@ -186,13 +190,50 @@ open class Animekhor : MainAPI() {
             newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
                 this.posterUrl = fixUrlNull(poster.orEmpty())
                 this.plot = description
+                if (tags.isNotEmpty()) this.tags = tags
+                showStatus?.let { this.showStatus = it }
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = fixUrlNull(poster.orEmpty())
                 this.plot = description
+                if (tags.isNotEmpty()) this.tags = tags
+                showStatus?.let { this.showStatus = it }
             }
         }
+    }
+
+    private fun parseTags(document: Document): List<String> {
+        return document.select(
+            ".spe a[href*='/genre/'], .spe a[href*='/genres/'], " +
+                ".info-content a[href*='/genre/'], .info-content a[href*='/genres/'], " +
+                ".infox a[href*='/genre/'], .infox a[href*='/genres/'], " +
+                ".mindesc a[href*='/genre/'], .mindesc a[href*='/genres/']"
+        ).map { it.text().trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun parseShowStatus(text: String): ShowStatus? {
+        val rawStatus = Regex("""(?i)\bStatus\s*:\s*([^:]+?)(?:\s+(?:Network|Studio|Released|Duration|Country|Type|Episodes|Producers|Posted by|Released on|Updated on)\s*:|$)""")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            .orEmpty()
+
+        return when {
+            rawStatus.contains("Completed", true) || text.contains("Status: Completed", true) -> ShowStatus.Completed
+            rawStatus.contains("Ongoing", true) || text.contains("Status: Ongoing", true) -> ShowStatus.Ongoing
+            else -> null
+        }
+    }
+
+    private fun cleanEpisodeName(text: String): String {
+        return text
+            .replace(Regex("""^\s*\d+\s+(?=Episode\b)""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
     }
 
     private fun parseEpisodeNumber(text: String, url: String): Int? {
