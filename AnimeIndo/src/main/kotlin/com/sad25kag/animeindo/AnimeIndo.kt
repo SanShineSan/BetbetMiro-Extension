@@ -627,12 +627,17 @@ class AnimeIndo : MainAPI() {
     }
 
     private fun resolveXtwapChildUrl(baseUrl: String, childUrl: String): String {
-        val child = childUrl.trim().replace("&amp;", "&")
+        val child = childUrl.trim()
+            .replace("&amp;", "&")
+            .replace("\\/", "/")
         return when {
             child.startsWith("http", true) -> child
             child.startsWith("//") -> "https:$child"
-            child.startsWith("/") -> "https://xtwap.top$child"
-            else -> "https://xtwap.top/$child"
+            else -> try {
+                java.net.URI(baseUrl).resolve(child).toString()
+            } catch (_: Exception) {
+                if (child.startsWith("/")) "https://xtwap.top$child" else "https://xtwap.top/$child"
+            }
         }
     }
 
@@ -643,6 +648,12 @@ class AnimeIndo : MainAPI() {
             ?.getOrNull(1)
             ?.toIntOrNull()
             ?: Qualities.Unknown.value
+    }
+
+    private fun isXtwapHlsUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains(".m3u8") ||
+            (lower.contains("xtwap", true) && lower.contains("play.php", true))
     }
 
     private suspend fun emitXtwapM3u8Link(
@@ -658,42 +669,52 @@ class AnimeIndo : MainAPI() {
         })
     }
 
+    private suspend fun emitXtwapPlaylist(
+        playlistUrl: String,
+        playlistText: String,
+        refererUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val lines = playlistText.lines().map { it.trim() }.filter { it.isNotBlank() }
+        var emitted = false
+
+        lines.forEachIndexed { index, line ->
+            if (line.startsWith("#EXT-X-STREAM-INF", true)) {
+                val nextLine = lines.drop(index + 1).firstOrNull { !it.startsWith("#") }
+                if (!nextLine.isNullOrBlank() && !nextLine.contains("&ts=", true)) {
+                    val variantUrl = resolveXtwapChildUrl(playlistUrl, nextLine)
+                    val quality = parseQualityFromXtwap("$line $variantUrl")
+                    val label = if (quality > 0) "CEPAT ${quality}p" else "CEPAT"
+                    emitXtwapM3u8Link(label, variantUrl, refererUrl, callback)
+                    emitted = true
+                }
+            }
+        }
+
+        if (!emitted) {
+            val labelQuality = parseQualityFromXtwap(playlistUrl)
+            val label = if (labelQuality > 0) "CEPAT ${labelQuality}p" else "CEPAT"
+            emitXtwapM3u8Link(label, playlistUrl, refererUrl, callback)
+            emitted = true
+        }
+
+        return emitted
+    }
+
     private suspend fun resolveXtwapLink(
         fullUrl: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val playerText = app.get(fullUrl, referer = mainUrl).text
             .replace("\r", "")
+            .replace("\\/", "/")
             .trim()
 
         if (playerText.startsWith("#EXTM3U")) {
-            val lines = playerText.lines().map { it.trim() }.filter { it.isNotBlank() }
-            var emitted = false
-
-            lines.forEachIndexed { index, line ->
-                if (line.startsWith("#EXT-X-STREAM-INF", true)) {
-                    val nextLine = lines.drop(index + 1).firstOrNull { !it.startsWith("#") }
-                    if (!nextLine.isNullOrBlank()) {
-                        val playlistUrl = resolveXtwapChildUrl(fullUrl, nextLine)
-                        val quality = parseQualityFromXtwap("$line $playlistUrl")
-                        val label = if (quality > 0) "CEPAT ${quality}p" else "CEPAT"
-                        emitXtwapM3u8Link(label, playlistUrl, fullUrl, callback)
-                        emitted = true
-                    }
-                }
-            }
-
-            if (!emitted) {
-                val labelQuality = parseQualityFromXtwap(fullUrl)
-                val label = if (labelQuality > 0) "CEPAT ${labelQuality}p" else "CEPAT"
-                emitXtwapM3u8Link(label, fullUrl, fullUrl, callback)
-                emitted = true
-            }
-
-            return emitted
+            return emitXtwapPlaylist(fullUrl, playerText, fullUrl, callback)
         }
 
-        // JWPlayer format: sources:[{"file":"url","type":"..."}] atau "file":"url"
+        // CEPAT/Xtwap flow: JW Player script -> "file":"play.php?n=..." -> HLS/m3u8.
         val filePath = Regex("""(?i)"file"\s*:\s*"([^"]+)"""").find(playerText)
             ?.groupValues
             ?.getOrNull(1)
@@ -707,15 +728,26 @@ class AnimeIndo : MainAPI() {
 
         if (!filePath.isNullOrBlank()) {
             val videoUrl = resolveXtwapChildUrl(fullUrl, filePath)
-            val isM3u8 = videoUrl.contains(".m3u8", true)
-            if (isM3u8) {
+            if (isXtwapHlsUrl(videoUrl)) {
+                val playlistText = runCatching {
+                    app.get(videoUrl, referer = fullUrl).text
+                        .replace("\r", "")
+                        .replace("\\/", "/")
+                        .trim()
+                }.getOrNull()
+
+                if (!playlistText.isNullOrBlank() && playlistText.startsWith("#EXTM3U")) {
+                    return emitXtwapPlaylist(videoUrl, playlistText, fullUrl, callback)
+                }
+
                 emitXtwapM3u8Link("CEPAT", videoUrl, fullUrl, callback)
-            } else {
-                callback(newExtractorLink("AnimeIndo", "CEPAT", videoUrl) {
-                    this.quality = parseQualityFromXtwap("$fullUrl $videoUrl")
-                    this.referer = fullUrl
-                })
+                return true
             }
+
+            callback(newExtractorLink("AnimeIndo", "CEPAT", videoUrl) {
+                this.quality = parseQualityFromXtwap("$fullUrl $videoUrl")
+                this.referer = fullUrl
+            })
             return true
         }
 
