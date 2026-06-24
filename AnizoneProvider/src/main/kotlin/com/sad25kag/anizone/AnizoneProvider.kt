@@ -48,17 +48,11 @@ class AnizoneProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "sort:release-desc" to "Rilis Terbaru",
-        "sort:added-asc" to "Pertama Ditambahkan",
-        "sort:added-desc" to "Terakhir Ditambahkan",
         "type:TV Series" to "TV Series",
         "type:OVA" to "OVA",
         "type:Movie" to "Movie",
         "type:Web" to "Web",
-        "type:TV Special" to "TV Special",
-        "type:Music Video" to "Music Video",
-        "tag-name:Action" to "Aksi",
-        "tag-name:Adventure" to "Petualangan",
-        "tag-name:Comedy" to "Komedi"
+        "type:TV Special" to "TV Special"
     )
 
     private val snapshotAnimeKey = "anime_snapshot_key"
