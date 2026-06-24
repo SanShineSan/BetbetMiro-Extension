@@ -1,5 +1,6 @@
 package com.sad25kag.ayononton
 
+import android.util.Base64
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.Episode
@@ -219,22 +220,44 @@ class AyoNonton : MainAPI() {
 
         val emitted = linkedSetOf<String>()
         var found = false
-        val serverAnchors = Jsoup.parse(serverHtml).select("a[href]").filterNot { anchor ->
-            anchor.attr("rel").contains("download", ignoreCase = true) ||
-                anchor.attr("href").contains("#download", ignoreCase = true)
+        val serverElements = Jsoup.parse(serverHtml, t21).select(
+            "a[href], option[value], [data-iframe], [data-src], [data-url], [data-link], [data-embed], [data-player], [data-file]"
+        ).filterNot { element ->
+            val raw = element.attr("href").ifBlank { element.attr("value") }
+            element.attr("rel").contains("download", ignoreCase = true) ||
+                raw.contains("#download", ignoreCase = true)
         }
 
-        for (anchor in serverAnchors) {
-            val playAdsUrl = anchor.absUrl("href").ifBlank { anchor.attr("href") }
-            if (playAdsUrl.isBlank()) continue
-
-            val serverClass = anchor.classNames().joinToString(" ").uppercase()
-            val serverText = anchor.text().trim()
-            val serverName = serverText.ifBlank { serverClass.ifBlank { "Server" } }
+        for (serverElement in serverElements) {
+            val playAdsUrl = serverElement.serverUrl(t21)
+            val serverClass = serverElement.classNames().joinToString(" ").uppercase()
+            val serverText = serverElement.text().trim()
+            val serverName = serverText
+                .ifBlank { serverElement.attr("title") }
+                .ifBlank { serverElement.attr("alt") }
+                .ifBlank { serverElement.attr("data-server") }
+                .ifBlank { serverClass }
+                .ifBlank { "Server" }
             val iframeType = queryParam(playAdsUrl, "iframe").lowercase()
             val realEndpoint = realPlayerEndpoint(slug, serverClass, iframeType)
 
-            val loaded = when {
+            val dynamicLoaded = resolveServerElement(
+                serverElement = serverElement,
+                baseUrl = t21,
+                serverName = serverName,
+                emitted = emitted,
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+            ) || resolveDynamicPlayerPage(
+                realUrl = realEndpoint,
+                referer = playAdsUrl.ifBlank { detailReferer },
+                serverName = serverName,
+                emitted = emitted,
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+            )
+
+            val loaded = dynamicLoaded || when {
                 serverClass.contains("HYDRAX") || iframeType.contains("hydrax") ->
                     resolveHydrax(slug, realEndpoint, playAdsUrl, serverName, emitted, subtitleCallback, callback)
 
@@ -310,6 +333,162 @@ class AyoNonton : MainAPI() {
             if (document.select("a[href*=/eps/], a[href*=/episode/]").isNotEmpty()) emptyList()
             else emptyList()
         }
+    }
+
+    private suspend fun resolveServerElement(
+        serverElement: Element,
+        baseUrl: String,
+        serverName: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val candidates = collectElementPlayerCandidates(serverElement, baseUrl)
+        return emitOrExtractCandidates(candidates, baseUrl, serverName, emitted, subtitleCallback, callback)
+    }
+
+    private suspend fun resolveDynamicPlayerPage(
+        realUrl: String,
+        referer: String,
+        serverName: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        if (realUrl.isBlank()) return false
+
+        val pageHtml = runCatching {
+            app.get(realUrl, headers = t21Headers(referer), referer = referer).text
+        }.getOrNull().orEmpty()
+
+        if (pageHtml.isBlank()) return false
+
+        collectSubtitlesFromText(realUrl, pageHtml, subtitleCallback)
+        val candidates = collectPlayerCandidates(pageHtml, realUrl)
+        return emitOrExtractCandidates(candidates, realUrl, serverName, emitted, subtitleCallback, callback)
+    }
+
+    private suspend fun emitOrExtractCandidates(
+        candidates: List<String>,
+        referer: String,
+        serverName: String,
+        emitted: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        var found = false
+        val tried = linkedSetOf<String>()
+
+        for (candidate in candidates) {
+            val url = normalizePlayerUrl(candidate, referer)
+            if (url.isBlank() || !tried.add(url) || isBlockedPlayerUrl(url)) continue
+
+            found = if (looksLikeMedia(url)) {
+                emitMedia(name, "$name [$serverName]", url, referer, null, emitted, callback) || found
+            } else {
+                runCatching { loadExtractor(url, referer, subtitleCallback, callback) }.getOrDefault(false) || found
+            }
+        }
+
+        return found
+    }
+
+    private fun collectPlayerCandidates(text: String, baseUrl: String): List<String> {
+        val candidates = linkedSetOf<String>()
+        val document = Jsoup.parse(text, baseUrl)
+
+        document.select("iframe[src], embed[src], video[src], source[src]").forEach { element ->
+            element.absUrl("src").ifBlank { element.attr("src") }.also { candidates.addAll(decodePlayerValue(it, baseUrl)) }
+        }
+
+        document.select(
+            "select option[value], .mobius option[value], .mirror option[value], .server option[value], .player option[value], " +
+                "[data-iframe], [data-src], [data-url], [data-link], [data-embed], [data-player], [data-file]"
+        ).forEach { element ->
+            candidates.addAll(collectElementPlayerCandidates(element, baseUrl))
+        }
+
+        candidates.addAll(extractPlayerUrls(text, baseUrl))
+
+        return candidates
+            .map { normalizePlayerUrl(it, baseUrl) }
+            .filter { it.isNotBlank() && looksLikePlayerCandidate(it) }
+            .distinct()
+    }
+
+    private fun collectElementPlayerCandidates(element: Element, baseUrl: String): List<String> {
+        val attrs = listOf(
+            "value",
+            "data-iframe",
+            "data-src",
+            "data-url",
+            "data-link",
+            "data-embed",
+            "data-player",
+            "data-file",
+            "href",
+            "src",
+        )
+
+        return attrs
+            .mapNotNull { attr -> element.attr(attr).takeIf { it.isNotBlank() } }
+            .flatMap { value -> decodePlayerValue(value, baseUrl) }
+            .map { normalizePlayerUrl(it, baseUrl) }
+            .filter { it.isNotBlank() && looksLikePlayerCandidate(it) }
+            .distinct()
+    }
+
+    private fun decodePlayerValue(value: String, baseUrl: String): List<String> {
+        if (value.isBlank()) return emptyList()
+
+        val variants = linkedSetOf(cleanEncodedText(value))
+        repeat(3) {
+            val snapshot = variants.toList()
+            snapshot.forEach { item ->
+                cleanEncodedText(item).takeIf { it.isNotBlank() }?.let(variants::add)
+                urlDecode(item).takeIf { it.isNotBlank() }?.let(variants::add)
+                base64Decode(item).takeIf { it.isNotBlank() }?.let(variants::add)
+            }
+        }
+
+        val candidates = linkedSetOf<String>()
+        variants.forEach { decoded ->
+            val cleaned = cleanEncodedText(decoded)
+            if (cleaned.startsWith("http", ignoreCase = true) || cleaned.startsWith("//") || cleaned.startsWith("/")) {
+                candidates.add(cleaned)
+            }
+            candidates.addAll(extractPlayerUrls(cleaned, baseUrl))
+        }
+
+        return candidates.toList()
+    }
+
+    private fun extractPlayerUrls(text: String, baseUrl: String): List<String> {
+        val normalized = cleanEncodedText(text)
+        val candidates = linkedSetOf<String>()
+
+        Jsoup.parse(normalized, baseUrl).select("iframe[src], embed[src], video[src], source[src], a[href]").forEach { element ->
+            val url = element.absUrl("src")
+                .ifBlank { element.absUrl("href") }
+                .ifBlank { element.attr("src") }
+                .ifBlank { element.attr("href") }
+            if (url.isNotBlank()) candidates.add(url)
+        }
+
+        Regex("""(?i)(?:src|data-src|data-iframe|data-url|data-link|data-embed|data-player|file)\s*[:=]\s*["']([^"']+)["']""")
+            .findAll(normalized)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .forEach(candidates::add)
+
+        Regex("""https?:\\?/\\?/[^'"<>\s)]+""", RegexOption.IGNORE_CASE)
+            .findAll(normalized)
+            .map { it.value.replace("\\/", "/") }
+            .forEach(candidates::add)
+
+        return candidates
+            .map { normalizePlayerUrl(it, baseUrl) }
+            .filter { it.isNotBlank() && looksLikePlayerCandidate(it) }
+            .distinct()
     }
 
     private suspend fun resolveP2P540(
@@ -570,6 +749,16 @@ class AyoNonton : MainAPI() {
         }
     }
 
+    private fun Element.serverUrl(baseUrl: String): String {
+        val raw = absUrl("href")
+            .ifBlank { attr("href") }
+            .ifBlank { attr("data-url") }
+            .ifBlank { attr("data-link") }
+            .ifBlank { attr("data-iframe") }
+            .ifBlank { attr("value") }
+        return normalizePlayerUrl(raw, baseUrl)
+    }
+
     private fun pagedUrl(url: String, page: Int): String {
         if (page <= 1) return url
         return if (url.contains("?")) {
@@ -659,11 +848,105 @@ class AyoNonton : MainAPI() {
             ?: ""
     }
 
+    private fun normalizePlayerUrl(url: String, baseUrl: String): String {
+        val cleaned = cleanEncodedText(url).trim()
+        if (cleaned.isBlank()) return ""
+
+        return when {
+            cleaned.startsWith("//") -> "https:$cleaned"
+            cleaned.startsWith("http://", ignoreCase = true) || cleaned.startsWith("https://", ignoreCase = true) -> cleaned
+            cleaned.startsWith("/") -> originOf(baseUrl).trimEnd('/') + cleaned
+            else -> Jsoup.parse("<a href=\"$cleaned\"></a>", baseUrl)
+                .selectFirst("a[href]")
+                ?.absUrl("href")
+                ?.takeIf { it.isNotBlank() }
+                ?: cleaned
+        }.replace(" ", "%20")
+    }
+
+    private fun cleanEncodedText(value: String): String {
+        return value
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .trim()
+    }
+
+    private fun urlDecode(value: String): String {
+        return runCatching { URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
+    }
+
+    private fun base64Decode(value: String): String {
+        val compact = value.trim()
+            .removePrefix("data:text/html;base64,")
+            .removePrefix("base64,")
+            .replace("\n", "")
+            .replace("\r", "")
+            .replace(" ", "")
+
+        if (compact.length < 16 || compact.startsWith("data:", ignoreCase = true)) return ""
+        if (!compact.matches(Regex("^[A-Za-z0-9_+/=-]+$"))) return ""
+
+        val normalized = compact.replace('-', '+').replace('_', '/')
+        val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+        val decoded = runCatching { String(Base64.decode(padded, Base64.DEFAULT), Charsets.UTF_8) }.getOrNull().orEmpty()
+
+        return decoded.takeIf { text ->
+            text.contains("<iframe", ignoreCase = true) ||
+                text.contains("http", ignoreCase = true) ||
+                text.contains("src=", ignoreCase = true)
+        }.orEmpty()
+    }
+
     private fun normalizeMediaUrl(url: String): String {
         return url
             .replace("\\/", "/")
             .replace("&amp;", "&")
             .trim()
+    }
+
+    private fun looksLikePlayerCandidate(url: String): Boolean {
+        val low = url.lowercase()
+        if (isBlockedPlayerUrl(url)) return false
+        if (looksLikeMedia(url)) return true
+
+        return low.contains("/embed/") ||
+            low.contains("embed") ||
+            low.contains("videoembed") ||
+            low.contains("/player") ||
+            low.contains("player") ||
+            low.contains("playhydrax") ||
+            low.contains("dailymotion") ||
+            low.contains("ok.ru") ||
+            low.contains("rumble") ||
+            low.contains("dood") ||
+            low.contains("filemoon") ||
+            low.contains("mega.nz") ||
+            low.contains("stream")
+    }
+
+    private fun isBlockedPlayerUrl(url: String): Boolean {
+        val low = url.lowercase()
+        return looksLikeAdUrl(url) ||
+            low.contains("play-ads.php") ||
+            low.contains("disable.html") ||
+            low.contains("loading.mp4") ||
+            low.contains("/404.mp4") ||
+            low.contains("/raw/main/loading") ||
+            Regex("""\.(?:js|css|jpg|jpeg|png|gif|webp|svg|ico)(?:[?#/]|$)""").containsMatchIn(low) ||
+            low.contains("/wp-content/uploads/") ||
+            low.contains("vast") ||
+            low.contains("histats") ||
+            low.contains("cloudflareinsights") ||
+            low.contains("beacon") ||
+            low.contains("ogp.me") ||
+            low.contains("signal.") ||
+            low.contains("terbit21.com/") ||
+            low.contains("playhydrax.com/map")
     }
 
     private fun looksLikeMedia(url: String): Boolean {
