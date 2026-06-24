@@ -1,20 +1,13 @@
-version = 1
+plugins {
+    id("com.lagradost.cloudstream3")
+}
 
 cloudstream {
-    description = "Moenime provider untuk anime subtitle Indonesia dari moenime dengan resolver player dinamis."
+    authors = listOf("BetbetMiro")
     language = "id"
-    authors = listOf("sad25kag")
-
-    /**
-     * Status int:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     */
-    status = 1
-
+    name = "Moenime"
+    version = 1
+    status = 3 // Working
     tvTypes = listOf("Anime", "AnimeMovie", "OVA")
-    iconUrl = "https://www.google.com/s2/favicons?domain=moenime.com&sz=%size%"
-    isCrossPlatform = false
+    iconUrl = "https://moenime.com/favicon.ico" // or appropriate
 }
