@@ -191,7 +191,6 @@ class Moenime : MainAPI() {
         return emitted.isNotEmpty()
     }
 
-    // ... (rest of the helper functions as per original)
     private fun buildPageUrl(path: String, page: Int): String {
         val cleanPath = path.trim().trimStart('/')
         if (cleanPath.isBlank()) return if (page <= 1) "$mainUrl/" else "$mainUrl/page/$page/"
@@ -282,7 +281,6 @@ class Moenime : MainAPI() {
         return candidates
     }
 
-    // Additional helper methods (add as needed or they may be in utils)
     private fun String.addCandidateValue(candidates: MutableSet<String>, referer: String) {
         val value = trim()
         if (value.isBlank()) return
@@ -290,7 +288,7 @@ class Moenime : MainAPI() {
         if (absolute.isPotentialPlayer()) candidates.add(value)
     }
 
-    private fun String.isPotentialPlayer(): Boolean = this.contains(".mp4") || this.contains(".m3u8") || this.contains("maodrive") || this.contains("player") 
+    private fun String.isPotentialPlayer(): Boolean = this.contains(".mp4") || this.contains(".m3u8") || this.contains("maodrive") || this.contains("player")
 
     private fun String.isMaonimeContentUrl(): Boolean = this.contains("moenime.com", true) || this.contains("/anime/", true) || this.contains("/episode/", true)
     private fun String.isMaonimeEpisodeUrl(): Boolean = this.contains("/episode/", true) || this.contains("ep=", true)
@@ -305,7 +303,8 @@ class Moenime : MainAPI() {
 
     private fun cleanTitle(title: String?): String? {
         return title?.replace(Regex("""\s*\(Subtitle Indonesia\)|\s*Subtitle Indonesia|\s*Sub Indo""", RegexOption.IGNORE_CASE), "")
-            ?.trim()
+            ?.cleanText()
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun hostLabel(url: String): String? {
@@ -333,7 +332,6 @@ class Moenime : MainAPI() {
     }
 
     private suspend fun resolveMaodrive(playerUrl: String, pageReferer: String, emitted: MutableSet<String>, callback: (ExtractorLink) -> Unit) {
-        // Simplified Maodrive resolver
         runCatching {
             val response = app.get(playerUrl, referer = pageReferer).text
             val directMatch = Regex("""['"](https?://[^'"]+\.mp4[^'"]*)['"]""").find(response) ?: Regex("""file['"]?\s*:\s*['"]([^'"]+)""").find(response)
@@ -348,10 +346,45 @@ class Moenime : MainAPI() {
         }
     }
 
-    // Placeholder for other functions if needed
-    private fun String.decodeUrlText(): String = URLDecoder.decode(this.replace("+", " "), "UTF-8")
-    private fun String.toAbsoluteUrl(base: String): String? = runCatching { fixUrl(base) }.getOrNull()
-    private fun getQualityFromName(name: String): Qualities = Qualities.Unknown
+    private fun String.cleanText(): String = replace(Regex("""\s+"""), " ").trim()
+
+    private fun Element.imageUrl(base: String): String? {
+        listOf("data-src", "data-lazy-src", "data-original", "data-image", "data-img", "src", "poster").forEach { attr ->
+            val value = attr(attr).trim()
+            if (value.isNotBlank()) return value.toAbsoluteUrl(base)
+        }
+        listOf("srcset", "data-srcset").forEach { attr ->
+            attr(attr)
+                .split(',')
+                .map { it.trim().substringBefore(' ').trim() }
+                .firstOrNull { it.isNotBlank() }
+                ?.let { return it.toAbsoluteUrl(base) }
+        }
+        return null
+    }
+
+    private fun String.decodeUrlText(): String = runCatching {
+        URLDecoder.decode(this.replace("+", " "), "UTF-8")
+    }.getOrDefault(this)
+
+    private fun String.toAbsoluteUrl(): String? = toAbsoluteUrl(mainUrl)
+
+    private fun String.toAbsoluteUrl(base: String): String? {
+        val value = decodeUrlText().trim()
+        if (value.isBlank()) return null
+        return when {
+            value.startsWith("http://", true) || value.startsWith("https://", true) -> value
+            value.startsWith("//") -> "https:$value"
+            value.startsWith("/") -> mainUrl.trimEnd('/') + value
+            else -> base.trimEnd('/').substringBeforeLast('/', mainUrl) + "/" + value
+        }
+    }
+
+    private fun getQualityFromName(name: String): Int {
+        return Regex("""(2160|1440|1080|720|480|360|240)""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: Qualities.Unknown.value
+    }
+
     private fun getAndUnpack(html: String): String = ""
     private fun collectUrlsFromText(text: String, base: String): List<String> = emptyList()
     private fun String.maodriveOrigin(): String? = maodriveUrl
