@@ -14,6 +14,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.json.JSONObject
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 import kotlin.random.Random
@@ -57,30 +58,80 @@ open class AnixCafeGenericExtractor : ExtractorApi() {
 object AnixCafeExtractorHelper {
     private const val MAX_TEXT_BODY_BYTES = 5_000_000L
 
-    fun decodeMirror(value: String): List<String> {
+    fun decodeMirror(value: String): List<String> = decodeServerUrls(value)
+
+    fun decodeServerUrls(value: String): List<String> {
         if (value.isBlank()) return emptyList()
 
-        val decoded = runCatching {
-            String(Base64.getDecoder().decode(value.trim()))
-        }.getOrElse { value }
+        val decodedValues = linkedSetOf<String>()
+        val cleanValue = value.htmlUnescape().cleanEscaped()
+        if (cleanValue.isBlank()) return emptyList()
 
-        val document = Jsoup.parse(decoded)
-        val links = linkedSetOf<String>()
+        decodedValues.add(cleanValue)
+        runCatching { URLDecoder.decode(cleanValue, "UTF-8") }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { decodedValues.add(it.htmlUnescape().cleanEscaped()) }
 
-        document.select("iframe[src], iframe[data-src], source[src], video[src], a[href]").forEach { element ->
-            element.attr("data-src")
-                .ifBlank { element.attr("src") }
-                .ifBlank { element.attr("href") }
-                .takeIf { it.isNotBlank() }
-                ?.let(links::add)
+        decodeBase64Value(cleanValue)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { decodedValues.add(it.htmlUnescape().cleanEscaped()) }
+
+        val results = linkedSetOf<String>()
+        decodedValues.forEach { decoded ->
+            Jsoup.parse(decoded).select("iframe[src], iframe[data-src], embed[src], source[src], video[src], a[href]").forEach { element ->
+                element.attr("data-src")
+                    .ifBlank { element.attr("src") }
+                    .ifBlank { element.attr("href") }
+                    .takeIf { it.isNotBlank() }
+                    ?.let(results::add)
+            }
+
+            extractPlaybackCandidates(decoded, "https://anixcafe.com/").forEach(results::add)
+
+            if (results.isEmpty() && !decoded.contains("<", true)) {
+                results.add(decoded)
+            }
         }
 
-        Regex("""https?://[^\s"'<>\\]+""", RegexOption.IGNORE_CASE)
-            .findAll(decoded)
-            .map { it.value.cleanEscaped() }
-            .forEach(links::add)
+        return results.toList()
+    }
 
-        return links.toList()
+    fun extractPlaybackCandidates(text: String, baseUrl: String): Set<String> {
+        if (text.isBlank()) return emptySet()
+
+        val results = linkedSetOf<String>()
+        val clean = text.cleanEscaped()
+
+        Jsoup.parse(clean, baseUrl).select("iframe[src], iframe[data-src], embed[src], source[src], video[src], a[href]").forEach { element ->
+            element.attr("data-src")
+                .ifBlank { element.attr("abs:src") }
+                .ifBlank { element.attr("src") }
+                .ifBlank { element.attr("abs:href") }
+                .ifBlank { element.attr("href") }
+                .takeIf { it.isNotBlank() }
+                ?.let { normalizeUrl(it, baseUrl) }
+                ?.takeIf { shouldKeepCandidate(it) }
+                ?.let(results::add)
+        }
+
+        val patterns = listOf(
+            Regex("""https?://[^\s"'<>\\]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'<>\\\s]*)?""", RegexOption.IGNORE_CASE),
+            Regex("""https?://[^\s"'<>\\]+?(?:ok\.ru|okru|odnoklassniki|playmogo|dailymotion|geo\.dailymotion|dai\.ly|videoplayer\.vip|dood|streamwish|wishfast|filemoon|vidhide|vidguard|bembed|listeamed|vgfplay|streamtape|mp4upload|mixdrop|voe|streamruby|streamsb|sbembed|sbrapid|playersb|fembed|femax|abyss|lulustream|lulu|drive\.google|pcloud|terabox|pixeldrain)[^\s"'<>\\]*""", RegexOption.IGNORE_CASE),
+            Regex("""(?:file|src|source|video_url|videoUrl|play_url|playUrl|hls|url|embed|embedUrl|embed_url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""["']((?:/|//)[^"']+\.(?:m3u8|mp4|webm|txt)[^"']*)["']""", RegexOption.IGNORE_CASE),
+        )
+
+        patterns.forEach { pattern ->
+            pattern.findAll(clean).forEach { match ->
+                val raw = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
+                normalizeUrl(raw.replace(".txt", ".m3u8"), baseUrl)
+                    ?.takeIf { shouldKeepCandidate(it) }
+                    ?.let(results::add)
+            }
+        }
+
+        return results
     }
 
     suspend fun resolveLink(
@@ -103,16 +154,12 @@ object AnixCafeExtractorHelper {
             return
         }
 
-        if (isDailymotionCandidate(fixedUrl, label)) {
-            if (resolveDailymotion(fixedUrl, label, referer, callback)) return
-            return
-        }
-
-        if (resolvePlaymogo(fixedUrl, label, referer, callback)) return
-
-        if (useGenericExtractor && !isInternalPlayerCandidate(fixedUrl, label)) {
+        if (useGenericExtractor) {
             runCatching { loadExtractor(fixedUrl, referer, subtitleCallback, callback) }
         }
+
+        if (resolveDailymotion(fixedUrl, label, referer, callback)) return
+        if (resolvePlaymogo(fixedUrl, label, referer, callback)) return
 
         if (depth >= 2) return
 
@@ -128,36 +175,22 @@ object AnixCafeExtractorHelper {
         val contentType = response.headers["Content-Type"].orEmpty().lowercase()
         val contentLength = response.headers["Content-Length"]?.toLongOrNull()
 
-        if (isBinaryResponse(contentType, contentLength)) {
-            return
-        }
+        if (isBinaryResponse(contentType, contentLength)) return
 
         val body = runCatching { response.text.cleanEscaped() }.getOrNull() ?: return
         val nested = linkedSetOf<String>()
 
-        nested.addAll(extractMediaCandidates(body, fixedUrl))
+        nested.addAll(extractPlaybackCandidates(body, fixedUrl))
         extractSubtitles(body, fixedUrl, subtitleCallback)
-
-        Jsoup.parse(body, fixedUrl).select("source[src], video[src], iframe[src], iframe[data-src], a[href]").forEach { element ->
-            element.attr("data-src")
-                .ifBlank { element.attr("abs:src") }
-                .ifBlank { element.attr("src") }
-                .ifBlank { element.attr("abs:href") }
-                .ifBlank { element.attr("href") }
-                .takeIf { it.isNotBlank() }
-                ?.let { normalizeUrl(it, fixedUrl) }
-                ?.takeIf { shouldKeepCandidate(it) }
-                ?.let(nested::add)
-        }
 
         Jsoup.parse(body, fixedUrl).select("script").forEach { script ->
             val data = script.data()
-            nested.addAll(extractMediaCandidates(data, fixedUrl))
+            nested.addAll(extractPlaybackCandidates(data, fixedUrl))
             if (data.contains("eval(function(p,a,c,k,e,d)", true)) {
                 runCatching { getAndUnpack(data) }
                     .getOrNull()
                     ?.let { unpacked ->
-                        nested.addAll(extractMediaCandidates(unpacked.cleanEscaped(), fixedUrl))
+                        nested.addAll(extractPlaybackCandidates(unpacked.cleanEscaped(), fixedUrl))
                         extractSubtitles(unpacked, fixedUrl, subtitleCallback)
                     }
             }
@@ -179,6 +212,7 @@ object AnixCafeExtractorHelper {
 
     fun normalizeUrl(raw: String, baseUrl: String): String? {
         val clean = raw.cleanEscaped()
+            .trim('"', '\'', ' ', '\n', '\r', '\t')
             .takeIf {
                 it.isNotBlank() &&
                     !it.startsWith("javascript:", true) &&
@@ -199,6 +233,9 @@ object AnixCafeExtractorHelper {
             lower.contains("histats.com") ||
             lower.contains("doubleclick") ||
             lower.contains("googlesyndication") ||
+            lower.contains("analytics") ||
+            lower.contains("tracking") ||
+            lower.contains("popads") ||
             lower.contains("/ads/") ||
             lower.contains("banner")
     }
@@ -211,7 +248,6 @@ object AnixCafeExtractorHelper {
         val value = "$url $label".lowercase()
         return value.contains("ok.ru") ||
             value.contains("okru") ||
-            value.contains("okrusl") ||
             value.contains("odnoklassniki")
     }
 
@@ -220,6 +256,10 @@ object AnixCafeExtractorHelper {
         return value.contains("youtube.com") ||
             value.contains("youtu.be") ||
             value.contains("trailer") ||
+            value.contains("facebook.com") ||
+            value.contains("twitter.com") ||
+            value.contains("telegram") ||
+            value.contains("whatsapp") ||
             value.contains("/ads/") ||
             value.contains("doubleclick") ||
             value.contains("googlesyndication")
@@ -227,7 +267,7 @@ object AnixCafeExtractorHelper {
 
     fun isDailymotionCandidate(url: String, label: String = ""): Boolean {
         val value = "$url $label".lowercase()
-        return value.contains("dailymotion.com") || value.contains("dai.ly")
+        return value.contains("dailymotion.com") || value.contains("geo.dailymotion.com") || value.contains("dai.ly")
     }
 
     fun isInternalPlayerCandidate(url: String, label: String = ""): Boolean {
@@ -242,15 +282,17 @@ object AnixCafeExtractorHelper {
         val value = "$url $label".lowercase()
         return when {
             isPreferredOkRuCandidate(url, label) -> 0
-            isDirectMedia(url) -> 1
-            value.contains("dood") -> 2
-            isDailymotionCandidate(url, label) -> 3
-            isInternalPlayerCandidate(url, label) -> 4
-            value.contains("streamruby") -> 5
-            value.contains("streamsb") || value.contains("sbembed") || value.contains("sbrapid") || value.contains("playersb") -> 6
-            value.contains("abyss") || value.contains("fembed") || value.contains("femax") || value.contains("lulustream") -> 7
-            value.contains("drive.google") || value.contains("pcloud") || value.contains("terabox") -> 8
-            else -> 9
+            isDailymotionCandidate(url, label) -> 1
+            isDirectMedia(url) -> 2
+            value.contains("vidguard") || value.contains("bembed") || value.contains("listeamed") || value.contains("vgfplay") -> 3
+            value.contains("dood") -> 4
+            isInternalPlayerCandidate(url, label) -> 5
+            value.contains("playmogo") -> 6
+            value.contains("streamruby") -> 7
+            value.contains("streamsb") || value.contains("sbembed") || value.contains("sbrapid") || value.contains("playersb") -> 8
+            value.contains("abyss") || value.contains("fembed") || value.contains("femax") || value.contains("lulustream") -> 9
+            value.contains("drive.google") || value.contains("pcloud") || value.contains("terabox") || value.contains("pixeldrain") -> 10
+            else -> 20
         }
     }
 
@@ -260,6 +302,7 @@ object AnixCafeExtractorHelper {
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        if (!isDailymotionCandidate(url, label)) return false
         val videoId = extractDailymotionId(url) ?: return false
         val encodedReferer = URLEncoder.encode(referer, "UTF-8")
         val metaUrl = "https://geo.dailymotion.com/video/$videoId.json?legacy=true&embedder=$encodedReferer&geo=1&player-id=xir9o&publisher-id=x2fn6ma&locale=id"
@@ -391,12 +434,13 @@ object AnixCafeExtractorHelper {
     }
 
     private fun extractDailymotionId(url: String): String? {
+        val decoded = runCatching { URLDecoder.decode(url, "UTF-8") }.getOrDefault(url)
         return Regex("""(?:video=|/video/|/embed/video/)([A-Za-z0-9]+)""")
-            .find(url)
+            .find(decoded)
             ?.groupValues
             ?.getOrNull(1)
             ?: Regex("""dai\.ly/([A-Za-z0-9]+)""")
-                .find(url)
+                .find(decoded)
                 ?.groupValues
                 ?.getOrNull(1)
     }
@@ -430,31 +474,6 @@ object AnixCafeExtractorHelper {
                 this.headers = mapOf("Referer" to referer)
             }
         )
-    }
-
-    private fun extractMediaCandidates(text: String, baseUrl: String): Set<String> {
-        if (text.isBlank()) return emptySet()
-
-        val results = linkedSetOf<String>()
-        val clean = text.cleanEscaped()
-
-        val patterns = listOf(
-            Regex("""https?://[^\s"'<>\\]+?\.(?:m3u8|mp4|webm|txt)(?:\?[^"'<>\\\s]*)?""", RegexOption.IGNORE_CASE),
-            Regex("""https?://[^\s"'<>\\]+?(?:ok\.ru|okru|odnoklassniki|playmogo|dailymotion|dai\.ly|videoplayer\.vip|dood|streamwish|wishfast|filemoon|vidhide|vidguard|streamtape|mp4upload|mixdrop|voe|streamruby|streamsb|sbembed|sbrapid|playersb|fembed|femax|abyss|lulustream|lulu|drive\.google|pcloud|terabox)[^\s"'<>\\]*""", RegexOption.IGNORE_CASE),
-            Regex("""(?:file|src|source|video_url|videoUrl|play_url|playUrl|hls|url)\s*[:=]\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""["']((?:/|//)[^"']+\.(?:m3u8|mp4|webm|txt)[^"']*)["']""", RegexOption.IGNORE_CASE),
-        )
-
-        patterns.forEach { pattern ->
-            pattern.findAll(clean).forEach { match ->
-                val raw = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: match.value
-                normalizeUrl(raw.replace(".txt", ".m3u8"), baseUrl)
-                    ?.takeIf { shouldKeepCandidate(it) }
-                    ?.let(results::add)
-            }
-        }
-
-        return results
     }
 
     private suspend fun extractSubtitles(
@@ -492,6 +511,9 @@ object AnixCafeExtractorHelper {
                     lower.contains("filemoon") ||
                     lower.contains("vidhide") ||
                     lower.contains("vidguard") ||
+                    lower.contains("bembed") ||
+                    lower.contains("listeamed") ||
+                    lower.contains("vgfplay") ||
                     lower.contains("streamtape") ||
                     lower.contains("mp4upload") ||
                     lower.contains("mixdrop") ||
@@ -508,7 +530,8 @@ object AnixCafeExtractorHelper {
                     lower.contains("lulu") ||
                     lower.contains("drive.google") ||
                     lower.contains("pcloud") ||
-                    lower.contains("terabox")
+                    lower.contains("terabox") ||
+                    lower.contains("pixeldrain")
                 )
     }
 
@@ -530,6 +553,23 @@ object AnixCafeExtractorHelper {
             (contentLength != null && contentLength > MAX_TEXT_BODY_BYTES)
     }
 
+    private fun decodeBase64Value(value: String): String? {
+        val normalized = value.trim()
+        if (normalized.length < 8) return null
+
+        return runCatching { String(Base64.getDecoder().decode(normalized)) }.getOrNull()
+            ?: runCatching {
+                val fixed = normalized
+                    .replace('-', '+')
+                    .replace('_', '/')
+                    .let { raw ->
+                        val padding = (4 - raw.length % 4) % 4
+                        raw + "=".repeat(padding)
+                    }
+                String(Base64.getDecoder().decode(fixed))
+            }.getOrNull()
+    }
+
     private fun qualityFromUrl(url: String): Int {
         val lower = url.lowercase()
         return when {
@@ -543,9 +583,22 @@ object AnixCafeExtractorHelper {
     }
 
     private fun String.cleanEscaped(): String {
-        return replace("\\/", "/")
+        return htmlUnescape()
+            .replace("\\/", "/")
+            .replace("\\u002F", "/")
+            .replace("\\u003A", ":")
+            .replace("\\u003D", "=")
             .replace("\\u0026", "&")
-            .replace("&amp;", "&")
+            .replace("\\\"", "\"")
             .trim()
+    }
+
+    private fun String.htmlUnescape(): String {
+        return replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
     }
 }

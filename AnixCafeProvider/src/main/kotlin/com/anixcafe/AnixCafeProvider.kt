@@ -116,35 +116,60 @@ class AnixCafeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, referer = "$mainUrl/").document
+        val episodeUrl = fixUrl(data)
+        val document = app.get(episodeUrl, referer = "$mainUrl/").document
         val visited = linkedSetOf<String>()
         val candidates = linkedSetOf<Pair<String, String>>()
-        var emitted = false
+        val emittedUrls = linkedSetOf<String>()
 
         val safeCallback: (ExtractorLink) -> Unit = { link ->
-            emitted = true
-            callback(link)
+            if (emittedUrls.add(link.url)) callback(link)
         }
 
-        document.select("#pembed iframe[src], .player-embed iframe[src], .megavid iframe[src]").forEach { iframe ->
-            iframe.attr("abs:src").ifBlank { iframe.attr("src") }
-                .takeIf { it.isNotBlank() }
-                ?.let { candidates.add(it to "Default") }
-        }
-
-        document.select("select.mirror option[value]").forEach { option ->
-            val label = option.text().trim().ifBlank { "Mirror" }
-            AnixCafeExtractorHelper.decodeMirror(option.attr("value")).forEach { mirror ->
-                candidates.add(mirror to label)
+        fun addCandidate(raw: String?, label: String = "AnixCafe") {
+            if (raw.isNullOrBlank()) return
+            AnixCafeExtractorHelper.decodeServerUrls(raw).forEach { candidate ->
+                candidates.add(candidate to label)
             }
         }
+
+        document.select("#pembed iframe[src], .player-embed iframe[src], .video-content iframe[src], .megavid iframe[src], iframe[src], iframe[data-src], embed[src], source[src], video[src]").forEach { element ->
+            val label = element.attr("title").ifBlank { element.attr("aria-label") }.ifBlank { "AnixCafe" }
+            addCandidate(
+                element.attr("data-src")
+                    .ifBlank { element.attr("abs:src") }
+                    .ifBlank { element.attr("src") },
+                label
+            )
+        }
+
+        document.select(".mobius option[value], select.mirror option[value], .mirror option[value], select option[value], option[value]").forEach { option ->
+            val label = option.text().trim().ifBlank { "Mirror" }
+            addCandidate(option.attr("value"), label)
+        }
+
+        document.select("[data-src], [data-lazy-src], [data-url], [data-link], [data-video], [data-embed], [data-player], [data-file]").forEach { element ->
+            val label = element.text().trim().ifBlank { element.attr("title") }.ifBlank { "AnixCafe" }
+            addCandidate(element.attr("data-src"), label)
+            addCandidate(element.attr("data-lazy-src"), label)
+            addCandidate(element.attr("data-url"), label)
+            addCandidate(element.attr("data-link"), label)
+            addCandidate(element.attr("data-video"), label)
+            addCandidate(element.attr("data-embed"), label)
+            addCandidate(element.attr("data-player"), label)
+            addCandidate(element.attr("data-file"), label)
+        }
+
+        AnixCafeExtractorHelper.extractPlaybackCandidates(document.html(), episodeUrl)
+            .forEach { url -> candidates.add(url to "Script") }
 
         val normalizedCandidates = candidates
             .mapNotNull { (url, label) ->
-                val fixed = AnixCafeExtractorHelper.normalizeUrl(url, data) ?: return@mapNotNull null
+                val fixed = AnixCafeExtractorHelper.normalizeUrl(url, episodeUrl) ?: return@mapNotNull null
                 fixed to label
             }
             .filterNot { (url, _) -> AnixCafeExtractorHelper.isNoiseFrame(url) }
+            .filterNot { (url, label) -> AnixCafeExtractorHelper.isKnownBrokenCandidate(url, label) }
             .distinctBy { it.first }
             .sortedWith(
                 compareBy<Pair<String, String>> { (url, label) ->
@@ -153,25 +178,30 @@ class AnixCafeProvider : MainAPI() {
             )
 
         for ((url, label) in normalizedCandidates) {
-            AnixCafeExtractorHelper.resolveLink(
-                url = url,
-                label = label,
-                referer = data,
-                visited = visited,
-                subtitleCallback = subtitleCallback,
-                callback = safeCallback
-            )
+            val before = emittedUrls.size
+            runCatching { loadExtractor(url, episodeUrl, subtitleCallback, safeCallback) }
+
+            if (emittedUrls.size == before) {
+                AnixCafeExtractorHelper.resolveLink(
+                    url = url,
+                    label = label,
+                    referer = episodeUrl,
+                    visited = visited,
+                    subtitleCallback = subtitleCallback,
+                    callback = safeCallback
+                )
+            }
         }
 
-        if (!emitted) {
-            document.select(".soraddlx a[href], .dlbox a[href], .download a[href], a[href*='mirrored.to'], a[href*='terabox'], a[href*='drive.google'], a[href*='pcloud']")
+        if (emittedUrls.isEmpty()) {
+            document.select(".soraddlx a[href], .dlbox a[href], .download a[href], .entry-content a[href], a[href*='mirrored.to'], a[href*='terabox'], a[href*='drive.google'], a[href*='pcloud'], a[href*='pixeldrain']")
                 .mapNotNull { it.attr("abs:href").ifBlank { it.attr("href") }.takeIf(String::isNotBlank) }
                 .distinct()
                 .forEach { url ->
                     AnixCafeExtractorHelper.resolveLink(
                         url = url,
                         label = "Download",
-                        referer = data,
+                        referer = episodeUrl,
                         visited = visited,
                         subtitleCallback = subtitleCallback,
                         callback = safeCallback
@@ -179,7 +209,7 @@ class AnixCafeProvider : MainAPI() {
                 }
         }
 
-        return emitted
+        return emittedUrls.isNotEmpty()
     }
 
     private fun Element.toSearchResult(): SearchResponse? {

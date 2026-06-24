@@ -10,5 +10,14 @@ class AnixCafeProviderPlugin : Plugin() {
         registerMainAPI(AnixCafeProvider())
         registerExtractorAPI(Playmogo())
         registerExtractorAPI(AnixCafeVideoplayer())
+        registerExtractorAPI(AnixCafeDailymotion())
+        registerExtractorAPI(AnixCafeGeoDailymotion())
+        registerExtractorAPI(AnixCafeOdnoklassniki())
+        registerExtractorAPI(AnixCafeOkRuSSL())
+        registerExtractorAPI(AnixCafeOkRuHTTP())
+        registerExtractorAPI(AnixCafeVidguard())
+        registerExtractorAPI(AnixCafeVidguardBembed())
+        registerExtractorAPI(AnixCafeVidguardListeamed())
+        registerExtractorAPI(AnixCafeVidguardVgfplay())
     }
 }
