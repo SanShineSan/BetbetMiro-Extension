@@ -25,7 +25,6 @@ class AnixCafeProvider : MainAPI() {
         "$mainUrl/anime/?order=popular&status=&type=&page=%d" to "Populer",
         "$mainUrl/anime/?order=update&status=ongoing&type=&page=%d" to "Ongoing",
         "$mainUrl/anime/?order=update&status=completed&type=&page=%d" to "Completed",
-        "$mainUrl/anime/?order=update&status=&type=movie&page=%d" to "Movie",
         "$mainUrl/anime/?order=update&status=&type=ova&page=%d" to "OVA",
         "$mainUrl/genres/action/page/%d/" to "Action",
         "$mainUrl/genres/adventure/page/%d/" to "Adventure",
