@@ -286,7 +286,7 @@ class Anoboy : MainAPI() {
                     url.contains("blogger.googleusercontent.com", ignoreCase = true) -> {
                     emitBloggerVideo(url, candidateReferer, ::callbackOnce)
                 }
-                isPlayerCandidate(url) -> {
+                isExtractorCandidate(url) -> {
                     try {
                         loadExtractor(url, candidateReferer, subtitleCallback, ::callbackOnce)
                     } catch (_: Exception) {
@@ -355,10 +355,9 @@ class Anoboy : MainAPI() {
         }
 
         document.select(
-            "a[href*='gofile.io'], a[href*='mp4upload.com'], a[href*='mir.cr'], " +
-                "a[href*='ranoz.gg'], a[href*='playerwish.com'], a[href*='blogger.com/video.g'], " +
-                "a[href*='filedon'], a[href*='yourupload.com'], a[href*='/uploads/'], " +
-                "a[href*='.mp4'], a[href*='.m3u8']"
+            "#pembed a[href], .player a[href], .server a[href], .mirror a[href], " +
+                ".download a[href], .links a[href], .satu a[href], .dua a[href], .tiga a[href], " +
+                "a[href*='/uploads/'], a[href*='.mp4'], a[href*='.m3u8']"
         ).forEach { element ->
             candidates.add(element.attr("href"))
         }
@@ -376,17 +375,6 @@ class Anoboy : MainAPI() {
 
         Regex("""(?i)/uploads/(?:adsbatch|acbatch|yupbatch|stream/embed\.php)[^"'<>\s]+""")
             .findAll(html)
-            .forEach { match -> candidates.add(match.value) }
-
-        Regex("""(?i)https?:\\?/\\?/[^"'<>\s]+""")
-            .findAll(html)
-            .filter { match ->
-                val lower = match.value.lowercase()
-                lower.contains("blogger.com/video.g") ||
-                    lower.contains("yourupload.com") ||
-                    lower.contains("filedon") ||
-                    lower.contains("/uploads/")
-            }
             .forEach { match -> candidates.add(match.value) }
 
         return candidates
@@ -451,11 +439,18 @@ class Anoboy : MainAPI() {
     }
 
     private fun decodeServerValue(value: String): String? {
-        val decoded = runCatching { base64Decode(value) }.getOrNull()
-            ?: runCatching { String(android.util.Base64.decode(value, android.util.Base64.DEFAULT)) }.getOrNull()
-            ?: return null
-
+        val decoded = decodeBase64Payload(value) ?: return null
         return decodePlayerPayload(decoded)
+    }
+
+    private fun decodeBase64Payload(value: String): String? {
+        val clean = value.trim().replace(Regex("""\s+"""), "")
+        if (clean.length < 8) return null
+
+        val padded = clean.padEnd(((clean.length + 3) / 4) * 4, '=')
+        return runCatching { base64Decode(clean) }.getOrNull()
+            ?: runCatching { String(android.util.Base64.decode(padded, android.util.Base64.DEFAULT)) }.getOrNull()
+            ?: runCatching { String(android.util.Base64.decode(padded, android.util.Base64.URL_SAFE)) }.getOrNull()
     }
 
     private fun isEmbeddedPlayerPayload(value: String): Boolean {
@@ -979,44 +974,52 @@ class Anoboy : MainAPI() {
     }
 
     private fun shouldCrawlPlayerPage(url: String): Boolean {
-        val lower = url.lowercase()
         if (isBadUrl(url)) return false
         if (isDirectMedia(url)) return false
+
+        val lower = url.lowercase()
         if (lower.contains("blogger.com/video.g") || lower.contains("blogger.googleusercontent.com")) return false
 
-        return lower.contains("/uploads/adsbatch") ||
-            lower.contains("/uploads/acbatch") ||
-            lower.contains("/uploads/yupbatch") ||
-            lower.contains("/uploads/stream/embed.php") ||
-            lower.contains("filedon") ||
-            lower.contains("yourupload.com/embed/") ||
-            lower.contains("yourupload.com/watch/") ||
-            (lower.startsWith(mainUrl.lowercase()) && (
-                lower.contains("embed") ||
-                    lower.contains("player") ||
-                    lower.contains("stream") ||
-                    lower.contains("video")
-                ))
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host.orEmpty().removePrefix("www.").lowercase()
+        val path = uri.path.orEmpty().lowercase()
+        val mainHost = URI(mainUrl).host.orEmpty().removePrefix("www.").lowercase()
+
+        return host == mainHost && (
+            path.contains("/uploads/") ||
+                path.contains("embed") ||
+                path.contains("player") ||
+                path.contains("stream") ||
+                path.contains("video")
+            )
     }
 
-    private fun isPlayerCandidate(url: String): Boolean {
-        val lower = url.lowercase()
-
+    private fun isExtractorCandidate(url: String): Boolean {
         if (isBadUrl(url)) return false
         if (isDirectMedia(url)) return true
 
-        return lower.contains("blogger.com/video.g") ||
-            lower.contains("playerwish.com") ||
-            lower.contains("gofile.io") ||
-            lower.contains("mp4upload.com") ||
-            lower.contains("mir.cr") ||
-            lower.contains("ranoz.gg") ||
-            lower.contains("filedon") ||
-            lower.contains("yourupload.com") ||
-            lower.contains("/uploads/adsbatch") ||
-            lower.contains("/uploads/acbatch") ||
-            lower.contains("/uploads/yupbatch") ||
-            lower.contains("/uploads/stream/embed.php")
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val scheme = uri.scheme.orEmpty().lowercase()
+        val host = uri.host.orEmpty().removePrefix("www.").lowercase()
+        val path = uri.path.orEmpty().lowercase()
+        val mainHost = URI(mainUrl).host.orEmpty().removePrefix("www.").lowercase()
+
+        if (scheme !in setOf("http", "https")) return false
+        if (host.isBlank()) return false
+
+        if (host == mainHost) {
+            return path.contains("/uploads/") ||
+                path.contains("embed") ||
+                path.contains("player") ||
+                path.contains("stream") ||
+                path.contains("video")
+        }
+
+        return !isStaticAssetPath(path)
+    }
+
+    private fun isPlayerCandidate(url: String): Boolean {
+        return isExtractorCandidate(url)
     }
 
     private fun isBadUrl(url: String): Boolean {
@@ -1052,13 +1055,26 @@ class Anoboy : MainAPI() {
             lower.contains("googletagmanager") ||
             lower.contains("wp-json") ||
             lower.contains("/wp-content/themes/") ||
-            lower.endsWith(".css") ||
-            lower.endsWith(".jpg") ||
-            lower.endsWith(".jpeg") ||
-            lower.endsWith(".png") ||
-            lower.endsWith(".webp") ||
-            lower.endsWith(".gif") ||
-            lower.endsWith(".svg")
+            lower.contains("/wp-content/plugins/") ||
+            lower.contains("/wp-includes/") ||
+            isStaticAssetPath(runCatching { URI(lower).path.orEmpty() }.getOrDefault(lower.substringBefore("?")))
+    }
+
+    private fun isStaticAssetPath(path: String): Boolean {
+        val cleanPath = path.substringBefore("?").lowercase()
+        return cleanPath.endsWith(".css") ||
+            cleanPath.endsWith(".js") ||
+            cleanPath.endsWith(".jpg") ||
+            cleanPath.endsWith(".jpeg") ||
+            cleanPath.endsWith(".png") ||
+            cleanPath.endsWith(".webp") ||
+            cleanPath.endsWith(".gif") ||
+            cleanPath.endsWith(".svg") ||
+            cleanPath.endsWith(".ico") ||
+            cleanPath.endsWith(".woff") ||
+            cleanPath.endsWith(".woff2") ||
+            cleanPath.endsWith(".ttf") ||
+            cleanPath.endsWith(".eot")
     }
 
     private fun isDirectMedia(url: String): Boolean {
@@ -1132,9 +1148,7 @@ class Anoboy : MainAPI() {
 
         if (!Regex("""^[A-Za-z0-9+/=]{24,}$""").matches(value)) return false
 
-        val decoded = runCatching { base64Decode(value) }.getOrNull()
-            ?: runCatching { String(android.util.Base64.decode(value, android.util.Base64.DEFAULT)) }.getOrNull()
-            ?: return false
+        val decoded = decodeBase64Payload(value) ?: return false
 
         return decoded.contains("iframe", true) ||
             decoded.contains("video", true) ||
