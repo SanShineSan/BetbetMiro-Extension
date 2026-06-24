@@ -84,10 +84,7 @@ class AstronimeProvider : MainAPI() {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val document = app.get("$mainUrl/?s=$encodedQuery", referer = mainUrl, timeout = 30).document
         document.setBaseUri("$mainUrl/?s=$encodedQuery")
-        return document.select("article.anime, article, .animepost, .animposx, a[href*='/anime/'], a[href*='episode']")
-            .mapNotNull { it.toSearchResult(requirePoster = false) }
-            .distinctBy { it.url }
-            .take(40)
+        return document.parseSearchResults(query)
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -340,6 +337,56 @@ class AstronimeProvider : MainAPI() {
             parent = parent?.parent()
         }
         return select(selector)
+    }
+
+    private fun Document.parseSearchResults(query: String): List<SearchResponse> {
+        val searchTokens = query.searchTokens()
+        if (searchTokens.isEmpty()) return emptyList()
+
+        val candidates = searchResultCandidates()
+        return candidates
+            .mapNotNull { it.toSearchResult(requirePoster = false) }
+            .filter { it.matchesSearchQuery(searchTokens) }
+            .distinctBy { it.url }
+            .take(30)
+    }
+
+    private fun Document.searchResultCandidates(): List<Element> {
+        val heading = select("h1, h2, h3, h4, .widget-title, .section-title, .title")
+            .firstOrNull {
+                val text = it.text().cleanText()
+                text.contains("Hasil ditemukan", true) || text.contains("Search", true)
+            }
+            ?: select("*:matchesOwn((?i)Hasil\\s+ditemukan.*)").firstOrNull()
+
+        var parent = heading?.parent()
+        repeat(5) {
+            if (parent != null) {
+                val items = parent!!.select("article.anime, .animepost, .animposx, a[href*='/anime/'], a[href]")
+                if (items.isNotEmpty()) return items
+            }
+            parent = parent?.parent()
+        }
+
+        return select("article.anime, .animepost, .animposx, a[href*='/anime/']")
+    }
+
+    private fun SearchResponse.matchesSearchQuery(tokens: List<String>): Boolean {
+        val haystack = listOf(name, url.substringAfterLast('/').replace('-', ' '))
+            .joinToString(" ")
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+        return tokens.all { token -> haystack.contains(token) }
+    }
+
+    private fun String.searchTokens(): List<String> {
+        return lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .split(Regex("\\s+"))
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+            .distinct()
     }
 
     private fun Element.toSearchResult(sectionName: String? = null, requirePoster: Boolean = false): SearchResponse? {
