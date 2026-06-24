@@ -223,7 +223,7 @@ object KusonimeExtractor {
         return found
     }
 
-    private fun emitDirect(
+    private suspend fun emitDirect(
         url: String,
         referer: String,
         callback: (ExtractorLink) -> Unit,
