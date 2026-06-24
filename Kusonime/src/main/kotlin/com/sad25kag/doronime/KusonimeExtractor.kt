@@ -67,7 +67,47 @@ object KusonimeExtractor {
                 callback.invoke(link)
             }
         }
-        return found
+        if (found) return true
+
+        // Fallback: emit known download hosts directly.
+        // Fires only when loadExtractor returns nothing — ensures all collected
+        // download links (GDrive, krakenfiles, acefile, hxfile, terabox, megaup, etc.)
+        // are visible to the user even without a CloudStream extractor.
+        if (isDownloadHost(clean)) {
+            val quality = (qualityName ?: "").fixQuality().takeIf { it > 0 }
+                ?: clean.fixQuality().takeIf { it > 0 }
+                ?: Qualities.Unknown.value
+            val hostLabel = when {
+                clean.contains("usercontent.google.com", true) || clean.contains("drive.google.com", true) -> "GDrive"
+                clean.contains("mega.nz", true) || clean.contains("mega.co.nz", true) -> "Mega"
+                clean.contains("mediafire.com", true) -> "Mediafire"
+                clean.contains("terabox", true) -> "Terabox"
+                clean.contains("krakenfiles.com", true) -> "Krakenfiles"
+                clean.contains("acefile.co", true) -> "Acefile"
+                clean.contains("hxfile.co", true) -> "Hxfile"
+                clean.contains("megaup.net", true) -> "Megaup"
+                clean.contains("gofile.io", true) -> "Gofile"
+                clean.contains("qiwi.gg", true) -> "Qiwi"
+                clean.contains("buzzheavier.com", true) -> "Buzzheavier"
+                clean.contains("racaty", true) -> "Racaty"
+                else -> "Kusonime"
+            }
+            val displayName = listOf(hostLabel, qualityName)
+                .filterNotNull()
+                .distinct()
+                .joinToString(" ")
+                .trim()
+            callback.invoke(
+                newExtractorLink(hostLabel, displayName, clean) {
+                    this.referer = referer
+                    this.quality = quality
+                    this.headers = mapOf("Referer" to referer, "Origin" to originOf(referer))
+                }
+            )
+            return true
+        }
+
+        return false
     }
 
     private fun collectDownloadSources(document: Document, baseUrl: String, mainUrl: String): List<KusonimeSource> {
@@ -192,7 +232,7 @@ object KusonimeExtractor {
             .filter { file -> file.id?.isNotBlank() == true }
             .filter { file ->
                 val name = file.name.orEmpty()
-                isVideoUrl(name) || name.contains(Regex("""\.(?:mp4|mkv|webm)$""", RegexOption.IGNORE_CASE))
+                isVideoUrl(name) || name.contains(Regex("""\.(mp4|mkv|webm)$""", RegexOption.IGNORE_CASE))
             }
         val selected = if (wantedQuality != null) {
             files.filter { it.name.orEmpty().fixQuality() == wantedQuality }.ifEmpty { files }

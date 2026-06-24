@@ -53,10 +53,10 @@ object KusonimeUtils {
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#039;", "'")
-            .replace("&#8217;", "'")
-            .replace("&#8216;", "'")
-            .replace("&#8220;", "\"")
-            .replace("&#8221;", "\"")
+            .replace("&#8217;", "\u2019")
+            .replace("&#8216;", "\u2018")
+            .replace("&#8220;", "\u201C")
+            .replace("&#8221;", "\u201D")
             .replace("&#8211;", "-")
             .replace("&#8212;", "-")
             .replace("&nbsp;", " ")
@@ -122,11 +122,11 @@ object KusonimeUtils {
     }
 
     fun isVideoUrl(url: String): Boolean {
-        return url.contains(Regex("""\.(?:m3u8|mp4|mkv|webm)(?:[?#].*)?$""", RegexOption.IGNORE_CASE))
+        return url.contains(Regex("""\.(m3u8|mp4|mkv|webm)(?:[?#].*)?$""", RegexOption.IGNORE_CASE))
     }
 
     fun isSubtitleUrl(url: String): Boolean {
-        return url.contains(Regex("""\.(?:srt|vtt|ass)(?:[?#].*)?$""", RegexOption.IGNORE_CASE))
+        return url.contains(Regex("""\.(srt|vtt|ass)(?:[?#].*)?$""", RegexOption.IGNORE_CASE))
     }
 
     fun shouldSkipUrl(url: String): Boolean {
@@ -151,10 +151,12 @@ object KusonimeUtils {
         return listOf(
             "acefile.co",
             "drive.google.com",
+            "usercontent.google.com",
             "pixeldrain.com",
             "terabox",
             "hxfile.co",
             "mega.nz",
+            "megaup.net",
             "uptobox.com",
             "kusoddl",
             "gofile.io",
