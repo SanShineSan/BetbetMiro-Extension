@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 5
+version = 6
 
 cloudstream {
     description = "Astronime - anime subtitle Indonesia, runtime-clean parser, player_ajax, Turbovid HLS, and Hydrax/Abyss resolver flow"

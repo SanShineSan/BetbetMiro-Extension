@@ -54,8 +54,7 @@ class AstronimeProvider : MainAPI() {
         "/" to "Some Movie Choices",
         "/" to "New Complete Anime",
         "/" to "Most Viewed",
-        "/" to "Currently Airing",
-        "/terbaru/" to "Terbaru"
+        "/" to "Currently Airing"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
